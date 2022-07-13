@@ -100,18 +100,24 @@ fn findMatchingRoutes(client: &mut Client, demand: Vec<Order>, stops: Vec<Stop>)
     if demand.len() == 0 {
         return demand;
     }
-    let legs: Vec<Leg> = repo::find_legs_by_status(client, RouteStatus::ASSIGNED);
+    let mut legs: Vec<Leg> = repo::find_legs_by_status(client, RouteStatus::ASSIGNED);
     if legs.len() == 0 {
         return demand;
     }
     println!("findMatchingRoutes START, orders count={} legs count={}", demand.len(), legs.len());
     let mut ret: Vec<Order> = Vec::new();
+    let mut sql_bulk: String = String::from("");
     for taxiOrder in demand.iter() {
-        if try_to_extend_route(client, &taxiOrder, &legs, &stops) == -1 { // if not matched or extended
-            ret.push(*taxiOrder);
+        let sql: String = try_to_extend_route(&taxiOrder, &mut legs, &stops);
+        if sql == "nope" { // if not matched or extended
+            ret.push(*taxiOrder); // it will go to pool finder
+        } else {
+            sql_bulk += &(sql + "\n");
         }
     }
     println!("findMatchingRoutes STOP, rest orders count={}", ret.len());
+    // EXECUTE SQL !!
+
     return ret;
 }
 
@@ -148,8 +154,8 @@ fn bearing_diff(a: i16, b: i16) -> i16 {
     return r.abs();
 }
 
-fn try_to_extend_route(client: &mut Client, demand: & Order, legs: &Vec<Leg>, stops: &Vec<Stop>) -> i32 {
-    unsafe {
+fn try_to_extend_route(demand: & Order, legs: &mut Vec<Leg>, stops: &Vec<Stop>) -> String {
+  unsafe {
     let mut feasible: Vec<LegIndicesWithDistance> = Vec::new();
     let mut i = 1;
     let mut initial_distance: i16 = 0;
@@ -226,12 +232,95 @@ fn try_to_extend_route(client: &mut Client, demand: & Order, legs: &Vec<Leg>, st
     }
     // TASK: sjekk if demand.from == last leg.toStand - this might be feasible
     if feasible.len() == 0 { // empty
-        return -1;
+        return "nope".to_string();
     }
     feasible.sort_by_key(|e| e.dist.clone());
     // TASK: MAX LOSS check
-    //modifyLeg(demand, legs, feasible.get(0));
-    return feasible[0].idx_from; // first has shortest distance
+    return modifyLeg(demand, legs, &mut feasible[0]);
   }
+}
+
+fn modifyLeg(demand: &Order, legs: &mut Vec<Leg>, 
+             idxs: &mut LegIndicesWithDistance) -> String {
+    // pickup phase
+    let mut sql: String = String::from("");
+    let fromLeg: Leg = legs[idxs.idx_from as usize];
+    println!("Order {} assigned to existing route: {}", demand.id, fromLeg.route_id);
+    if demand.from == fromLeg.from { // direct hit, we don't modify that leg
+        // TODO: eta should be calculated !!!!!!!!!!!!!!!!!!!!!
+        sql += &repo::assignOrder(demand.id, fromLeg.id, fromLeg.route_id, 0, "matchRoute IN");
+    } else { 
+      sql += &extendLegsInDB(demand.id, &fromLeg, demand.from, "IN");
+      // now assign the order to the new leg
+      sql += &repo::assignOrderFindLeg(demand.id, 
+                                fromLeg.place + 1, fromLeg.route_id, 0, "extendRoute IN");
+
+      // now do it all in the copy of the database - "legs" vector
+      // legs will be used for another order, the list must be updated
+      extendsLegsInVec(fromLeg, demand.from, idxs.idx_from, legs);
+    }
+    // drop-off phase
+    let toLeg: Leg = legs[idxs.idx_to as usize];
+    if demand.to != toLeg.to { // one leg more, ignore situation with ==
+      sql += &extendLegsInDB(demand.id, &toLeg, demand.to, "OUT");
+      extendsLegsInVec(toLeg, demand.to, idxs.idx_to, legs);
+    }
+    return sql;
+}
+
+fn extendsLegsInVec(leg: Leg, from: i32, idx:i32, legs: &mut Vec<Leg>) {
+  unsafe {
+    // new leg
+    let newLeg = Leg { 
+        id: -1, // we don't know what it will be during insert
+        route_id: leg.route_id,
+        from: from,
+        to: leg.to,
+        place: leg.place + 1,
+        dist:  distance::DIST[from as usize][leg.to as usize] as i32,
+        status: RouteStatus::ASSIGNED as i32,
+        completed: None,
+        started: None
+    };
+    legs.insert(idx as usize + 1, newLeg);
+    // old leg
+    legs[idx as usize].to = from;
+    legs[idx as usize].dist = 
+            distance::DIST[leg.from as usize][from as usize] as i32;
+
+    // now "place" in route for next legs has to be incremented
+    let mut i = idx as usize + 2;
+    while i < legs.len() && legs[i].route_id == leg.route_id {
+        legs[i].place += 1;
+        i += 1;
+    }
   }
-  
+}
+
+fn extendLegsInDB(order_id: i64, leg: &Leg, from: i32, label: &str) -> String {
+  unsafe {
+    let mut sql: String = String::from("");
+    println!("new, extended {} leg, route {}, place {}", label, leg.route_id, leg.place + 1);
+    // we will add a new leg on "place", but there is already a leg with that place
+    // we have to increment place in that leg and in all subsequent ones
+    sql += &repo::updatePlacesInLegs(leg.route_id, leg.place + 1);
+    // one leg more in that free place
+    sql += &repo::create_leg(order_id, 
+                              from,
+                              leg.to,
+                              leg.place + 1,
+                              RouteStatus::ASSIGNED,
+                              distance::DIST[from as usize][leg.to as usize],
+                              leg.route_id, &("route extender ".to_string() + &label.to_string()));
+
+    // modify existing leg so that it goes to a new waypoint in-between
+    if leg.id != -1 {
+      sql += &repo::updateLegABit(leg.id, from, 
+                  distance::DIST[leg.from as usize][from as usize]);
+    } else { // less efficient & more risky (there can always be a bug in "placing")
+      sql += &repo::updateLegABitWithRouteId(leg.route_id, leg.place, from, 
+                  distance::DIST[leg.from as usize][from as usize]);
+    }
+    return sql;
+  }
+}
