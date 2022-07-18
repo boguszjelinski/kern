@@ -1,5 +1,14 @@
 use std::time::{SystemTime};
 
+pub const MAXSTOPSNUMB : usize = 5200;
+pub const MAXORDERSNUMB: usize = 2000;
+pub const MAXCABSNUMB: usize = 10000;
+pub const MAXBRANCHNUMB: usize = 200;
+
+pub const MAXINPOOL : usize = 4;
+pub const MAXORDID : usize = MAXINPOOL * 2;
+
+#[derive(Copy, Clone)]
 pub struct Stop {
     pub id: i64,
 	pub latitude: f64,
@@ -17,7 +26,7 @@ pub struct Order {
 	pub dist: i32,
     pub shared: bool,
     pub in_pool: bool,
-    pub received: SystemTime,
+    pub received: Option<SystemTime>,
     pub started: Option<SystemTime>,
     pub completed: Option<SystemTime>,
     pub at_time: Option<SystemTime>,
@@ -91,6 +100,33 @@ impl RouteStatus {
             5 => RouteStatus::STARTED,
             6 => RouteStatus::COMPLETED,
             _ => panic!("Unknown value: {}", value),
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct Branch {
+	pub cost: i16,
+	pub outs: u8, // BYTE, number of OUT nodes, so that we can guarantee enough IN nodes
+	pub ordNumb: i16, // it is in fact ord number *2; length of vectors below - INs & OUTs
+	pub ordIDs : [i32; MAXORDID], // we could get rid of it to gain on memory (key stores this too); but we would lose time on parsing
+	pub ordActions: [i8; MAXORDID],
+	pub ordIDsSorted: [i32; MAXORDID],
+	pub ordActionsSorted: [i8; MAXORDID],
+	pub cab :i32
+}
+
+impl Branch {
+    pub fn new() -> Self {
+        Self {
+            cost: 0,
+			outs: 0,
+			ordNumb: 0,
+			ordIDs: [0; MAXORDID],
+			ordActions: [0; MAXORDID],
+			ordIDsSorted: [0; MAXORDID],
+			ordActionsSorted: [0; MAXORDID],
+			cab : -1
         }
     }
 }
