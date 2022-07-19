@@ -1,9 +1,9 @@
 #define NUMBTHREAD 9
 #define MAXINPOOL 4
 #define MAXORDID MAXINPOOL*2
-#define MAXANGLE 120
+#define MAXANGLE 120.0
 #define MAXNODE MAXINPOOL+MAXINPOOL-1
-#define MAXTHREADMEM 2500000
+#define MAXTHREADMEM 1000000
 
 #define true 1
 #define false 0
@@ -12,26 +12,26 @@ typedef int boolean;
 void findPool(int, int);
 
 struct Stop {
-    int id;
-    short bearing;
+    long id;  // int
+    int bearing; // short
     double longitude;
     double latitude;
 };
 typedef struct Stop Stop;
 
 struct Order {
-    int id;
-    short fromStand;
-    short toStand;
-    short maxWait;
-    short maxLoss;
-    short distance;
+    long id;
+    int fromStand;
+    int toStand;
+    int maxWait;
+    int maxLoss;
+    int distance;
 };
 typedef struct Order Order;
 
 struct Cab {
-    int id;
-    short location;
+    long id; // int
+    int location; // short
 };
 typedef struct Cab Cab;
 

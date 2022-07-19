@@ -1,29 +1,32 @@
+use pool::orders_to_array;
 use postgres::{Client, NoTls, Error};
 use chrono::{Local, Duration};
 use std::time::{SystemTime};
+use std::{thread};
 
 mod repo;
 mod model;
 mod distance;
 mod extender;
 mod pool;
-use crate::model::{Order,OrderStatus,Stop,Cab,CabStatus,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB,MAXBRANCHNUMB};
-use crate::extender::{ findMatchingRoutes };
+use crate::model::{Order,OrderStatus,OrderTransfer,Stop,Cab,CabStatus,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB,MAXBRANCHNUMB};
+use crate::extender::{ findMatchingRoutes, writeSqlToFile };
 use crate::distance::{DIST};
-use crate::pool::{orders_to_array, cabs_to_array, stops_to_array, find_pool};
+use crate::pool::{orders_to_transfer_array, array_to_orders, cabs_to_array, stops_to_array, find_pool};
 use crate::repo::{assignPoolToCab};
 
 const max_assign_time: i64 = 3;
 
 fn main() -> Result<(), Error> {
-    let mut client = Client::connect("postgresql://kabina:kaboot@localhost/kabina", NoTls)?; // 192.168.10.176
+    println!("cargo:rustc-link-lib=dynapool30");
+    let mut client = Client::connect("postgresql://kabina:kaboot@localhost:5432/kabina", NoTls)?; // 192.168.10.176
     let stops = repo::read_stops(&mut client);
     distance::init_distance(&stops);
 
     let tmpModel = prepare_data(&mut client);
     match tmpModel {
         Some(mut x) => { 
-            dispatch(&mut client, x.0, &mut x.1, stops);
+            dispatch(&mut client, &mut x.0, &mut x.1, stops);
          },
         None => {
             println!("Nothing to do");
@@ -32,7 +35,7 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-#[link(name = "dynapool25")]
+#[link(name = "dynapool30")]
 extern "C" {
     fn dynapool(
 		numbThreads: i32,
@@ -40,7 +43,7 @@ extern "C" {
 		distSize: i32,
 		stops: &[Stop; MAXSTOPSNUMB],
 		stopsSize: i32,
-		orders: &[Order; MAXORDERSNUMB],
+		orders: &[OrderTransfer; MAXORDERSNUMB],
 		ordersSize: i32,
 		cabs: &[Cab; MAXCABSNUMB],
 		cabsSize: i32,
@@ -50,37 +53,73 @@ extern "C" {
     );
 }
 
-fn dispatch(client: &mut Client, orders: Vec<Order>, mut cabs: &mut Vec<Cab>, stops: Vec<Stop>) {
-    let use_ext_pool: bool = true;
+fn dispatch(client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: Vec<Stop>) {
+    let use_ext_pool: bool = false;
     let thread_numb: i32 = 4;
-    let mut max_route_id : i32 = repo::read_max(client, "route");
-    let mut max_leg_id : i32 = repo::read_max(client, "leg");
+    let mut max_route_id : i64 = repo::read_max(client, "route");
+    let mut max_leg_id : i64 = repo::read_max(client, "leg");
     let lenBefore = orders.len();
     // ROUTE EXTENDER
-    let demand = findMatchingRoutes(client, orders, &stops);
-    let lenAfter = demand.0.len();
+    let ret = findMatchingRoutes(client, orders, &stops);
+    let mut demand = ret.0;
+    let lenAfter = demand.len();
+    let extenderHandle: thread::JoinHandle<()> = ret.1;
     if lenBefore != lenAfter {
       println!("Route extender found allocated {} requests", lenBefore - lenAfter);
     }
     let mut pl: Vec<Branch> = Vec::new();
-    
+    let mut sql: String = String::from("");
     if use_ext_pool {
-        pl = find_extern_pool(demand.0, cabs, stops, thread_numb, max_route_id, max_leg_id);
+        (pl, sql) = find_extern_pool(demand, cabs, stops, thread_numb, max_route_id, max_leg_id);
     } else {
         // TODO: only pool of four??
-        for p in (2..4).rev() { // 4,3,2
-            let mut ret = find_pool(p, thread_numb as i16, &demand.0, &mut cabs, &stops, 
-                                    &mut max_route_id, &mut max_leg_id);
+        for p in (2..5).rev() { // 4,3,2
+            let mut ret = find_pool(p, thread_numb as i16,
+                    &mut demand, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
             pl.append(&mut ret.0);
+            sql += &ret.1;
             println!("Pools for inPool={}: {}", p, ret.0.len());
         }
     }
+    writeSqlToFile(&sql, "pool");
+    let poolHandle: thread::JoinHandle<_> = thread::spawn(move || {
+        match Client::connect("postgresql://kabina:kaboot@localhost/kabina", NoTls) {
+            Ok(mut c) => {
+                //                if sql.len() > 0 {
+                //        c.batch_execute(&sql);
+                //    }
+            }
+            Err(err) => {
+                panic!("Pool could not connect DB");
+            }
+        }
+    });
+    // marking assigned orders to get rid of them; cabs are marked in find_pool 
+    let numb = markOrders(pl, orders);
+    println!("Number of assigned orders: {}", numb);
+
+    // we have to join so that the next run of dispatcher gets updated orders
+    extenderHandle.join().expect("Extender SQL thread being joined has panicked");
+    poolHandle.join().expect("Pool SQL thread being joined has panicked");
+}
+
+fn markOrders(pl: Vec<Branch>, orders: &mut Vec<Order>) -> i32 {
+    let mut count = 0;
+    for b in pl.iter() {
+        for o in 0..b.ordNumb as usize {
+            if b.ordActions[o] == 'i' as i8 { // do not count twice
+                orders[b.ordIDs[o] as usize].id = -1;
+                count += 1;
+            }
+        }
+    }
+    return count;
 }
 
 fn find_extern_pool(demand: Vec<Order>, cabs: &mut Vec<Cab>, stops: Vec<Stop>, threads: i32,
-                    mut max_route_id: i32, mut max_leg_id: i32) -> Vec<Branch> {
+                    mut max_route_id: i64, mut max_leg_id: i64) -> (Vec<Branch>, String) {
     let mut ret: Vec<Branch> = Vec::new();  
-    let orders: [Order; MAXORDERSNUMB] = orders_to_array(&demand);
+    let orders: [OrderTransfer; MAXORDERSNUMB] = orders_to_transfer_array(&demand);
     let mut br: [Branch; MAXBRANCHNUMB] = [Branch::new(); MAXBRANCHNUMB];
     let mut cnt: i32 = 0;  
     unsafe {
@@ -102,12 +141,13 @@ fn find_extern_pool(demand: Vec<Order>, cabs: &mut Vec<Cab>, stops: Vec<Stop>, t
     let mut sql: String = String::from("");
     for i in 0 .. cnt as usize {
         ret.push(br[i]); // just convert to vec
-        sql += &assignPoolToCab(cabs[br[i].cab as usize], &orders, br[i], &mut max_route_id, &mut max_leg_id);
+        sql += &assignPoolToCab(cabs[br[i].cab as usize], &orders_to_array(&demand), br[i], &mut max_route_id, &mut max_leg_id);
         // remove the cab from list so that it cannot be allocated twice, by LCM or Munkres
         cabs[br[i].cab as usize].id = -1;
+        
     }
     //  RUN SQL
-    return ret;
+    return (ret, sql);
   }
 
 fn prepare_data(client: &mut Client) -> Option<(Vec<Order>, Vec<Cab>)> {
@@ -119,7 +159,7 @@ fn prepare_data(client: &mut Client) -> Option<(Vec<Order>, Vec<Cab>)> {
     }
     println!("Orders, input: {}", orders.len());
     
-    orders = expire_orders(client, &orders);
+//    orders = expire_orders(client, &orders);
     if orders.len() == 0 {
         println!("No demand, expired");
         return None;
@@ -156,16 +196,16 @@ fn expire_orders(client: &mut Client, demand: & Vec<Order>) -> Vec<Order> {
         
         if (minutesAt == -1 && minutesRcvd > max_assign_time)
                     || (minutesAt != -1 && minutesAt > max_assign_time) {
-            ids = ids + &"order_id=".to_string() + &o.id.to_string() + &",".to_string();
-            // TODO: async bulk update 
-            client.execute(
-                "UPDATE taxi_order SET status=6 WHERE id=$1", &[&o.id]); //OrderStatus.REFUSED
+            ids = ids + &o.id.to_string() + &",".to_string();
         } else {
             ret.push(*o);
         }
     }
     if ids.len() > 0 {
-      println!("{} refused, max assignment time exceeded", ids);
+      let sql = ids[0..ids.len() - 1].to_string(); // remove last comma
+      client.execute(
+        "UPDATE taxi_order SET status=6 WHERE id IN ($1);\n", &[&sql]); //OrderStatus.REFUSED
+      println!("{} refused, max assignment time exceeded", &ids);
     }
     return ret;
 }

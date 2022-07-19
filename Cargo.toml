@@ -10,4 +10,5 @@ postgres = { version = "0.19.3", features = ["with-chrono-0_4"] }
 chrono = "0.4"
 num-traits = "0.2"
 num-derive = "0.3"
-cc = "1.0"
+rand = "0.8.5"
+#cc = "1.0"
