@@ -1,12 +1,15 @@
 use std::{thread};
+use rand::Rng;
+use std::io::Write;
 use postgres::{Client, NoTls};
 use crate::model::{ Order, Stop, Leg, RouteStatus };
 use crate::repo::{find_legs_by_status,assignOrder,assignOrderFindLeg,updatePlacesInLegs,create_leg,updateLegABit,updateLegABitWithRouteId};
 use crate::distance::{DIST};
+use crate::pool::{bearing_diff};
 
 const max_legs: i8 = 8;
 const extend_margin : f32 = 1.05;
-pub const max_angle: i16 = 120;
+pub const max_angle: f32 = 120.0;
 
 //#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct LegIndicesWithDistance {
@@ -21,14 +24,14 @@ struct LegIndicesWithDistance {
 //     }
 // }
 
-pub fn findMatchingRoutes(client: &mut Client, demand: Vec<Order>, stops: &Vec<Stop>) 
+pub fn findMatchingRoutes(client: &mut Client, demand: &Vec<Order>, stops: &Vec<Stop>) 
                           -> (Vec<Order>, thread::JoinHandle<()>) {
     if demand.len() == 0 {
-        return (demand, thread::spawn(|| { }));
+        return (Vec::new(), thread::spawn(|| { }));
     }
     let mut legs: Vec<Leg> = find_legs_by_status(client, RouteStatus::ASSIGNED);
     if legs.len() == 0 {
-        return (demand, thread::spawn(|| { }));
+        return (demand.to_vec(), thread::spawn(|| { }));
     }
     println!("findMatchingRoutes START, orders count={} legs count={}", demand.len(), legs.len());
     let mut ret: Vec<Order> = Vec::new();
@@ -42,12 +45,13 @@ pub fn findMatchingRoutes(client: &mut Client, demand: Vec<Order>, stops: &Vec<S
         }
     }
     println!("findMatchingRoutes STOP, rest orders count={}", ret.len());
+    writeSqlToFile(&sql_bulk, "route_extender");
     // EXECUTE SQL !!
     let handle: thread::JoinHandle<_> = thread::spawn(move || {
       match Client::connect("postgresql://kabina:kaboot@localhost/kabina", NoTls)
       {
         Ok(mut c) => {
-          c.batch_execute(&sql_bulk);
+        //  c.batch_execute(&sql_bulk);
         }
         Err(err) => {
             panic!("Pool could not connect DB");
@@ -55,6 +59,14 @@ pub fn findMatchingRoutes(client: &mut Client, demand: Vec<Order>, stops: &Vec<S
       }
     });
     return (ret, handle);
+}
+
+pub fn writeSqlToFile(sql: &String, label: &str) {
+  let mut rng = rand::thread_rng();
+  let file_name = format!("{}{}.sql", label.to_string(), rng.gen_range(0..10000000));
+  let msg = format!("SQL for {} failed", file_name);
+  let mut file = std::fs::File::create(&file_name).expect(&("Create ".to_string() + &msg));
+  file.write_all(sql.as_bytes()).expect(&("Write ".to_string() + &msg));
 }
 
 fn try_to_extend_route(demand: & Order, legs: &mut Vec<Leg>, stops: &Vec<Stop>) -> String {
@@ -236,14 +248,4 @@ fn count_legs(id: i32, legs: &Vec<Leg>) -> i8 {
         }
     }
     return count;
-}
-
-fn bearing_diff(a: i16, b: i16) -> i16 {
-    let mut r = (a - b) % 360;
-    if r < -180 {
-      r += 360;
-    } else if r >= 180 {
-      r -= 360;
-    }
-    return r.abs();
 }

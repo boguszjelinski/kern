@@ -1,6 +1,6 @@
+use std::any::Any;
 use std::{thread};
-use postgres::{Client, NoTls, Error};
-use crate::model::{Order,Stop,Cab,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB};
+use crate::model::{Order,OrderTransfer,Stop,Cab,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB};
 use crate::distance::{DIST};
 use crate::extender::{max_angle};
 use crate::repo::{assignPoolToCab};
@@ -16,33 +16,41 @@ static mut ORDERS_LEN: usize = 0;
 static mut CABS: [Cab; MAXCABSNUMB] = [Cab {id:0, location:0}; MAXCABSNUMB];
 static mut CABS_LEN: usize = 0;
 
-pub fn find_pool(in_pool: u8, threads: i16, demand: &Vec<Order>, supply: &mut Vec<Cab>,
-                stands: &Vec<Stop>, mut max_route_id: &mut i32, max_leg_id: &mut i32) 
-                -> (Vec<Branch>, thread::JoinHandle<()>) {
-    unsafe {
-        ORDERS = orders_to_array(demand);
-        CABS = cabs_to_array(supply);
-        STOPS = stops_to_array(stands);
-        ORDERS_LEN = demand.len();
-        CABS_LEN = supply.len();
-        STOPS_LEN = stands.len();
-    
-        if ORDERS_LEN == 0 || CABS_LEN == 0 || STOPS_LEN == 0 {
-            return (Vec::new(), thread::spawn(|| { }));
-        }
-    }
+pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mut Vec<Cab>,
+                stands: &Vec<Stop>, mut max_route_id: &mut i64, max_leg_id: &mut i64) 
+                -> (Vec<Branch>, String) {
+  unsafe {
+      ORDERS = orders_to_array(demand);
+      CABS = cabs_to_array(supply);
+      STOPS = stops_to_array(stands);
+      ORDERS_LEN = demand.len();
+      CABS_LEN = supply.len();
+      STOPS_LEN = stands.len();
+  
+      if ORDERS_LEN == 0 || CABS_LEN == 0 || STOPS_LEN == 0 {
+          return (Vec::new(), String::from(""));
+      }
+  }
 	let mut root = dive(0, in_pool, threads);
-    //for (int i = 0; i < inPool + inPool - 1; i++)
-    //    printf("node[%d].size: %d\n", i, countNodeSize(i));
-    let ret = rm_final_duplicates(
-            in_pool as usize, &mut root, &mut max_route_id, max_leg_id, supply);
-    println!("FINAL: inPool: {}, found pools: {}\n", in_pool, ret.0.len());
-    return ret;
+  //for (int i = 0; i < inPool + inPool - 1; i++)
+  //    printf("node[%d].size: %d\n", i, countNodeSize(i));
+  let ret = rm_final_duplicates(
+          in_pool as usize, &mut root, &mut max_route_id, max_leg_id, supply);
+  // mark orders in pools as assigned so that next call to find_pool skips them
+  for br in ret.0.iter() {
+    for o in 0..br.ordNumb as usize {
+      demand[br.ordIDs[o] as usize].id = -1;
+    }
+  }
+  println!("FINAL: inPool: {}, found pools: {}\n", in_pool, ret.0.len());
+  return ret;
 }
 
 fn dive(lev: u8, in_pool: u8, threads_numb: i16) -> Vec<Branch> {
 	if lev > in_pool + in_pool - 3 { // lev >= 2*inPool-2, where -2 are last two levels
-		return store_leaves();
+		let ret = store_leaves();
+    println!("Level: {}, size: {}", lev, ret.len());
+    return ret;
 		// last two levels are "leaves"
 	}
 	let mut t_numb = threads_numb;
@@ -86,6 +94,12 @@ fn store_leaves() -> Vec<Branch> {
 		 			&& bearing_diff(STOPS[ORDERS[c].to as usize].bearing, STOPS[ORDERS[d].to as usize].bearing) < max_angle as f32 {
 		 		// TASK - this calculation above should be replaced by a redundant value in taxi_order - distance * loss
 		 		ret.push(add_branch(c as i32, d as i32, 'o', 'o', 2));
+        /*  println!("c={} d={} c.id={} d.id={} c.to={} d.from={} d.to={} d.loss={} c.to.bearing={} d.to.bearing={} dist_c_d={} dist_d_d={}",
+                  c, d, ORDERS[c].id, ORDERS[d].id, ORDERS[c].to, ORDERS[d].from, ORDERS[d].to,
+                  ORDERS[d].loss, STOPS[ORDERS[c].to as usize].bearing, STOPS[ORDERS[d].to as usize].bearing,
+                  DIST[ORDERS[c].to as usize][ORDERS[d].to as usize], DIST[ORDERS[d].from as usize][ORDERS[d].to as usize] 
+                );
+        */
 		 	}
 		  }
 		}
@@ -95,7 +109,7 @@ fn store_leaves() -> Vec<Branch> {
 	return ret;
 }
 
-fn bearing_diff(a: i16, b: i16 ) -> f32 {
+pub fn bearing_diff(a: i32, b: i32 ) -> f32 {
     let mut r = (a as f32 - b as f32) % 360.0;
     if r < -180.0 {
       r += 360.0;
@@ -242,13 +256,13 @@ fn store_branch(action: char, lev: u8, ord_id: i32, b: &Branch, in_pool: u8) -> 
     return br;
 }
 
-fn rm_final_duplicates(in_pool: usize, arr: &mut Vec<Branch>, mut max_route_id: &mut i32, 
-                     mut max_leg_id: &mut i32, cabs: &mut Vec<Cab>) -> (Vec<Branch>, thread::JoinHandle<()>) {
+fn rm_final_duplicates(in_pool: usize, arr: &mut Vec<Branch>, mut max_route_id: &mut i64, 
+                     mut max_leg_id: &mut i64, cabs: &mut Vec<Cab>) -> (Vec<Branch>, String) {
 	let mut ret : Vec<Branch> = Vec::new();
   let mut sql: String = String::from("");
 
   if arr.len() == 0 {
-        return (ret, thread::spawn(|| { }));
+        return (ret, sql);
   }
   arr.sort_by_key(|e| e.cost.clone());
     // removing duplicates
@@ -273,28 +287,17 @@ fn rm_final_duplicates(in_pool: usize, arr: &mut Vec<Branch>, mut max_route_id: 
             sql += &assignAndRemove(arr, in_pool, i, cabIdx as usize, &mut max_route_id, &mut max_leg_id);
             // remove the cab from list so that it cannot be allocated twice in LCM or Munkres
             cabs[cabIdx as usize].id = -1;
+            // the same with demand, but this static array ORDERS is a copy of Vec, so it is better to do it elsewhere
         } else { // constraints not met, mark as unusable
             arr[i].cost = -1;
         }
     }
   }
-  // RUN SQL
-  let handle: thread::JoinHandle<_> = thread::spawn(move || {
-    match Client::connect("postgresql://kabina:kaboot@localhost/kabina", NoTls)
-    {
-      Ok(mut c) => {
-        c.batch_execute(&sql);
-      }
-      Err(err) => {
-          panic!("Pool could not connect DB");
-      }
-    }
-  });
-  return (ret, handle);
+  return (ret, sql);
 }
 
 fn assignAndRemove(arr: &mut Vec<Branch>, inPool: usize, i: usize, cabIdx: usize,
-                    mut max_route_id: &mut i32, mut max_leg_id: &mut i32) -> String {
+                    mut max_route_id: &mut i64, mut max_leg_id: &mut i64) -> String {
     // remove any further duplicates
     for j in i + 1 .. arr.len() {
         if arr[j].cost != -1 // not invalidated; this check is for performance reasons
@@ -370,13 +373,44 @@ fn constraintsMet(el: Branch, distCab: i32) -> bool {
     return true;
 }
 
-
 pub fn orders_to_array(vec: &Vec<Order>) -> [Order; MAXORDERSNUMB] {
-    let mut arr : [Order; MAXORDERSNUMB] = [Order {
-        id: 0, from: 0, to: 0, wait: 0,	loss: 0, dist: 0, shared: true, in_pool: true, 
-        received: None, started: None, completed: None, at_time: None, eta: -1 }; MAXORDERSNUMB];
-    for (i,v) in vec.iter().enumerate() { arr[i] = *v; }
+  let mut arr : [Order; MAXORDERSNUMB] = [Order {
+      id: 0, from: 0, to: 0, wait: 0,	loss: 0, dist: 0, shared: true,
+      in_pool: true, received: None, started: None, completed: None, at_time: None, eta: 0
+    }; MAXORDERSNUMB];
+  for (i, v) in vec.iter().enumerate() { 
+    arr[i] = *v; 
+  }
+  return arr;
+}
+
+pub fn orders_to_transfer_array(vec: &Vec<Order>) -> [OrderTransfer; MAXORDERSNUMB] {
+    let mut arr : [OrderTransfer; MAXORDERSNUMB] = [OrderTransfer {
+        id: 0, from: 0, to: 0, wait: 0,	loss: 0, dist: 0}; MAXORDERSNUMB];
+    for (i, v) in vec.iter().enumerate() { 
+      arr[i].id = v.id; 
+      arr[i].from = v.from; 
+      arr[i].to = v.to; 
+      arr[i].wait = v.wait; 
+      arr[i].loss = v.loss; 
+      arr[i].dist = v.dist; 
+    }
     return arr;
+}
+
+pub fn array_to_orders(arr: &[OrderTransfer; MAXORDERSNUMB]) -> [Order; MAXORDERSNUMB] {
+  let mut ret : [Order; MAXORDERSNUMB] = [Order {
+    id: 0, from: 0, to: 0, wait: 0,	loss: 0, dist: 0, shared: true,
+    in_pool: true, received: None, started: None, completed: None, at_time: None, eta: 0}; MAXORDERSNUMB];
+  for i in 0..MAXORDERSNUMB as usize { 
+    ret[i].id = arr[i].id;
+    ret[i].from = arr[i].from;
+    ret[i].to = arr[i].to;
+    ret[i].wait = arr[i].wait;
+    ret[i].loss = arr[i].loss;
+    ret[i].dist = arr[i].dist;
+  }
+  return ret;
 }
 
 pub fn cabs_to_array(vec: &Vec<Cab>) -> [Cab; MAXCABSNUMB] {

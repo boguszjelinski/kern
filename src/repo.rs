@@ -42,10 +42,13 @@ pub fn read_stops(client: &mut Client) -> Vec<Stop> {
     return ret;
 }
 
-pub fn read_max(client: &mut Client, table: &str) -> i32 {
+pub fn read_max(client: &mut Client, table: &str) -> i64 {
     for row in client.query(&("SELECT MAX(id) FROM ".to_string() + &table.to_string()), &[]).unwrap() {
-        let max: i32 = row.get(0);
-        return max + 1;
+        let max: Option<i64> = row.get(0);
+        return match max {
+            Some(x) => { x + 1 }
+            None => 1
+        }
     }
     return 1; // no row
 }
@@ -87,16 +90,16 @@ pub fn assignOrder(order_id: i64, leg_id: i32, route_id: i32, eta: i32, calledBy
     return format!("\
         UPDATE o SET o.route_id={}, o.leg_id={}, o.cab_id=r.cab_id, o.status=1, o.eta={} \
         FROM taxi_order o INNER JOIN route r ON r.id={} \
-        WHERE o.id={} AND o.status=0", // it might be cancelled in the meantime, we have to be sure. 
+        WHERE o.id={} AND o.status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
         route_id, leg_id, eta, route_id, order_id);
 }
 
-pub fn assignOrder2(order_id: i64, cab_id: i32, leg_id: i32, route_id: i32, eta: i16, calledBy: &str) -> String {   
+pub fn assignOrder2(order_id: i64, cab_id: i64, leg_id: i64, route_id: i64, eta: i16, calledBy: &str) -> String {   
     println!("Assigning order_id={} to cab_id={}, route_id={}, leg_id={}, routine {}",
                                             order_id, cab_id, route_id, leg_id, calledBy);
     return format!("\
         UPDATE taxi_order SET route_id={}, leg_id={}, cab_id={}, status=1, eta={}, in_pool=true \
-        WHERE id={} AND status=0", // it might be cancelled in the meantime, we have to be sure. 
+        WHERE id={} AND status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
         route_id, leg_id, cab_id, eta, order_id);
 }
 
@@ -107,7 +110,7 @@ pub fn assignOrderFindLeg(order_id: i64, place: i32, route_id: i32, eta: i32, ca
         UPDATE o SET o.route_id={}, o.leg_id=l.id, o.cab_id=r.cab_id, o.status=1, o.eta={} \
         FROM taxi_order o INNER JOIN route r ON r.id={} \
         INNER JOIN leg l ON l.route_id={} AND l.place={} \
-        WHERE o.id={} AND o.status=0", // it might be cancelled in the meantime, we have to be sure. 
+        WHERE o.id={} AND o.status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
         route_id, eta, route_id, route_id, place, order_id);
 }
 
@@ -116,14 +119,14 @@ pub fn create_leg(order_id: i64, from: i32, to: i32, place: i32, status: RouteSt
     println!("Adding leg to route: route_id={}, routine {}", route_id, calledBy);
     return format!("\
         INSERT INTO leg (from_stand, to_stand, place, distance, status, route_id) VALUES \
-        ({},{},{},{},{},{})", from, to, place, dist, status as u8, route_id);
+        ({},{},{},{},{},{});\n", from, to, place, dist, status as u8, route_id);
 }
 
 pub fn updateLegABit(leg_id: i32, to: i32, dist: i16) -> String {
     println!("Updating existing leg_id={} to={}", leg_id, to);
     return format!("\
         UPDATE leg SET to_stand={}, distance={} \
-        WHERE id={}", to, dist, leg_id);
+        WHERE id={};\n", to, dist, leg_id);
 }
 
 pub fn updateLegABitWithRouteId(route_id: i32, place: i32, to: i32, dist: i16) -> String {
@@ -131,27 +134,28 @@ pub fn updateLegABitWithRouteId(route_id: i32, place: i32, to: i32, dist: i16) -
     println!("Updating existing leg with route_id={} place={} to={}", route_id, place, to);
     return format!("\
         UPDATE leg SET to_stand={}, distance={} \
-        WHERE route_id={} AND place={}", to, dist, route_id, place);
+        WHERE route_id={} AND place={};\n", to, dist, route_id, place);
 }
 
 pub fn updatePlacesInLegs(route_id: i32, place: i32) -> String {
     println!("Updating places in route_id={} starting with place={}", route_id, place);
     return format!("\
         UPDATE leg SET place=place+1 \
-        WHERE route_id={} AND place >= {}", route_id, place);
+        WHERE route_id={} AND place >= {};\n", route_id, place);
 }
 
-pub fn assignPoolToCab(cab: Cab, orders: &[Order; MAXORDERSNUMB], pool: Branch, max_route_id: &mut i32, 
-                        mut max_leg_id: &mut i32) -> String {
+pub fn assignPoolToCab(cab: Cab, orders: &[Order; MAXORDERSNUMB], pool: Branch, max_route_id: &mut i64, 
+                        mut max_leg_id: &mut i64) -> String {
     let order = orders[pool.ordIDs[0] as usize];
     // update CAB
     let mut eta = 0; // expected time of arrival
     // CabStatus.ASSIGNED
     let mut sql: String = String::from("UPDATE cab SET status=0 WHERE id=");
-    sql += &(cab.id.to_string() + &"\n".to_string());
+    sql += &(cab.id.to_string() + &";\n".to_string());
     // alter table route alter column id add generated always as identity
     // ALTER TABLE route ADD PRIMARY KEY (id)
-    sql += &format!("INSERT INTO route (id, status, cab_id) VALUES ({},{},{})\n", 
+    // ALTER TABLE taxi_order ALTER COLUMN customer_id DROP NOT NULL;
+    sql += &format!("INSERT INTO route (id, status, cab_id) VALUES ({},{},{});\n", 
                     *max_route_id, 1, cab.id).to_string(); // 1=ASSIGNED
 
     let mut place = 0;
@@ -160,7 +164,7 @@ pub fn assignPoolToCab(cab: Cab, orders: &[Order; MAXORDERSNUMB], pool: Branch, 
             eta = DIST[cab.location as usize][order.from as usize];
         }
         sql += &format!("INSERT INTO leg (id, from_stand, to_stand, place, status, distance, route_id)\
-                        VALUES ({},{},{},{},{},{},{})\n", 
+                        VALUES ({},{},{},{},{},{},{});\n", 
                         max_leg_id, cab.location, order.from, place, 1, eta, max_route_id).to_string();
         place += 1;
         *max_leg_id += 1;
@@ -174,11 +178,11 @@ pub fn assignPoolToCab(cab: Cab, orders: &[Order; MAXORDERSNUMB], pool: Branch, 
     return sql;
   }
 
-fn assignOrdersAndSaveLegsV2(cab_id: i32, route_id: i32, mut place: i32, e: Branch, mut eta: i16,
-                                max_leg_id: &mut i32, orders: &[Order; MAXORDERSNUMB]) -> String {
+fn assignOrdersAndSaveLegsV2(cab_id: i64, route_id: i64, mut place: i32, e: Branch, mut eta: i16,
+                                max_leg_id: &mut i64, orders: &[Order; MAXORDERSNUMB]) -> String {
     //logPool2(cab, route_id, e);
     let mut sql: String = String::from("");
-    for c in 0 .. (e.ordNumb + e.ordNumb - 1) as usize {
+    for c in 0 .. (e.ordNumb - 1) as usize {
       let order = orders[e.ordIDs[c] as usize];
       let stand1 = if e.ordActions[c] == 'i' as i8 { order.from } else { order.to };
       let stand2 = if e.ordActions[c + 1] == 'i' as i8
@@ -189,14 +193,14 @@ fn assignOrdersAndSaveLegsV2(cab_id: i32, route_id: i32, mut place: i32, e: Bran
         if stand1 != stand2 { // there is movement
     
             sql += &format!("INSERT INTO leg (id, from_stand, to_stand, place, status, distance, route_id)\
-                            VALUES ({},{},{},{},{},{},{})\n", 
+                            VALUES ({},{},{},{},{},{},{});\n", 
                             max_leg_id, stand1, stand2, place, 1, dist, route_id).to_string();
             
             place += 1;
             *max_leg_id += 1;
         }
         if e.ordActions[c] == 'i' as i8 {
-            assignOrder2(order.id, cab_id, *max_leg_id, route_id, eta, "assignOrdersAndSaveLegs1");
+            sql += &assignOrder2(order.id, cab_id, *max_leg_id, route_id, eta, "assignOrdersAndSaveLegs1");
         }
         if stand1 != stand2 {
             eta += dist;

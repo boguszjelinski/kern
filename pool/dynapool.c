@@ -158,6 +158,11 @@ void storeLeaves(int lev) {
             ) {
               // TASK - this calculation above should be replaced by a redundant value in taxi_order - distance * loss
               addBranch(c, d, 'o', 'o', 2, lev);
+              /*printf("c=%d d=%d c.id=%d d.id=%d c.to=%d d.from=%d d.to=%d d.loss=%d c.to.bearing=%d d.to.bearing=%d dist_c_d=%d dist_d_d=%d\n",
+                  c, d, demand[c].id, demand[d].id, demand[c].toStand, demand[d].fromStand, demand[d].toStand,
+                  demand[d].maxLoss, stops[demand[c].toStand].bearing, stops[demand[d].toStand].bearing,
+                  dist(demand[c].toStand, demand[d].toStand), dist(demand[d].fromStand, demand[d].toStand));
+                  */
             }
           }
 }
@@ -335,8 +340,8 @@ void findPool(int inPool, int numbThreads) {
     for (int i=0; i<MAXNODE; i++) nodeSize[i] = 0;
     for (int i=0; i<NUMBTHREAD; i++) nodeSizeSMP[i] = 0;
     dive(0, inPool, numbThreads);
-    //for (int i = 0; i < inPool + inPool - 1; i++)
-    //    printf("node[%d].size: %d\n", i, countNodeSize(i));
+    for (int i = 0; i < inPool + inPool - 1; i++)
+        printf("node[%d].size: %d\n", i, countNodeSize(i));
     rmFinalDuplicates(inPool);
     printf("FINAL: inPool: %d, found pools: %d\n", inPool, countNodeSize(0));
 }

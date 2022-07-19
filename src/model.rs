@@ -8,12 +8,13 @@ pub const MAXBRANCHNUMB: usize = 200;
 pub const MAXINPOOL : usize = 4;
 pub const MAXORDID : usize = MAXINPOOL * 2;
 
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Stop {
     pub id: i64,
+    pub bearing: i32,
 	pub latitude: f64,
-    pub longitude: f64,
-	pub bearing: i16
+    pub longitude: f64
 }
 
 #[derive(Copy, Clone)]
@@ -35,9 +36,22 @@ pub struct Order {
   //  customer: Customer
 }
 
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct OrderTransfer {
+    pub id: i64, // -1 as to-be-dropped
+	pub from: i32,
+    pub to: i32,
+	pub wait: i32,
+	pub loss: i32,
+	pub dist: i32
+}
+
+
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Cab {
-    pub id: i32,
+    pub id: i64,
 	pub location: i32
 }
 
@@ -104,6 +118,7 @@ impl RouteStatus {
     }
 }
 
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Branch {
 	pub cost: i16,
