@@ -94,13 +94,13 @@ pub fn assignOrder(order_id: i64, leg_id: i32, route_id: i32, eta: i32, calledBy
         route_id, leg_id, eta, route_id, order_id);
 }
 
-pub fn assignOrder2(order_id: i64, cab_id: i64, leg_id: i64, route_id: i64, eta: i16, calledBy: &str) -> String {   
+pub fn assignOrder2(order_id: i64, cab_id: i64, leg_id: i64, route_id: i64, eta: i16, in_pool: &str, calledBy: &str) -> String {   
     println!("Assigning order_id={} to cab_id={}, route_id={}, leg_id={}, routine {}",
                                             order_id, cab_id, route_id, leg_id, calledBy);
     return format!("\
-        UPDATE taxi_order SET route_id={}, leg_id={}, cab_id={}, status=1, eta={}, in_pool=true \
+        UPDATE taxi_order SET route_id={}, leg_id={}, cab_id={}, status=1, eta={}, in_pool={} \
         WHERE id={} AND status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
-        route_id, leg_id, cab_id, eta, order_id);
+        route_id, leg_id, cab_id, eta, in_pool, order_id);
 }
 
 pub fn assignOrderFindLeg(order_id: i64, place: i32, route_id: i32, eta: i32, calledBy: &str) -> String {   
@@ -114,12 +114,14 @@ pub fn assignOrderFindLeg(order_id: i64, place: i32, route_id: i32, eta: i32, ca
         route_id, eta, route_id, route_id, place, order_id);
 }
 
-pub fn create_leg(order_id: i64, from: i32, to: i32, place: i32, status: RouteStatus, dist: i16,
-                  route_id: i32, calledBy: &str) -> String {
+pub fn create_leg(from: i32, to: i32, place: i32, status: RouteStatus, dist: i16,
+                  route_id: i64, max_leg_id: &mut i64, calledBy: &str) -> String {
     println!("Adding leg to route: route_id={}, routine {}", route_id, calledBy);
-    return format!("\
-        INSERT INTO leg (from_stand, to_stand, place, distance, status, route_id) VALUES \
-        ({},{},{},{},{},{});\n", from, to, place, dist, status as u8, route_id);
+    let ret = format!("\
+        INSERT INTO leg (id, from_stand, to_stand, place, distance, status, route_id) VALUES \
+        ({},{},{},{},{},{},{});\n", *max_leg_id, from, to, place, dist, status as u8, route_id);
+    *max_leg_id += 1;
+    return ret;
 }
 
 pub fn updateLegABit(leg_id: i32, to: i32, dist: i16) -> String {
@@ -147,9 +149,18 @@ pub fn updatePlacesInLegs(route_id: i32, place: i32) -> String {
 pub fn assignPoolToCab(cab: Cab, orders: &[Order; MAXORDERSNUMB], pool: Branch, max_route_id: &mut i64, 
                         mut max_leg_id: &mut i64) -> String {
     let order = orders[pool.ordIDs[0] as usize];
-    // update CAB
+    let mut place = 0;
     let mut eta = 0; // expected time of arrival
-    // CabStatus.ASSIGNED
+    let mut sql: String = assignCab(&cab, &order, &mut place, &mut eta, max_route_id, &mut max_leg_id);
+    // legs & routes are assigned to customers in Pool
+    // if not assigned to a Pool we have to create a single-task route here
+    sql += &assignOrdersAndSaveLegsV2(cab.id, *max_route_id, place, pool, eta, &mut max_leg_id, orders);
+    *max_route_id += 1;
+    return sql;
+}
+
+fn assignCab(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16, max_route_id: &mut i64, max_leg_id: &mut i64) -> String {
+    // 0: CabStatus.ASSIGNED TODO: hardcoded status
     let mut sql: String = String::from("UPDATE cab SET status=0 WHERE id=");
     sql += &(cab.id.to_string() + &";\n".to_string());
     // alter table route alter column id add generated always as identity
@@ -158,25 +169,17 @@ pub fn assignPoolToCab(cab: Cab, orders: &[Order; MAXORDERSNUMB], pool: Branch, 
     sql += &format!("INSERT INTO route (id, status, cab_id) VALUES ({},{},{});\n", 
                     *max_route_id, 1, cab.id).to_string(); // 1=ASSIGNED
 
-    let mut place = 0;
     if cab.location != order.from { // cab has to move to pickup the first customer
         unsafe {
-            eta = DIST[cab.location as usize][order.from as usize];
+            *eta = DIST[cab.location as usize][order.from as usize];
         }
-        sql += &format!("INSERT INTO leg (id, from_stand, to_stand, place, status, distance, route_id)\
-                        VALUES ({},{},{},{},{},{},{});\n", 
-                        max_leg_id, cab.location, order.from, place, 1, eta, max_route_id).to_string();
-        place += 1;
-        *max_leg_id += 1;
+        sql += &create_leg(order.from, cab.location, *place, RouteStatus::ASSIGNED, *eta,
+                            *max_route_id, max_leg_id, "assignCab");
+        *place += 1;
         //TODO: statSrvc.addToIntVal("total_pickup_distance", Math.abs(cab.getLocation() - order.fromStand));
     }
-    // legs & routes are assigned to customers in Pool
-    // if not assigned to a Pool we have to create a single-task route here
-    sql += &assignOrdersAndSaveLegsV2(cab.id, *max_route_id, place, pool, eta, &mut max_leg_id, orders);
-    
-    *max_route_id += 1;
     return sql;
-  }
+}
 
 fn assignOrdersAndSaveLegsV2(cab_id: i64, route_id: i64, mut place: i32, e: Branch, mut eta: i16,
                                 max_leg_id: &mut i64, orders: &[Order; MAXORDERSNUMB]) -> String {
@@ -189,18 +192,15 @@ fn assignOrdersAndSaveLegsV2(cab_id: i64, route_id: i64, mut place: i32, e: Bran
                         { orders[e.ordIDs[c + 1] as usize].from } else { orders[e.ordIDs[c + 1] as usize ].to } ;
       unsafe {
         let dist = DIST[stand1 as usize][stand2 as usize];
-      
+        let leg_id = *max_leg_id;
+
         if stand1 != stand2 { // there is movement
-    
-            sql += &format!("INSERT INTO leg (id, from_stand, to_stand, place, status, distance, route_id)\
-                            VALUES ({},{},{},{},{},{},{});\n", 
-                            max_leg_id, stand1, stand2, place, 1, dist, route_id).to_string();
-            
+            sql += &create_leg(stand1, stand2, place, RouteStatus::ASSIGNED, dist,
+                                route_id, max_leg_id, "assignOrdersAndSaveLegsV2");
             place += 1;
-            *max_leg_id += 1;
         }
         if e.ordActions[c] == 'i' as i8 {
-            sql += &assignOrder2(order.id, cab_id, *max_leg_id, route_id, eta, "assignOrdersAndSaveLegs1");
+            sql += &assignOrder2(order.id, cab_id, leg_id, route_id, eta, "true", "assignOrdersAndSaveLegs1");
         }
         if stand1 != stand2 {
             eta += dist;
@@ -208,4 +208,47 @@ fn assignOrdersAndSaveLegsV2(cab_id: i64, route_id: i64, mut place: i32, e: Bran
       }
     }
     return sql;
-  }
+}
+
+pub fn assignCustToCabLCM(sol: Vec<(i16,i16)>, cabs: &Vec<Cab>, demand: &Vec<Order>, max_route_id: &mut i64, 
+                              max_leg_id: &mut i64) -> String {
+    let mut sql: String = String::from("");
+    for (_, (cab_idx, ord_idx)) in sol.iter().enumerate() {
+        let order = demand[*ord_idx as usize];
+        let mut place = 0;
+        let mut eta = 0; // expected time of arrival
+        sql += &assignCab(&cabs[*cab_idx as usize], &order, &mut place, &mut eta, max_route_id, max_leg_id);
+        sql += &assignOrderToCab(order, cabs[*cab_idx as usize], place, eta, *max_route_id, max_leg_id, "assignCustToCabLCM");
+        *max_route_id += 1;
+    }
+    return sql;
+}
+
+fn assignOrderToCab(order: Order, cab: Cab, place: i32, eta: i16, route_id: i64, 
+                    max_leg_id: &mut i64, calledBy: &str) -> String {
+    let mut sql: String = String::from("");
+    unsafe {
+        sql += &create_leg(order.from, order.to, place, RouteStatus::ASSIGNED, 
+                       DIST[order.from as usize][order.to as usize], route_id, max_leg_id, calledBy);
+    }
+    sql += &assignOrder2(order.id, cab.id, *max_leg_id, route_id, 
+                        eta, "false", "assignOrderToCab");
+    return sql;
+}
+
+pub fn assignCustToCabMunkres(sol: Vec<i16>, cabs: &Vec<Cab>, demand: &Vec<Order>, max_route_id: &mut i64, 
+                            max_leg_id: &mut i64) -> String {
+    let mut sql: String = String::from("");
+    for (cab_idx, ord_idx) in sol.iter().enumerate() {
+        if *ord_idx == -1 {
+            continue; // cab not assigned
+        }
+        let order = demand[*ord_idx as usize];
+        let mut place = 0;
+        let mut eta = 0; // expected time of arrival
+        sql += &assignCab(&cabs[cab_idx], &order, &mut place, &mut eta, max_route_id, max_leg_id);
+        sql += &assignOrderToCab(order, cabs[cab_idx], place, eta, *max_route_id, max_leg_id, "assignCustToCabMunkres");
+        *max_route_id += 1;
+    }
+    return sql;
+}
