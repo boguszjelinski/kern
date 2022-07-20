@@ -24,7 +24,7 @@ struct LegIndicesWithDistance {
 //     }
 // }
 
-pub fn findMatchingRoutes(client: &mut Client, demand: &Vec<Order>, stops: &Vec<Stop>) 
+pub fn findMatchingRoutes(client: &mut Client, demand: &Vec<Order>, stops: &Vec<Stop>, max_leg_id: &mut i64) 
                           -> (Vec<Order>, thread::JoinHandle<()>) {
     if demand.len() == 0 {
         return (Vec::new(), thread::spawn(|| { }));
@@ -37,7 +37,7 @@ pub fn findMatchingRoutes(client: &mut Client, demand: &Vec<Order>, stops: &Vec<
     let mut ret: Vec<Order> = Vec::new();
     let mut sql_bulk: String = String::from("");
     for taxiOrder in demand.iter() {
-        let sql: String = try_to_extend_route(&taxiOrder, &mut legs, &stops);
+        let sql: String = try_to_extend_route(&taxiOrder, &mut legs, &stops, max_leg_id);
         if sql == "nope" { // if not matched or extended
             ret.push(*taxiOrder); // it will go to pool finder
         } else {
@@ -47,17 +47,7 @@ pub fn findMatchingRoutes(client: &mut Client, demand: &Vec<Order>, stops: &Vec<
     println!("findMatchingRoutes STOP, rest orders count={}", ret.len());
     writeSqlToFile(&sql_bulk, "route_extender");
     // EXECUTE SQL !!
-    let handle: thread::JoinHandle<_> = thread::spawn(move || {
-      match Client::connect("postgresql://kabina:kaboot@localhost/kabina", NoTls)
-      {
-        Ok(mut c) => {
-        //  c.batch_execute(&sql_bulk);
-        }
-        Err(err) => {
-            panic!("Pool could not connect DB");
-        }
-      }
-    });
+    let handle = getHandle(sql_bulk, "extender".to_string());
     return (ret, handle);
 }
 
@@ -69,7 +59,7 @@ pub fn writeSqlToFile(sql: &String, label: &str) {
   file.write_all(sql.as_bytes()).expect(&("Write ".to_string() + &msg));
 }
 
-fn try_to_extend_route(demand: & Order, legs: &mut Vec<Leg>, stops: &Vec<Stop>) -> String {
+fn try_to_extend_route(demand: & Order, legs: &mut Vec<Leg>, stops: &Vec<Stop>, max_leg_id: &mut i64) -> String {
     unsafe {
       let mut feasible: Vec<LegIndicesWithDistance> = Vec::new();
       let mut i = 1;
@@ -151,12 +141,11 @@ fn try_to_extend_route(demand: & Order, legs: &mut Vec<Leg>, stops: &Vec<Stop>) 
       }
       feasible.sort_by_key(|e| e.dist.clone());
       // TASK: MAX LOSS check
-      return modifyLeg(demand, legs, &mut feasible[0]);
+      return modifyLeg(demand, legs, &mut feasible[0], max_leg_id);
     }
   }
   
-fn modifyLeg(demand: &Order, legs: &mut Vec<Leg>, 
-              idxs: &mut LegIndicesWithDistance) -> String {
+fn modifyLeg(demand: &Order, legs: &mut Vec<Leg>, idxs: &mut LegIndicesWithDistance, max_leg_id: &mut i64) -> String {
     // pickup phase
     let mut sql: String = String::from("");
     let fromLeg: Leg = legs[idxs.idx_from as usize];
@@ -165,7 +154,7 @@ fn modifyLeg(demand: &Order, legs: &mut Vec<Leg>,
         // TODO: eta should be calculated !!!!!!!!!!!!!!!!!!!!!
         sql += &assignOrder(demand.id, fromLeg.id, fromLeg.route_id, 0, "matchRoute IN");
     } else { 
-    sql += &extendLegsInDB(demand.id, &fromLeg, demand.from, "IN");
+    sql += &extendLegsInDB(demand.id, &fromLeg, demand.from, max_leg_id, "IN");
     // now assign the order to the new leg
     sql += &assignOrderFindLeg(demand.id, 
                                 fromLeg.place + 1, fromLeg.route_id, 0, "extendRoute IN");
@@ -177,7 +166,7 @@ fn modifyLeg(demand: &Order, legs: &mut Vec<Leg>,
     // drop-off phase
     let toLeg: Leg = legs[idxs.idx_to as usize];
     if demand.to != toLeg.to { // one leg more, ignore situation with ==
-    sql += &extendLegsInDB(demand.id, &toLeg, demand.to, "OUT");
+    sql += &extendLegsInDB(demand.id, &toLeg, demand.to, max_leg_id, "OUT");
     extendsLegsInVec(toLeg, demand.to, idxs.idx_to, legs);
     }
     return sql;
@@ -212,7 +201,7 @@ fn extendsLegsInVec(leg: Leg, from: i32, idx:i32, legs: &mut Vec<Leg>) {
   }
 }
   
-fn extendLegsInDB(order_id: i64, leg: &Leg, from: i32, label: &str) -> String {
+fn extendLegsInDB(order_id: i64, leg: &Leg, from: i32, max_leg_id: &mut i64, label: &str) -> String {
   unsafe {
     let mut sql: String = String::from("");
     println!("new, extended {} leg, route {}, place {}", label, leg.route_id, leg.place + 1);
@@ -220,13 +209,13 @@ fn extendLegsInDB(order_id: i64, leg: &Leg, from: i32, label: &str) -> String {
     // we have to increment place in that leg and in all subsequent ones
     sql += &updatePlacesInLegs(leg.route_id, leg.place + 1);
     // one leg more in that free place
-    sql += &create_leg(order_id, 
-                            from,
-                            leg.to,
-                            leg.place + 1,
-                            RouteStatus::ASSIGNED,
-                            DIST[from as usize][leg.to as usize],
-                            leg.route_id, &("route extender ".to_string() + &label.to_string()));
+    sql += &create_leg(from,
+                        leg.to,
+                        leg.place + 1,
+                        RouteStatus::ASSIGNED,
+                        DIST[from as usize][leg.to as usize],
+                        leg.route_id as i64, max_leg_id, // TODO: all IDs should be i64
+                         &("route extender ".to_string() + &label.to_string()));
 
     // modify existing leg so that it goes to a new waypoint in-between
     if leg.id != -1 {
@@ -249,3 +238,19 @@ fn count_legs(id: i32, legs: &Vec<Leg>) -> i8 {
     }
     return count;
 }
+
+pub fn getHandle(sql: String, label: String)  -> thread::JoinHandle<()> {
+  return thread::spawn(move || {
+      match Client::connect("postgresql://kabina:kaboot@localhost/kabina", NoTls) {
+          Ok(mut c) => {
+              if sql.len() > 0 {
+                  c.batch_execute(&sql);
+              }
+          }
+          Err(err) => {
+              panic!("Could not connect DB in: {}", &label);
+          }
+      }
+  });
+}
+

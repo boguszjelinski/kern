@@ -3,6 +3,7 @@ use postgres::{Client, NoTls, Error};
 use chrono::{Local, Duration};
 use std::time::{SystemTime};
 use std::{thread};
+use hungarian::minimize;
 
 mod repo;
 mod model;
@@ -10,12 +11,13 @@ mod distance;
 mod extender;
 mod pool;
 use crate::model::{Order,OrderStatus,OrderTransfer,Stop,Cab,CabStatus,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB,MAXBRANCHNUMB};
-use crate::extender::{ findMatchingRoutes, writeSqlToFile };
-use crate::distance::{DIST};
-use crate::pool::{orders_to_transfer_array, array_to_orders, cabs_to_array, stops_to_array, find_pool};
+use crate::extender::{ findMatchingRoutes, writeSqlToFile, getHandle};
+use crate::pool::{orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
 use crate::repo::{assignPoolToCab};
+use crate::distance::{DIST};
 
 const max_assign_time: i64 = 3;
+const max_solver_size: usize = 500;
 
 fn main() -> Result<(), Error> {
     println!("cargo:rustc-link-lib=dynapool30");
@@ -54,13 +56,13 @@ extern "C" {
 }
 
 fn dispatch(client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: Vec<Stop>) {
-    let use_ext_pool: bool = false;
+    let use_ext_pool: bool = true;
     let thread_numb: i32 = 4;
     let mut max_route_id : i64 = repo::read_max(client, "route");
     let mut max_leg_id : i64 = repo::read_max(client, "leg");
     let lenBefore = orders.len();
     // ROUTE EXTENDER
-    let ret = findMatchingRoutes(client, orders, &stops);
+    let ret = findMatchingRoutes(client, orders, &stops, &mut max_leg_id);
     let mut demand = ret.0;
     let lenAfter = demand.len();
     let extenderHandle: thread::JoinHandle<()> = ret.1;
@@ -70,7 +72,7 @@ fn dispatch(client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab
     let mut pl: Vec<Branch> = Vec::new();
     let mut sql: String = String::from("");
     if use_ext_pool {
-        (pl, sql) = find_extern_pool(demand, cabs, stops, thread_numb, max_route_id, max_leg_id);
+        (pl, sql) = find_extern_pool(&mut demand, cabs, stops, thread_numb, max_route_id, max_leg_id);
     } else {
         // TODO: only pool of four??
         for p in (2..5).rev() { // 4,3,2
@@ -78,45 +80,117 @@ fn dispatch(client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab
                     &mut demand, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
             pl.append(&mut ret.0);
             sql += &ret.1;
-            println!("Pools for inPool={}: {}", p, ret.0.len());
         }
     }
     writeSqlToFile(&sql, "pool");
-    let poolHandle: thread::JoinHandle<_> = thread::spawn(move || {
-        match Client::connect("postgresql://kabina:kaboot@localhost/kabina", NoTls) {
-            Ok(mut c) => {
-                //                if sql.len() > 0 {
-                //        c.batch_execute(&sql);
-                //    }
-            }
-            Err(err) => {
-                panic!("Pool could not connect DB");
-            }
-        }
-    });
-    // marking assigned orders to get rid of them; cabs are marked in find_pool 
-    let numb = markOrders(pl, orders);
-    println!("Number of assigned orders: {}", numb);
+    let pool_handle = getHandle(sql, "pool".to_string());
 
+    // marking assigned orders to get rid of them; cabs are marked in find_pool 
+    let numb = countOrders(pl, &demand);
+    println!("Number of assigned orders: {}", numb);
+    // shrinking vectors, getting rid of .id == -1 and (TODO) distant orders and cabs !!!!!!!!!!!!!!!
+    (*cabs, demand) = shrink(&cabs, demand);
+    // LCM
+    let mut lcm_handle = thread::spawn(|| { });
+    if demand.len() > max_solver_size && cabs.len() > max_solver_size {
+        // too big to send to solver, it has to be cut by LCM
+        // first just kill the default thread
+        lcm_handle.join().expect("LCM SQL thread being joined has panicked");
+        lcm_handle = Lcm(&cabs, &demand, &mut max_route_id, &mut max_leg_id, 
+                std::cmp::min(demand.len(), cabs.len()) as i16 - max_solver_size as i16);
+        println!("After LCM: demand={}, supply={}", demand.len(), cabs.len());
+    }
+    // SOLVER
+    let sol = munkres(&cabs, &demand);
+    sql = repo::assignCustToCabMunkres(sol, &cabs, &demand, &mut max_route_id, &mut max_leg_id);
+
+    writeSqlToFile(&sql, "munkres");
+    //if sql.len() > 0 {
+    //  c.batch_execute(&sql); // here SYNC execution
+    //}
     // we have to join so that the next run of dispatcher gets updated orders
     extenderHandle.join().expect("Extender SQL thread being joined has panicked");
-    poolHandle.join().expect("Pool SQL thread being joined has panicked");
+    pool_handle.join().expect("Pool SQL thread being joined has panicked");
+    lcm_handle.join().expect("LCM SQL thread being joined has panicked");
 }
 
-fn markOrders(pl: Vec<Branch>, orders: &mut Vec<Order>) -> i32 {
-    let mut count = 0;
+fn Lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, max_route_id: &mut i64, max_leg_id: &mut i64, howMany: i16) 
+                                -> thread::JoinHandle<()> {
+    let BIG_COST: i32 = 1000000;
+    if howMany < 1 { // we would like to find at least one
+        println!("LCM asked to do nothing");
+        return thread::spawn(|| { });
+    }
+    let mut cabs_cpy = cabs.to_vec();
+    let mut orders_cpy = orders.to_vec();
+    let mut lcmMinVal = BIG_COST;
+    let mut pairs: Vec<(i16,i16)> = vec![];
+    for i in 0..howMany { // we need to repeat the search (cut off rows/columns) 'howMany' times
+        lcmMinVal = BIG_COST;
+        let mut smin: i16 = -1;
+        let mut dmin: i16 = -1;
+        // now find the minimal element in the whole matrix
+        unsafe {
+        for (s, cab) in cabs_cpy.iter().enumerate() {
+            if cab.id == -1 {
+                continue;
+            }
+            for (d, order) in orders_cpy.iter().enumerate() {
+                if order.id != -1 && (distance::DIST[cab.location as usize][order.from as usize] as i32) < lcmMinVal {
+                    lcmMinVal = distance::DIST[cab.location as usize][order.from as usize] as i32;
+                    smin = s as i16;
+                    dmin = d as i16;
+                }
+            }
+        }}
+        if (lcmMinVal == BIG_COST) {
+            println!("LCM minimal cost is BIG_COST - no more interesting stuff here");
+            break;
+        }
+        // binding cab to the customer order
+        pairs.push((smin, dmin));
+        // removing the "columns" and "rows" from a virtual matrix
+        cabs_cpy[smin as usize].id = -1;
+        orders_cpy[dmin as usize].id = -1;
+    }
+    let sql = repo::assignCustToCabLCM(pairs, &cabs, &orders, max_route_id, max_leg_id);
+    return getHandle(sql, "LCM".to_string());
+}
+
+fn shrink (cabs: &Vec<Cab>, orders: Vec<Order>) -> (Vec<Cab>, Vec<Order>) {
+    let mut newCabs: Vec<Cab> = vec![];
+    let mut newOrders: Vec<Order> = vec![];
+    // v.iter().filter(|x| x % 2 == 0).collect() ??
+    for c in cabs.iter() { 
+        if c.id != -1 { newCabs.push(*c); }
+    }
+    for o in orders.iter() { 
+        if o.id != -1 { newOrders.push(*o); }
+    }
+    return (newCabs, newOrders);
+}
+
+fn countOrders(pl: Vec<Branch>, orders: &Vec<Order>) -> i32 {
+    let mut countInBranches = 0;
+    let mut countInOrders = 0;
     for b in pl.iter() {
         for o in 0..b.ordNumb as usize {
             if b.ordActions[o] == 'i' as i8 { // do not count twice
-                orders[b.ordIDs[o] as usize].id = -1;
-                count += 1;
+                if orders[b.ordIDs[o] as usize].id == -1 {
+                    countInOrders += 1;
+                }
+                countInBranches += 1;
             }
         }
     }
-    return count;
+    if countInBranches != countInOrders {
+        panic!("Error! Number of orders marked as assigned ({}) does not equal orders in branches: {}",
+            countInOrders, countInBranches);
+    }
+    return countInBranches;
 }
 
-fn find_extern_pool(demand: Vec<Order>, cabs: &mut Vec<Cab>, stops: Vec<Stop>, threads: i32,
+fn find_extern_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: Vec<Stop>, threads: i32,
                     mut max_route_id: i64, mut max_leg_id: i64) -> (Vec<Branch>, String) {
     let mut ret: Vec<Branch> = Vec::new();  
     let orders: [OrderTransfer; MAXORDERSNUMB] = orders_to_transfer_array(&demand);
@@ -144,7 +218,10 @@ fn find_extern_pool(demand: Vec<Order>, cabs: &mut Vec<Cab>, stops: Vec<Stop>, t
         sql += &assignPoolToCab(cabs[br[i].cab as usize], &orders_to_array(&demand), br[i], &mut max_route_id, &mut max_leg_id);
         // remove the cab from list so that it cannot be allocated twice, by LCM or Munkres
         cabs[br[i].cab as usize].id = -1;
-        
+        // mark orders as assigned too
+        for o in 0..br[i].ordNumb as usize {
+            demand[br[i].ordIDs[o] as usize].id = -1;
+        }
     }
     //  RUN SQL
     return (ret, sql);
@@ -249,6 +326,29 @@ fn getRidOfDistantCabs(demand: &Vec<Order>, supply: &Vec<Cab>) -> Vec<Cab> {
                     break;
                 }
             }
+        }
+    }
+    return ret;
+}
+
+// returns indexes of orders assigned to cabs - vec[1]==5 would mean 2nd cab assigned 6th order
+fn munkres(cabs: &Vec<Cab>, orders: &Vec<Order>) -> Vec<i16> {
+    let mut ret: Vec<i16> = vec![];
+    let mut matrix: Vec<i32> = vec![];
+    for c in cabs.iter() {
+        for o in orders.iter() {
+            unsafe {
+                matrix.push(distance::DIST[c.location as usize][o.from as usize] as i32);
+            }
+        }
+    }
+    let assignment = minimize(&matrix, orders.len() as usize, cabs.len() as usize);
+    
+    for s in assignment {
+        if s.is_some() {
+            ret.push(s.unwrap() as i16);
+        } else {
+            ret.push(-1);
         }
     }
     return ret;
