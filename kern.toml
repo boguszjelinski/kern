@@ -1,0 +1,5 @@
+db_conn = "postgresql://kabina:kaboot@localhost:5432/kabina"
+run_after = 15
+max_assign_time = 3
+max_solver_size = 500
+log_file = "log/kern.log"
