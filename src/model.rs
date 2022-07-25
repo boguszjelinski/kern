@@ -57,8 +57,8 @@ pub struct Cab {
 
 #[derive(Copy, Clone)]
 pub struct Leg {
-    pub id: i32,
-    pub route_id: i32,
+    pub id: i64,
+    pub route_id: i64,
     pub from: i32,
     pub to: i32,
     pub place: i32,
@@ -144,4 +144,10 @@ impl Branch {
 			cab : -1
         }
     }
+}
+
+pub struct KernCfg{
+	pub max_assign_time: i64,
+    pub max_solver_size: usize,
+    pub run_after:u64
 }

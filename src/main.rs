@@ -1,40 +1,137 @@
+use model::{KernCfg};
+use stats::Stat;
 use pool::orders_to_array;
 use postgres::{Client, NoTls, Error};
 use chrono::{Local, Duration};
-use std::time::{SystemTime};
+use std::collections::HashMap;
+use std::time::{SystemTime,Instant};
 use std::{thread};
+use std::env;
 use hungarian::minimize;
+use serde::{Deserialize};
+use log::{error, info, warn, LevelFilter, SetLoggerError};
+use log4rs::{
+    append::{
+        console::{ConsoleAppender, Target},
+        file::FileAppender,
+    },
+    config::{Appender, Config, Root},
+    encode::pattern::PatternEncoder,
+    filter::threshold::ThresholdFilter,
+};
 
 mod repo;
 mod model;
 mod distance;
 mod extender;
 mod pool;
+mod stats;
 use crate::model::{Order,OrderStatus,OrderTransfer,Stop,Cab,CabStatus,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB,MAXBRANCHNUMB};
 use crate::extender::{ findMatchingRoutes, writeSqlToFile, getHandle};
 use crate::pool::{orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
 use crate::repo::{assignPoolToCab};
 use crate::distance::{DIST};
 
-const max_assign_time: i64 = 3;
-const max_solver_size: usize = 500;
+// default config, overwritten by cfg file
+pub static mut cnfg: KernCfg = KernCfg { 
+    max_assign_time: 3, // min
+    max_solver_size: 500, // count
+    run_after: 15 // secs
+};
+
+
+const cfg_file_default: &str = "kern.toml";
 
 fn main() -> Result<(), Error> {
     println!("cargo:rustc-link-lib=dynapool30");
-    let mut client = Client::connect("postgresql://kabina:kaboot@localhost:5432/kabina", NoTls)?; // 192.168.10.176
+    // reading Config
+    let mut cfg_file: String = cfg_file_default.to_string();
+    let args: Vec<String> = env::args().collect();
+    if args.len() == 3 && args[1] == "-f" {
+        cfg_file = args[2].to_string();
+    }
+    println!("Config file: {cfg_file}");
+    let settings = config::Config::builder()
+        .add_source(config::File::with_name(&cfg_file))
+        // Add in settings from the environment (with a prefix of APP)
+        // Eg.. `APP_DEBUG=1 ./target/app` would set the `debug` key
+        //.add_source(config::Environment::with_prefix("APP"))
+        .build()
+        .unwrap();
+    let cfg = settings
+        .try_deserialize::<HashMap<String, String>>()
+        .unwrap();
+    let db_conn_str = &cfg["db_conn"];
+
+    println!("Database: {db_conn_str}");
+    unsafe {
+        cnfg = KernCfg { 
+            max_assign_time: cfg["max_assign_time"].parse().unwrap(),
+            max_solver_size: cfg["max_solver_size"].parse().unwrap(),
+            run_after:       cfg["run_after"].parse().unwrap(),
+        };
+    }
+    setup_log(cfg["log_file"].clone());
+    info!("Starting up");
+
+    // init DB
+    let mut client = Client::connect(&db_conn_str, NoTls)?; // 192.168.10.176
     let stops = repo::read_stops(&mut client);
     distance::init_distance(&stops);
-
-    let tmpModel = prepare_data(&mut client);
-    match tmpModel {
-        Some(mut x) => { 
-            dispatch(&mut client, &mut x.0, &mut x.1, stops);
-         },
-        None => {
-            println!("Nothing to do");
+    
+    loop {
+        let start = Instant::now();
+        let tmpModel = prepare_data(&mut client);
+        match tmpModel {
+            Some(mut x) => { 
+                dispatch(&db_conn_str, &mut client, &mut x.0, &mut x.1, &stops);
+            },
+            None => {
+                println!("Nothing to do");
+            }
         }
+        unsafe {
+        let wait: u64 = cnfg.run_after - start.elapsed().as_secs();
+        if wait > 0 {
+            thread::sleep(std::time::Duration::from_secs(wait));
+        }}
     }
     Ok(())
+}
+
+fn setup_log(file_path: String) {
+    let level = log::LevelFilter::Info;
+    // Build a stderr logger.
+    let stderr = ConsoleAppender::builder().target(Target::Stderr).build();
+    // Logging to log file.
+    let logfile = FileAppender::builder()
+        // Pattern: https://docs.rs/log4rs/*/log4rs/encode/pattern/index.html
+        .encoder(Box::new(PatternEncoder::new("{d(%Y-%m-%d %H:%M:%S)} {l} - {m}\n")))
+        .build(file_path)
+        .unwrap();
+
+    // Log Trace level output to file where trace is the default level
+    // and the programmatically specified level to stderr.
+    let config = Config::builder()
+        .appender(Appender::builder().build("logfile", Box::new(logfile)))
+        .appender(
+            Appender::builder()
+                .filter(Box::new(ThresholdFilter::new(level)))
+                .build("stderr", Box::new(stderr)),
+        )
+        .build(
+            Root::builder()
+                .appender("logfile")
+                .appender("stderr")
+                .build(LevelFilter::Trace),
+        )
+        .unwrap();
+
+    // Use this to change log levels at runtime.
+    // This means you can change the default log level to trace
+    // if you are trying to debug an issue and need more logs on then turn it off
+    // once you are done.
+    let _handle = log4rs::init_config(config);
 }
 
 #[link(name = "dynapool30")]
@@ -55,14 +152,14 @@ extern "C" {
     );
 }
 
-fn dispatch(client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: Vec<Stop>) {
+fn dispatch(host: &String, client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>) {
     let use_ext_pool: bool = true;
     let thread_numb: i32 = 4;
     let mut max_route_id : i64 = repo::read_max(client, "route");
     let mut max_leg_id : i64 = repo::read_max(client, "leg");
     let lenBefore = orders.len();
     // ROUTE EXTENDER
-    let ret = findMatchingRoutes(client, orders, &stops, &mut max_leg_id);
+    let ret = findMatchingRoutes(&host, client, orders, &stops, &mut max_leg_id);
     let mut demand = ret.0;
     let lenAfter = demand.len();
     let extenderHandle: thread::JoinHandle<()> = ret.1;
@@ -72,9 +169,8 @@ fn dispatch(client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab
     let mut pl: Vec<Branch> = Vec::new();
     let mut sql: String = String::from("");
     if use_ext_pool {
-        (pl, sql) = find_extern_pool(&mut demand, cabs, stops, thread_numb, max_route_id, max_leg_id);
+        (pl, sql) = find_extern_pool(&mut demand, cabs, stops, thread_numb, &mut max_route_id, &mut max_leg_id);
     } else {
-        // TODO: only pool of four??
         for p in (2..5).rev() { // 4,3,2
             let mut ret = find_pool(p, thread_numb as i16,
                     &mut demand, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
@@ -83,7 +179,7 @@ fn dispatch(client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab
         }
     }
     writeSqlToFile(&sql, "pool");
-    let pool_handle = getHandle(sql, "pool".to_string());
+    let pool_handle = getHandle(host.clone(), sql, "pool".to_string());
 
     // marking assigned orders to get rid of them; cabs are marked in find_pool 
     let numb = countOrders(pl, &demand);
@@ -92,29 +188,30 @@ fn dispatch(client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab
     (*cabs, demand) = shrink(&cabs, demand);
     // LCM
     let mut lcm_handle = thread::spawn(|| { });
-    if demand.len() > max_solver_size && cabs.len() > max_solver_size {
+    unsafe {
+    if demand.len() > cnfg.max_solver_size && cabs.len() > cnfg.max_solver_size {
         // too big to send to solver, it has to be cut by LCM
         // first just kill the default thread
         lcm_handle.join().expect("LCM SQL thread being joined has panicked");
-        lcm_handle = Lcm(&cabs, &demand, &mut max_route_id, &mut max_leg_id, 
-                std::cmp::min(demand.len(), cabs.len()) as i16 - max_solver_size as i16);
+        lcm_handle = Lcm(host, &cabs, &demand, &mut max_route_id, &mut max_leg_id, 
+                std::cmp::min(demand.len(), cabs.len()) as i16 - cnfg.max_solver_size as i16);
         println!("After LCM: demand={}, supply={}", demand.len(), cabs.len());
-    }
+    }}
     // SOLVER
     let sol = munkres(&cabs, &demand);
     sql = repo::assignCustToCabMunkres(sol, &cabs, &demand, &mut max_route_id, &mut max_leg_id);
 
     writeSqlToFile(&sql, "munkres");
-    //if sql.len() > 0 {
-    //  c.batch_execute(&sql); // here SYNC execution
-    //}
+    if sql.len() > 0 {
+      client.batch_execute(&sql); // here SYNC execution
+    }
     // we have to join so that the next run of dispatcher gets updated orders
     extenderHandle.join().expect("Extender SQL thread being joined has panicked");
     pool_handle.join().expect("Pool SQL thread being joined has panicked");
     lcm_handle.join().expect("LCM SQL thread being joined has panicked");
 }
 
-fn Lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, max_route_id: &mut i64, max_leg_id: &mut i64, howMany: i16) 
+fn Lcm(host: &String, cabs: &Vec<Cab>, orders: &Vec<Order>, max_route_id: &mut i64, max_leg_id: &mut i64, howMany: i16) 
                                 -> thread::JoinHandle<()> {
     let BIG_COST: i32 = 1000000;
     if howMany < 1 { // we would like to find at least one
@@ -143,7 +240,7 @@ fn Lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, max_route_id: &mut i64, max_leg_id:
                 }
             }
         }}
-        if (lcmMinVal == BIG_COST) {
+        if lcmMinVal == BIG_COST {
             println!("LCM minimal cost is BIG_COST - no more interesting stuff here");
             break;
         }
@@ -154,7 +251,7 @@ fn Lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, max_route_id: &mut i64, max_leg_id:
         orders_cpy[dmin as usize].id = -1;
     }
     let sql = repo::assignCustToCabLCM(pairs, &cabs, &orders, max_route_id, max_leg_id);
-    return getHandle(sql, "LCM".to_string());
+    return getHandle(host.clone(), sql, "LCM".to_string());
 }
 
 fn shrink (cabs: &Vec<Cab>, orders: Vec<Order>) -> (Vec<Cab>, Vec<Order>) {
@@ -190,8 +287,8 @@ fn countOrders(pl: Vec<Branch>, orders: &Vec<Order>) -> i32 {
     return countInBranches;
 }
 
-fn find_extern_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: Vec<Stop>, threads: i32,
-                    mut max_route_id: i64, mut max_leg_id: i64) -> (Vec<Branch>, String) {
+fn find_extern_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<Stop>, threads: i32,
+                    max_route_id: &mut i64, max_leg_id: &mut i64) -> (Vec<Branch>, String) {
     let mut ret: Vec<Branch> = Vec::new();  
     let orders: [OrderTransfer; MAXORDERSNUMB] = orders_to_transfer_array(&demand);
     let mut br: [Branch; MAXBRANCHNUMB] = [Branch::new(); MAXBRANCHNUMB];
@@ -215,7 +312,7 @@ fn find_extern_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: Vec<Sto
     let mut sql: String = String::from("");
     for i in 0 .. cnt as usize {
         ret.push(br[i]); // just convert to vec
-        sql += &assignPoolToCab(cabs[br[i].cab as usize], &orders_to_array(&demand), br[i], &mut max_route_id, &mut max_leg_id);
+        sql += &assignPoolToCab(cabs[br[i].cab as usize], &orders_to_array(&demand), br[i], max_route_id, max_leg_id);
         // remove the cab from list so that it cannot be allocated twice, by LCM or Munkres
         cabs[br[i].cab as usize].id = -1;
         // mark orders as assigned too
@@ -270,13 +367,13 @@ fn expire_orders(client: &mut Client, demand: & Vec<Order>) -> Vec<Order> {
       //}
         let minutesRcvd = get_elapsed(o.received);
         let minutesAt : i64 = get_elapsed(o.at_time);
-        
-        if (minutesAt == -1 && minutesRcvd > max_assign_time)
-                    || (minutesAt != -1 && minutesAt > max_assign_time) {
+        unsafe {
+        if (minutesAt == -1 && minutesRcvd > cnfg.max_assign_time)
+                    || (minutesAt != -1 && minutesAt > cnfg.max_assign_time) {
             ids = ids + &o.id.to_string() + &",".to_string();
         } else {
             ret.push(*o);
-        }
+        }}
     }
     if ids.len() > 0 {
       let sql = ids[0..ids.len() - 1].to_string(); // remove last comma
@@ -342,7 +439,7 @@ fn munkres(cabs: &Vec<Cab>, orders: &Vec<Order>) -> Vec<i16> {
             }
         }
     }
-    let assignment = minimize(&matrix, orders.len() as usize, cabs.len() as usize);
+    let assignment = minimize(&matrix, cabs.len() as usize, orders.len() as usize);
     
     for s in assignment {
         if s.is_some() {

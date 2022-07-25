@@ -3,6 +3,7 @@ use chrono::{DateTime, Local};
 use std::time::{SystemTime};
 use crate::model::{ Order, OrderStatus, Stop, Cab, CabStatus, Leg, RouteStatus, Branch,MAXORDERSNUMB };
 use crate::distance::{DIST};
+use crate::stats::{stats, Stat};
 
 pub fn find_orders_by_status_and_time(client: &mut Client, status: OrderStatus, at_time: DateTime<Local>) -> Vec<Order> {
     let mut ret : Vec<Order> = Vec::new();
@@ -84,13 +85,12 @@ pub fn find_legs_by_status(client: &mut Client, status: RouteStatus) -> Vec<Leg>
     return ret;
 }
 
-pub fn assignOrder(order_id: i64, leg_id: i32, route_id: i32, eta: i32, calledBy: &str) -> String {   
+pub fn assignOrder(order_id: i64, leg_id: i64, route_id: i64, eta: i32, calledBy: &str) -> String {   
     println!("Assigning order_id={} to route_id={}, leg_id={}, routine {}",
                                             order_id, route_id, leg_id, calledBy);
     return format!("\
-        UPDATE o SET o.route_id={}, o.leg_id={}, o.cab_id=r.cab_id, o.status=1, o.eta={} \
-        FROM taxi_order o INNER JOIN route r ON r.id={} \
-        WHERE o.id={} AND o.status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
+        UPDATE taxi_order AS o SET route_id={}, leg_id={}, cab_id=r.cab_id, status=1, eta={} \
+        FROM route AS r WHERE r.id={} AND o.id={} AND o.status=0;", // it might be cancelled in the meantime, we have to be sure. 
         route_id, leg_id, eta, route_id, order_id);
 }
 
@@ -103,14 +103,13 @@ pub fn assignOrder2(order_id: i64, cab_id: i64, leg_id: i64, route_id: i64, eta:
         route_id, leg_id, cab_id, eta, in_pool, order_id);
 }
 
-pub fn assignOrderFindLeg(order_id: i64, place: i32, route_id: i32, eta: i32, calledBy: &str) -> String {   
+pub fn assignOrderFindLeg(order_id: i64, place: i32, route_id: i64, eta: i32, calledBy: &str) -> String {   
     println!("Assigning order_id={} to route_id={}, leg_id=UNKNOWN, place={}, routine {}",
                                             order_id, route_id, place, calledBy);
     return format!("\
-        UPDATE o SET o.route_id={}, o.leg_id=l.id, o.cab_id=r.cab_id, o.status=1, o.eta={} \
-        FROM taxi_order o INNER JOIN route r ON r.id={} \
-        INNER JOIN leg l ON l.route_id={} AND l.place={} \
-        WHERE o.id={} AND o.status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
+        UPDATE taxi_order AS o SET route_id={}, leg_id=l.id, cab_id=r.cab_id, status=1, eta={} \
+        FROM route AS r, leg AS l WHERE r.id={} AND l.route_id={} AND l.place={} \
+        AND o.id={} AND o.status=0;", // it might be cancelled in the meantime, we have to be sure. 
         route_id, eta, route_id, route_id, place, order_id);
 }
 
@@ -124,14 +123,14 @@ pub fn create_leg(from: i32, to: i32, place: i32, status: RouteStatus, dist: i16
     return ret;
 }
 
-pub fn updateLegABit(leg_id: i32, to: i32, dist: i16) -> String {
+pub fn updateLegABit(leg_id: i64, to: i32, dist: i16) -> String {
     println!("Updating existing leg_id={} to={}", leg_id, to);
     return format!("\
         UPDATE leg SET to_stand={}, distance={} \
         WHERE id={};\n", to, dist, leg_id);
 }
 
-pub fn updateLegABitWithRouteId(route_id: i32, place: i32, to: i32, dist: i16) -> String {
+pub fn updateLegABitWithRouteId(route_id: i64, place: i32, to: i32, dist: i16) -> String {
     // TODO: sjekk in log how many such cases
     println!("Updating existing leg with route_id={} place={} to={}", route_id, place, to);
     return format!("\
@@ -139,7 +138,7 @@ pub fn updateLegABitWithRouteId(route_id: i32, place: i32, to: i32, dist: i16) -
         WHERE route_id={} AND place={};\n", to, dist, route_id, place);
 }
 
-pub fn updatePlacesInLegs(route_id: i32, place: i32) -> String {
+pub fn updatePlacesInLegs(route_id: i64, place: i32) -> String {
     println!("Updating places in route_id={} starting with place={}", route_id, place);
     return format!("\
         UPDATE leg SET place=place+1 \
@@ -231,7 +230,7 @@ fn assignOrderToCab(order: Order, cab: Cab, place: i32, eta: i16, route_id: i64,
         sql += &create_leg(order.from, order.to, place, RouteStatus::ASSIGNED, 
                        DIST[order.from as usize][order.to as usize], route_id, max_leg_id, calledBy);
     }
-    sql += &assignOrder2(order.id, cab.id, *max_leg_id, route_id, 
+    sql += &assignOrder2(order.id, cab.id, *max_leg_id -1 , route_id, // -1 cause it is incremented in create_leg
                         eta, "false", "assignOrderToCab");
     return sql;
 }
@@ -251,4 +250,12 @@ pub fn assignCustToCabMunkres(sol: Vec<i16>, cabs: &Vec<Cab>, demand: &Vec<Order
         *max_route_id += 1;
     }
     return sql;
+}
+
+pub fn save_status(client: &mut Client, stat: [i64; Stat::TOTAL_PICKUP_DISTANCE as usize + 1]) {
+    let mut sql: String = String::from("");
+    for s in Stat::iterator() {
+        sql += &format!("UPDATE stat SET int_val={} WHERE name={};", stat[*s as usize], s.to_string());
+    }
+    client.batch_execute(&sql);
 }

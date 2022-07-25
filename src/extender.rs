@@ -24,7 +24,7 @@ struct LegIndicesWithDistance {
 //     }
 // }
 
-pub fn findMatchingRoutes(client: &mut Client, demand: &Vec<Order>, stops: &Vec<Stop>, max_leg_id: &mut i64) 
+pub fn findMatchingRoutes(host: &String, client: &mut Client, demand: &Vec<Order>, stops: &Vec<Stop>, max_leg_id: &mut i64) 
                           -> (Vec<Order>, thread::JoinHandle<()>) {
     if demand.len() == 0 {
         return (Vec::new(), thread::spawn(|| { }));
@@ -47,7 +47,7 @@ pub fn findMatchingRoutes(client: &mut Client, demand: &Vec<Order>, stops: &Vec<
     println!("findMatchingRoutes STOP, rest orders count={}", ret.len());
     writeSqlToFile(&sql_bulk, "route_extender");
     // EXECUTE SQL !!
-    let handle = getHandle(sql_bulk, "extender".to_string());
+    let handle = getHandle(host.clone(), sql_bulk, "extender".to_string());
     return (ret, handle);
 }
 
@@ -219,17 +219,17 @@ fn extendLegsInDB(order_id: i64, leg: &Leg, from: i32, max_leg_id: &mut i64, lab
 
     // modify existing leg so that it goes to a new waypoint in-between
     if leg.id != -1 {
-    sql += &updateLegABit(leg.id, from, 
+      sql += &updateLegABit(leg.id, from, 
                 DIST[leg.from as usize][from as usize]);
     } else { // less efficient & more risky (there can always be a bug in "placing")
-    sql += &updateLegABitWithRouteId(leg.route_id, leg.place, from, 
+      sql += &updateLegABitWithRouteId(leg.route_id, leg.place, from, 
                 DIST[leg.from as usize][from as usize]);
     }
     return sql;
   }
 }
 
-fn count_legs(id: i32, legs: &Vec<Leg>) -> i8 {
+fn count_legs(id: i64, legs: &Vec<Leg>) -> i8 {
     let mut count: i8 = 0;
     for l in legs.iter() {
         if l.route_id == id {
@@ -239,9 +239,9 @@ fn count_legs(id: i32, legs: &Vec<Leg>) -> i8 {
     return count;
 }
 
-pub fn getHandle(sql: String, label: String)  -> thread::JoinHandle<()> {
+pub fn getHandle(host: String, sql: String, label: String)  -> thread::JoinHandle<()> {
   return thread::spawn(move || {
-      match Client::connect("postgresql://kabina:kaboot@localhost/kabina", NoTls) {
+      match Client::connect(&host, NoTls) {
           Ok(mut c) => {
               if sql.len() > 0 {
                   c.batch_execute(&sql);
