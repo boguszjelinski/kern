@@ -2,48 +2,48 @@ use std::{time::{Instant}, fmt};
 use self::Stat::*;
 use std::slice::Iter;
 
-pub static mut stats: [i64; Stat::TOTAL_PICKUP_DISTANCE as usize + 1] 
-                        = [0; Stat::TOTAL_PICKUP_DISTANCE as usize + 1];
-const int: Vec<i64> = vec![];
-pub static mut avgElements: [Vec<i64>; Stat::TOTAL_PICKUP_DISTANCE as usize + 1] 
-                        = [int; Stat::TOTAL_PICKUP_DISTANCE as usize + 1];
+pub static mut STATS: [i64; Stat::TotalPickupDistance as usize + 1] 
+                        = [0; Stat::TotalPickupDistance as usize + 1];
+const INT: Vec<i64> = vec![];
+pub static mut AVG_ELEMENTS: [Vec<i64>; Stat::TotalPickupDistance as usize + 1] 
+                        = [INT; Stat::TotalPickupDistance as usize + 1];
 
 #[derive(Debug,Copy,Clone)]
 pub enum Stat {
-    AVG_EXTENDER_TIME,
-    AVG_POOL_TIME,
-    AVG_POOL3_TIME,
-    AVG_POOL4_TIME,
-    AVG_LCM_TIME,
-    AVG_SOLVER_TIME,
-    AVG_SHEDULER_TIME,
+    AvgExtenderTime,
+    AvgPoolTime,
+    AvgPool3Time, // not updated as it runs in C
+    AvgPool4Time, // not updated
+    AvgLcmTime,
+    AvgSolverTime,
+    AvgShedulerTime,
 
-    MAX_EXTENDER_TIME,
-    MAX_POOL_TIME,
-    MAX_POOL3_TIME,
-    MAX_POOL4_TIME,
-    MAX_LCM_TIME,
-    MAX_SOLVER_TIME,
-    MAX_SHEDULER_TIME,
+    MaxExtenderTime,
+    MaxPoolTime,
+    MaxPool3Time,
+    MaxPool4Time,
+    MaxLcmTime,
+    MaxSolverTime,
+    MaxShedulerTime,
 
-    AVG_DEMAND_SIZE, // at start
-    AVG_POOL_DEMAND_SIZE,  // after extender
-    AVG_SOLVER_DEMAND_SIZE, // after pool
+    AvgDemandSize, // at start
+    AvgPoolDemandSize,  // after extender
+    AvgSolverDemandSize, // after pool
 
-    MAX_DEMAND_SIZE, // at start
-    MAX_POOL_DEMAND_SIZE,  // after extender
-    MAX_SOLVER_DEMAND_SIZE, // after pool
+    MaxDemandSize, // at start
+    MaxPoolDemandSize,  // after extender
+    MaxSolverDemandSize, // after pool
 
-    AVG_ORDER_ASSIGN_TIME,
-    AVG_ORDER_PICKUP_TIME,
-    AVG_ORDER_COMPLETE_TIME,
+    AvgOrderAssignTime,
+    AvgOrderPickupTime, // updated in API
+    AvgOrderCompleteTime, // updated in API
 
-    TOTAL_LCM_USED, // do we need this
-    TOTAL_PICKUP_DISTANCE // !! must be the last position cause it is used for sizing of an array :)
+    TotalLcmUsed, // do we need this
+    TotalPickupDistance, // !! must be the last position cause it is used for sizing of an array :)
 }
 
 impl Stat {
-    pub fn from_u32(value: u32) -> Stat {
+   /* pub fn from_u32(value: u32) -> Stat {
         match value {
             0 => Stat::AVG_EXTENDER_TIME,
             1 => Stat::AVG_POOL_TIME,
@@ -73,41 +73,41 @@ impl Stat {
             _ => panic!("Unknown value: {}", value),
         }
     }
-
+    */
     pub fn iterator() -> Iter<'static, Stat> {
-        static ret: [Stat; 25] = [
-            AVG_EXTENDER_TIME,
-            AVG_POOL_TIME,
-            AVG_POOL3_TIME,
-            AVG_POOL4_TIME,
-            AVG_LCM_TIME,
-            AVG_SOLVER_TIME,
-            AVG_SHEDULER_TIME,
-
-            MAX_EXTENDER_TIME,
-            MAX_POOL_TIME,
-            MAX_POOL3_TIME,
-            MAX_POOL4_TIME,
-            MAX_LCM_TIME,
-            MAX_SOLVER_TIME,
-            MAX_SHEDULER_TIME,
-
-            AVG_DEMAND_SIZE,
-            AVG_POOL_DEMAND_SIZE,
-            AVG_SOLVER_DEMAND_SIZE,
-
-            MAX_DEMAND_SIZE,
-            MAX_POOL_DEMAND_SIZE, 
-            MAX_SOLVER_DEMAND_SIZE,
-
-            AVG_ORDER_ASSIGN_TIME,
-            AVG_ORDER_PICKUP_TIME,
-            AVG_ORDER_COMPLETE_TIME,
-
-            TOTAL_LCM_USED,
-            TOTAL_PICKUP_DISTANCE
+        static RET: [Stat; 25] = [
+            AvgExtenderTime,
+            AvgPoolTime,
+            AvgPool3Time, // not updated as it runs in C
+            AvgPool4Time, // not updated
+            AvgLcmTime,
+            AvgSolverTime,
+            AvgShedulerTime,
+        
+            MaxExtenderTime,
+            MaxPoolTime,
+            MaxPool3Time,
+            MaxPool4Time,
+            MaxLcmTime,
+            MaxSolverTime,
+            MaxShedulerTime,
+        
+            AvgDemandSize, // at start
+            AvgPoolDemandSize,  // after extender
+            AvgSolverDemandSize, // after pool
+        
+            MaxDemandSize, // at start
+            MaxPoolDemandSize,  // after extender
+            MaxSolverDemandSize, // after pool
+        
+            AvgOrderAssignTime,
+            AvgOrderPickupTime, // updated in API
+            AvgOrderCompleteTime, // updated in API
+        
+            TotalLcmUsed, // do we need this
+            TotalPickupDistance,
         ];
-        ret.iter()
+        RET.iter()
     }
 }
 
@@ -119,38 +119,28 @@ impl fmt::Display for Stat {
     }
 }
 
-
-#[derive(Copy, Clone)]
-pub struct Val {
-    val: i64
-}
-
-pub fn updateMaxIntVal(key: Stat, value: i64) {
+pub fn update_max(key: Stat, value: i64) {
     unsafe { 
-        if value > stats[key as usize] {
-            stats[key as usize] = value;
+        if value > STATS[key as usize] {
+            STATS[key as usize] = value;
     }}
 }
 
-pub fn addToIntVal(key: Stat, value: i64) {
-    unsafe { stats[key as usize] += value; }
+pub fn update_val(key: Stat, value: i64) {
+    unsafe { STATS[key as usize] = value; }
 }
 
-pub fn updateIntVal(key: Stat, value: i64) {
-    unsafe { stats[key as usize] = value; }
+pub fn incr_val(key: Stat) {
+    unsafe { STATS[key as usize] += 1; }
 }
 
-pub fn incrementIntVal(key: Stat) {
-    unsafe { stats[key as usize] += 1; }
+pub fn add_avg_element(key: Stat, time: i64) {
+    unsafe { AVG_ELEMENTS[key as usize].push(time);}
 }
 
-pub fn addAverageElement(key: Stat, time: i64) {
-    unsafe { avgElements[key as usize].push(time);}
-}
-
-pub fn countAverage(key: Stat) -> i64 {   
+pub fn count_average(key: Stat) -> i64 {   
     unsafe {
-        let list: Vec<i64> = avgElements[key as usize].to_vec();
+        let list: Vec<i64> = AVG_ELEMENTS[key as usize].to_vec();
         let length = list.len();
         if length == 0 {
             return 0;
@@ -164,13 +154,13 @@ pub fn countAverage(key: Stat) -> i64 {
     } 
 }
 
-pub fn updateMaxAndAvgTime(keyAvg: Stat, keyMax: Stat, start: Instant) {
-    let totalTime = start.elapsed().as_secs() as i64;
-    addAverageElement(keyAvg, totalTime);
-    updateMaxIntVal(keyMax, totalTime);
+pub fn update_max_and_avg_time(key_avg: Stat, key_max: Stat, start: Instant) {
+    let total_time = start.elapsed().as_secs() as i64;
+    update_max_and_avg_stats(key_avg, key_max, total_time);
 }
 
-pub fn updateMaxAndAvgStats(keyAvg: Stat, keyMax: Stat, val: i64) {
-    addAverageElement(keyAvg, val);
-    updateMaxIntVal(keyMax, val);
+pub fn update_max_and_avg_stats(key_avg: Stat, key_max: Stat, val: i64) {
+    add_avg_element(key_avg, val);
+    update_val(key_avg, count_average(key_avg));
+    update_max(key_max, val);
 }

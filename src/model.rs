@@ -3,7 +3,7 @@ use std::time::{SystemTime};
 pub const MAXSTOPSNUMB : usize = 5200;
 pub const MAXORDERSNUMB: usize = 2000;
 pub const MAXCABSNUMB: usize = 10000;
-pub const MAXBRANCHNUMB: usize = 200;
+pub const MAXBRANCHNUMB: usize = 1000;
 
 pub const MAXINPOOL : usize = 4;
 pub const MAXORDID : usize = MAXINPOOL * 2;
@@ -47,7 +47,6 @@ pub struct OrderTransfer {
 	pub dist: i32
 }
 
-
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Cab {
@@ -68,41 +67,41 @@ pub struct Leg {
     pub status: i32 // TODO: RouteStatus
 }
 
-pub struct Customer {
+/*pub struct Customer {
     pub id: i32,
 	pub name: String
 }
-
+*/
 pub enum CabStatus {
-    ASSIGNED,
-    FREE,
-    CHARGING, // out of order, ...
+//    ASSIGNED,
+    FREE = 1,
+//    CHARGING, // out of order, ...
 }
 
 #[derive(Copy, Clone)]
 pub enum OrderStatus {
-    RECEIVED,  // sent by customer
-    ASSIGNED,  // assigned to a cab, a proposal sent to customer with time-of-arrival
-    ACCEPTED,  // plan accepted by customer, waiting for the cab
-    CANCELLED, // cancelled by customer before assignment
-    REJECTED,  // proposal rejected by customer
-    ABANDONED, // cancelled after assignment but before 'PICKEDUP'
-    REFUSED,   // no cab available, cab broke down at any stage
-    PICKEDUP,
-    COMPLETED
+    RECEIVED = 0,  // sent by customer
+//    ASSIGNED,  // assigned to a cab, a proposal sent to customer with time-of-arrival
+//    ACCEPTED,  // plan accepted by customer, waiting for the cab
+//    CANCELLED, // cancelled by customer before assignment
+//    REJECTED,  // proposal rejected by customer
+//    ABANDONED, // cancelled after assignment but before 'PICKEDUP'
+//    REFUSED,   // no cab available, cab broke down at any stage
+//    PICKEDUP,
+//    COMPLETED
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy,Clone)]
 pub enum RouteStatus {
-    PLANNED,   // proposed by Pool
-    ASSIGNED,  // not confirmed, initial status
-    ACCEPTED,  // plan accepted by customer, waiting for the cab
-    REJECTED,  // proposal rejected by customer(s)
-    ABANDONED, // cancelled after assignment but before 'PICKEDUP'
-    STARTED,   // status needed by legs
-    COMPLETED
+//    PLANNED,   // proposed by Pool
+    ASSIGNED = 1,  // not confirmed, initial status
+    ACCEPTED = 2,  // plan accepted by customer, waiting for the cab
+//    REJECTED,  // proposal rejected by customer(s)
+//    ABANDONED, // cancelled after assignment but before 'PICKEDUP'
+//    STARTED,   // status needed by legs
+    COMPLETED = 6
 }
-
+/*
 impl RouteStatus {
     fn from_u32(value: u32) -> RouteStatus {
         match value {
@@ -117,17 +116,17 @@ impl RouteStatus {
         }
     }
 }
-
+*/
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Branch {
 	pub cost: i16,
 	pub outs: u8, // BYTE, number of OUT nodes, so that we can guarantee enough IN nodes
-	pub ordNumb: i16, // it is in fact ord number *2; length of vectors below - INs & OUTs
-	pub ordIDs : [i32; MAXORDID], // we could get rid of it to gain on memory (key stores this too); but we would lose time on parsing
-	pub ordActions: [i8; MAXORDID],
-	pub ordIDsSorted: [i32; MAXORDID],
-	pub ordActionsSorted: [i8; MAXORDID],
+	pub ord_numb: i16, // it is in fact ord number *2; length of vectors below - INs & OUTs
+	pub ord_ids : [i32; MAXORDID], // we could get rid of it to gain on memory (key stores this too); but we would lose time on parsing
+	pub ord_actions: [i8; MAXORDID],
+	pub ord_ids_sorted: [i32; MAXORDID],
+	pub ord_actions_sorted: [i8; MAXORDID],
 	pub cab :i32
 }
 
@@ -136,11 +135,11 @@ impl Branch {
         Self {
             cost: 0,
 			outs: 0,
-			ordNumb: 0,
-			ordIDs: [0; MAXORDID],
-			ordActions: [0; MAXORDID],
-			ordIDsSorted: [0; MAXORDID],
-			ordActionsSorted: [0; MAXORDID],
+			ord_numb: 0,
+			ord_ids: [0; MAXORDID],
+			ord_actions: [0; MAXORDID],
+			ord_ids_sorted: [0; MAXORDID],
+			ord_actions_sorted: [0; MAXORDID],
 			cab : -1
         }
     }
@@ -149,5 +148,10 @@ impl Branch {
 pub struct KernCfg{
 	pub max_assign_time: i64,
     pub max_solver_size: usize,
-    pub run_after:u64
+    pub run_after:u64,
+    pub max_legs: i8,
+    pub extend_margin: f32,
+    pub max_angle: f32,
+    pub use_ext_pool: bool,
+    pub thread_numb: i32
 }

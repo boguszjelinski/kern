@@ -243,6 +243,12 @@ int countNodeSize(int lev) {
   return count;
 }
 
+void showBranch(int no, Branch *ptr) {
+  printf("%d: cost=%d, outs=%d, ordNumb=%d, cab=%d,{", no, ptr->cost, ptr->outs, ptr->ordNumb);
+  for (int i=0; i < ptr->ordNumb; i++) printf("%d%c,", ptr->ordIDs[i], ptr->ordActions[i]);
+  printf("}\n");   
+}
+
 void rmFinalDuplicates(int inPool) {
     int lev = 0;
     int cabIdx = -1;
@@ -251,7 +257,7 @@ void rmFinalDuplicates(int inPool) {
     int size = nodeSize[lev];
     Branch *arr = node[lev];
     register Branch *ptr;
-
+    retCount = 0;
     if (nodeSize[lev] < 1) return;
 
     qsort(arr, size, sizeof(Branch), compareCost);
@@ -278,6 +284,7 @@ void rmFinalDuplicates(int inPool) {
         for (int o=0; o < ptr->ordNumb; o++) // ordNumb is pool*2 but 'if' would cost more
           demand[ptr->ordIDs[o]].id = -1;
         if (retCount < retNumb) {
+          //showBranch(retCount, ptr);
           *(retNode + retCount++) = *ptr; // TASK: maybe copy of pointers would do ? 
         }
         // remove any further duplicates
