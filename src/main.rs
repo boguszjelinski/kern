@@ -1,15 +1,25 @@
-use model::{KernCfg};
-use stats::Stat;
-use pool::orders_to_array;
+mod repo;
+mod model;
+mod distance;
+mod extender;
+mod pool;
+mod stats;
+mod utils;
+use distance::DIST;
+use model::{KernCfg,Order,OrderStatus,OrderTransfer,Stop,Cab,CabStatus,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB,MAXBRANCHNUMB};
+use stats::{Stat,update_max_and_avg_time,incr_val};
+use pool::{orders_to_array,orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
+use repo::{CNFG, assign_pool_to_cab};
+use extender::{find_matching_routes, write_sql_to_file, get_handle};
+use utils::get_elapsed;
 use postgres::{Client, NoTls, Error};
 use chrono::{Local, Duration};
 use std::collections::HashMap;
-use std::time::{SystemTime,Instant};
-use std::{thread};
+use std::time::Instant;
+use std::thread;
 use std::env;
 use hungarian::minimize;
-use serde::{Deserialize};
-use log::{error, info, warn, LevelFilter, SetLoggerError};
+use log::{info,warn,debug,error,LevelFilter};
 use log4rs::{
     append::{
         console::{ConsoleAppender, Target},
@@ -20,37 +30,17 @@ use log4rs::{
     filter::threshold::ThresholdFilter,
 };
 
-mod repo;
-mod model;
-mod distance;
-mod extender;
-mod pool;
-mod stats;
-use crate::model::{Order,OrderStatus,OrderTransfer,Stop,Cab,CabStatus,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB,MAXBRANCHNUMB};
-use crate::extender::{ findMatchingRoutes, writeSqlToFile, getHandle};
-use crate::pool::{orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
-use crate::repo::{assignPoolToCab};
-use crate::distance::{DIST};
-
-// default config, overwritten by cfg file
-pub static mut cnfg: KernCfg = KernCfg { 
-    max_assign_time: 3, // min
-    max_solver_size: 500, // count
-    run_after: 15 // secs
-};
-
-
-const cfg_file_default: &str = "kern.toml";
+const CFG_FILE_DEFAULT: &str = "kern.toml";
 
 fn main() -> Result<(), Error> {
-    println!("cargo:rustc-link-lib=dynapool30");
+    println!("cargo:rustc-link-lib=dynapool33");
     // reading Config
-    let mut cfg_file: String = cfg_file_default.to_string();
+    let mut cfg_file: String = CFG_FILE_DEFAULT.to_string();
     let args: Vec<String> = env::args().collect();
     if args.len() == 3 && args[1] == "-f" {
         cfg_file = args[2].to_string();
     }
-    println!("Config file: {cfg_file}");
+    info!("Config file: {cfg_file}");
     let settings = config::Config::builder()
         .add_source(config::File::with_name(&cfg_file))
         // Add in settings from the environment (with a prefix of APP)
@@ -63,43 +53,48 @@ fn main() -> Result<(), Error> {
         .unwrap();
     let db_conn_str = &cfg["db_conn"];
 
-    println!("Database: {db_conn_str}");
+    info!("Database: {db_conn_str}");
     unsafe {
-        cnfg = KernCfg { 
+        CNFG = KernCfg { 
             max_assign_time: cfg["max_assign_time"].parse().unwrap(),
             max_solver_size: cfg["max_solver_size"].parse().unwrap(),
             run_after:       cfg["run_after"].parse().unwrap(),
+            max_legs:        cfg["max_legs"].parse().unwrap(),
+            extend_margin:   cfg["extend_margin"].parse::<f32>().unwrap(),
+            max_angle:       cfg["max_angle"].parse::<f32>().unwrap(),
+            use_ext_pool:    cfg["use_ext_pool"].parse::<bool>().unwrap(),
+            thread_numb:     cfg["thread_numb"].parse().unwrap(),
         };
     }
-    setup_log(cfg["log_file"].clone());
+    setup_logger(cfg["log_file"].clone());
     info!("Starting up");
-
     // init DB
     let mut client = Client::connect(&db_conn_str, NoTls)?; // 192.168.10.176
     let stops = repo::read_stops(&mut client);
     distance::init_distance(&stops);
-    
+    let mut itr: i32 = 0;
     loop {
         let start = Instant::now();
-        let tmpModel = prepare_data(&mut client);
-        match tmpModel {
+        let tmp_model = prepare_data(&mut client);
+        match tmp_model {
             Some(mut x) => { 
-                dispatch(&db_conn_str, &mut client, &mut x.0, &mut x.1, &stops);
+                dispatch(itr, &db_conn_str, &mut client, &mut x.0, &mut x.1, &stops);
             },
             None => {
-                println!("Nothing to do");
+                info!("Nothing to do");
             }
         }
+        update_max_and_avg_time(Stat::AvgShedulerTime, Stat::MaxShedulerTime, start);
         unsafe {
-        let wait: u64 = cnfg.run_after - start.elapsed().as_secs();
+        let wait: u64 = CNFG.run_after - start.elapsed().as_secs();
         if wait > 0 {
             thread::sleep(std::time::Duration::from_secs(wait));
         }}
+        itr += 1;
     }
-    Ok(())
 }
 
-fn setup_log(file_path: String) {
+fn setup_logger(file_path: String) {
     let level = log::LevelFilter::Info;
     // Build a stderr logger.
     let stderr = ConsoleAppender::builder().target(Target::Stderr).build();
@@ -134,7 +129,7 @@ fn setup_log(file_path: String) {
     let _handle = log4rs::init_config(config);
 }
 
-#[link(name = "dynapool30")]
+#[link(name = "dynapool33")]
 extern "C" {
     fn dynapool(
 		numbThreads: i32,
@@ -152,78 +147,95 @@ extern "C" {
     );
 }
 
-fn dispatch(host: &String, client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>) {
-    let use_ext_pool: bool = true;
-    let thread_numb: i32 = 4;
+fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>) {
     let mut max_route_id : i64 = repo::read_max(client, "route");
     let mut max_leg_id : i64 = repo::read_max(client, "leg");
-    let lenBefore = orders.len();
+    let len_before = orders.len();
     // ROUTE EXTENDER
-    let ret = findMatchingRoutes(&host, client, orders, &stops, &mut max_leg_id);
+    let start_extender = Instant::now();
+    stats::update_max_and_avg_stats(Stat::AvgDemandSize, Stat::MaxDemandSize, len_before as i64);
+    let ret = find_matching_routes(itr, &host, client, orders, &stops, &mut max_leg_id);
+    update_max_and_avg_time(Stat::AvgExtenderTime, Stat::MaxExtenderTime, start_extender);
     let mut demand = ret.0;
-    let lenAfter = demand.len();
-    let extenderHandle: thread::JoinHandle<()> = ret.1;
-    if lenBefore != lenAfter {
-      println!("Route extender found allocated {} requests", lenBefore - lenAfter);
+    let len_after = demand.len();
+    let extender_handle: thread::JoinHandle<()> = ret.1;
+    if len_before != len_after {
+      info!("Route extender found allocated {} requests", len_before - len_after);
     }
+    let start_pool = Instant::now();
+    stats::update_max_and_avg_stats(Stat::AvgPoolDemandSize, Stat::MaxPoolDemandSize, len_after as i64);
     let mut pl: Vec<Branch> = Vec::new();
     let mut sql: String = String::from("");
-    if use_ext_pool {
-        (pl, sql) = find_extern_pool(&mut demand, cabs, stops, thread_numb, &mut max_route_id, &mut max_leg_id);
+    unsafe {
+    if CNFG.use_ext_pool {
+        (pl, sql) = find_extern_pool(&mut demand, cabs, stops, CNFG.thread_numb, &mut max_route_id, &mut max_leg_id);
     } else {
         for p in (2..5).rev() { // 4,3,2
-            let mut ret = find_pool(p, thread_numb as i16,
+            let mut ret = find_pool(p, CNFG.thread_numb as i16,
                     &mut demand, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
             pl.append(&mut ret.0);
             sql += &ret.1;
         }
-    }
-    writeSqlToFile(&sql, "pool");
-    let pool_handle = getHandle(host.clone(), sql, "pool".to_string());
+    }}
+    write_sql_to_file(itr, &sql, "pool");
+    let pool_handle = get_handle(host.clone(), sql, "pool".to_string());
+    update_max_and_avg_time(Stat::AvgPoolTime, Stat::MaxPoolTime, start_pool);
 
     // marking assigned orders to get rid of them; cabs are marked in find_pool 
-    let numb = countOrders(pl, &demand);
-    println!("Number of assigned orders: {}", numb);
+    let numb = count_orders(pl, &demand);
+    info!("Number of assigned orders: {}", numb);
     // shrinking vectors, getting rid of .id == -1 and (TODO) distant orders and cabs !!!!!!!!!!!!!!!
     (*cabs, demand) = shrink(&cabs, demand);
+    stats::update_max_and_avg_stats(Stat::AvgSolverDemandSize, Stat::MaxSolverDemandSize, len_after as i64);
     // LCM
     let mut lcm_handle = thread::spawn(|| { });
     unsafe {
-    if demand.len() > cnfg.max_solver_size && cabs.len() > cnfg.max_solver_size {
+    if demand.len() > CNFG.max_solver_size && cabs.len() > CNFG.max_solver_size {
         // too big to send to solver, it has to be cut by LCM
         // first just kill the default thread
+        let start_lcm = Instant::now();
         lcm_handle.join().expect("LCM SQL thread being joined has panicked");
-        lcm_handle = Lcm(host, &cabs, &demand, &mut max_route_id, &mut max_leg_id, 
-                std::cmp::min(demand.len(), cabs.len()) as i16 - cnfg.max_solver_size as i16);
-        println!("After LCM: demand={}, supply={}", demand.len(), cabs.len());
+        lcm_handle = lcm(host, &cabs, &demand, &mut max_route_id, &mut max_leg_id, 
+                std::cmp::min(demand.len(), cabs.len()) as i16 - CNFG.max_solver_size as i16);
+        update_max_and_avg_time(Stat::AvgLcmTime, Stat::MaxLcmTime, start_lcm);
+        incr_val(Stat::TotalLcmUsed);
+        info!("After LCM: demand={}, supply={}", demand.len(), cabs.len());
     }}
     // SOLVER
+    let start_solver = Instant::now();
     let sol = munkres(&cabs, &demand);
-    sql = repo::assignCustToCabMunkres(sol, &cabs, &demand, &mut max_route_id, &mut max_leg_id);
-
-    writeSqlToFile(&sql, "munkres");
+    sql = repo::assign_cust_to_cab_munkres(sol, &cabs, &demand, &mut max_route_id, &mut max_leg_id);
+    update_max_and_avg_time(Stat::AvgSolverTime, Stat::MaxSolverTime, start_solver);
+    write_sql_to_file(itr, &sql, "munkres");
     if sql.len() > 0 {
-      client.batch_execute(&sql); // here SYNC execution
+        match client.batch_execute(&sql) { // here SYNC execution
+            Ok(_) => {}
+            Err(err) => {
+                warn!("Solver SQL output failed to run {}, err: {}", sql, err);
+            }
+        }
     }
     // we have to join so that the next run of dispatcher gets updated orders
-    extenderHandle.join().expect("Extender SQL thread being joined has panicked");
+    let status_handle = get_handle(host.clone(), repo::save_status(), "stats".to_string());
+    extender_handle.join().expect("Extender SQL thread being joined has panicked");
     pool_handle.join().expect("Pool SQL thread being joined has panicked");
     lcm_handle.join().expect("LCM SQL thread being joined has panicked");
+    status_handle.join().expect("Status SQL thread being joined has panicked");
 }
 
-fn Lcm(host: &String, cabs: &Vec<Cab>, orders: &Vec<Order>, max_route_id: &mut i64, max_leg_id: &mut i64, howMany: i16) 
+fn lcm(host: &String, cabs: &Vec<Cab>, orders: &Vec<Order>, max_route_id: &mut i64, max_leg_id: &mut i64, how_many: i16) 
                                 -> thread::JoinHandle<()> {
-    let BIG_COST: i32 = 1000000;
-    if howMany < 1 { // we would like to find at least one
-        println!("LCM asked to do nothing");
+    let big_cost: i32 = 1000000;
+    if how_many < 1 { // we would like to find at least one
+        warn!("LCM asked to do nothing");
         return thread::spawn(|| { });
     }
     let mut cabs_cpy = cabs.to_vec();
     let mut orders_cpy = orders.to_vec();
-    let mut lcmMinVal = BIG_COST;
+    let mut lcm_min_val;
     let mut pairs: Vec<(i16,i16)> = vec![];
-    for i in 0..howMany { // we need to repeat the search (cut off rows/columns) 'howMany' times
-        lcmMinVal = BIG_COST;
+    for _ in 0..how_many { // we need to repeat the search (cut off rows/columns) 'howMany' times
+        lcm_min_val = big_cost;
         let mut smin: i16 = -1;
         let mut dmin: i16 = -1;
         // now find the minimal element in the whole matrix
@@ -233,15 +245,15 @@ fn Lcm(host: &String, cabs: &Vec<Cab>, orders: &Vec<Order>, max_route_id: &mut i
                 continue;
             }
             for (d, order) in orders_cpy.iter().enumerate() {
-                if order.id != -1 && (distance::DIST[cab.location as usize][order.from as usize] as i32) < lcmMinVal {
-                    lcmMinVal = distance::DIST[cab.location as usize][order.from as usize] as i32;
+                if order.id != -1 && (distance::DIST[cab.location as usize][order.from as usize] as i32) < lcm_min_val {
+                    lcm_min_val = distance::DIST[cab.location as usize][order.from as usize] as i32;
                     smin = s as i16;
                     dmin = d as i16;
                 }
             }
         }}
-        if lcmMinVal == BIG_COST {
-            println!("LCM minimal cost is BIG_COST - no more interesting stuff here");
+        if lcm_min_val == big_cost {
+            info!("LCM minimal cost is big_cost - no more interesting stuff here");
             break;
         }
         // binding cab to the customer order
@@ -250,46 +262,50 @@ fn Lcm(host: &String, cabs: &Vec<Cab>, orders: &Vec<Order>, max_route_id: &mut i
         cabs_cpy[smin as usize].id = -1;
         orders_cpy[dmin as usize].id = -1;
     }
-    let sql = repo::assignCustToCabLCM(pairs, &cabs, &orders, max_route_id, max_leg_id);
-    return getHandle(host.clone(), sql, "LCM".to_string());
+    let sql = repo::assign_cust_to_cab_lcm(pairs, &cabs, &orders, max_route_id, max_leg_id);
+    return get_handle(host.clone(), sql, "LCM".to_string());
 }
 
 fn shrink (cabs: &Vec<Cab>, orders: Vec<Order>) -> (Vec<Cab>, Vec<Order>) {
-    let mut newCabs: Vec<Cab> = vec![];
-    let mut newOrders: Vec<Order> = vec![];
+    let mut new_cabs: Vec<Cab> = vec![];
+    let mut new_orders: Vec<Order> = vec![];
     // v.iter().filter(|x| x % 2 == 0).collect() ??
     for c in cabs.iter() { 
-        if c.id != -1 { newCabs.push(*c); }
+        if c.id != -1 { new_cabs.push(*c); }
     }
     for o in orders.iter() { 
-        if o.id != -1 { newOrders.push(*o); }
+        if o.id != -1 { new_orders.push(*o); }
     }
-    return (newCabs, newOrders);
+    return (new_cabs, new_orders);
 }
 
-fn countOrders(pl: Vec<Branch>, orders: &Vec<Order>) -> i32 {
-    let mut countInBranches = 0;
-    let mut countInOrders = 0;
+fn count_orders(pl: Vec<Branch>, orders: &Vec<Order>) -> i32 {
+    let mut count_in_branches = 0;
+    let mut count_in_orders = 0;
     for b in pl.iter() {
-        for o in 0..b.ordNumb as usize {
-            if b.ordActions[o] == 'i' as i8 { // do not count twice
-                if orders[b.ordIDs[o] as usize].id == -1 {
-                    countInOrders += 1;
+        for o in 0..b.ord_numb as usize {
+            if b.ord_actions[o] == 'i' as i8 { // do not count twice
+                if orders[b.ord_ids[o] as usize].id == -1 {
+                    count_in_orders += 1;
                 }
-                countInBranches += 1;
+                count_in_branches += 1;
             }
         }
     }
-    if countInBranches != countInOrders {
+    if count_in_branches != count_in_orders {
         panic!("Error! Number of orders marked as assigned ({}) does not equal orders in branches: {}",
-            countInOrders, countInBranches);
+            count_in_orders, count_in_branches);
     }
-    return countInBranches;
+    return count_in_branches;
 }
 
 fn find_extern_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<Stop>, threads: i32,
                     max_route_id: &mut i64, max_leg_id: &mut i64) -> (Vec<Branch>, String) {
     let mut ret: Vec<Branch> = Vec::new();  
+    if demand.len() > MAXORDERSNUMB || cabs.len() > MAXCABSNUMB {
+        error!("Demand or supply too big, accordingly {} and {}", demand.len(), cabs.len());
+        return (ret, "".to_string());
+    }
     let orders: [OrderTransfer; MAXORDERSNUMB] = orders_to_transfer_array(&demand);
     let mut br: [Branch; MAXBRANCHNUMB] = [Branch::new(); MAXBRANCHNUMB];
     let mut cnt: i32 = 0;  
@@ -309,15 +325,29 @@ fn find_extern_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<St
             &mut cnt // returned count of values
         );
     }
+  /*  for i in 0 .. cnt as usize {
+        let mut str: String = String::from("");
+        str += &format!("{}: cost={}, outs={}, ordNumb={}, cab={},(", i, br[i].cost, br[i].outs, br[i].ord_numb, br[i].cab);
+        for j in 0.. br[i].ord_numb {
+            str += &format!("{}{},", br[i].ord_ids[j as usize], br[i].ord_actions[j as usize]);
+        }
+        str += &format!(")\n");
+        info!("{}", str);
+    }
+*/
     let mut sql: String = String::from("");
     for i in 0 .. cnt as usize {
+        if br[i].cab == -1 || br[i].cab >= cabs.len() as i32 {
+            error!("Wrong cab index: {}, array len: {}, array index: {}", br[i].cab, cnt, i);
+            continue;
+        }
         ret.push(br[i]); // just convert to vec
-        sql += &assignPoolToCab(cabs[br[i].cab as usize], &orders_to_array(&demand), br[i], max_route_id, max_leg_id);
+        sql += &assign_pool_to_cab(cabs[br[i].cab as usize], &orders_to_array(&demand), br[i], max_route_id, max_leg_id);
         // remove the cab from list so that it cannot be allocated twice, by LCM or Munkres
         cabs[br[i].cab as usize].id = -1;
         // mark orders as assigned too
-        for o in 0..br[i].ordNumb as usize {
-            demand[br[i].ordIDs[o] as usize].id = -1;
+        for o in 0..br[i].ord_numb as usize {
+            demand[br[i].ord_ids[o] as usize].id = -1;
         }
     }
     //  RUN SQL
@@ -328,30 +358,30 @@ fn prepare_data(client: &mut Client) -> Option<(Vec<Order>, Vec<Cab>)> {
     let mut orders = repo::find_orders_by_status_and_time(
                 client, OrderStatus::RECEIVED , Local::now() - Duration::minutes(5));
     if orders.len() == 0 {
-        println!("No demand");
+        info!("No demand");
         return None;
     }
-    println!("Orders, input: {}", orders.len());
+    info!("Orders, input: {}", orders.len());
     
-//    orders = expire_orders(client, &orders);
+    orders = expire_orders(client, &orders);
     if orders.len() == 0 {
-        println!("No demand, expired");
+        info!("No demand, expired");
         return None;
     }
     let mut cabs = repo::find_cab_by_status(client, CabStatus::FREE);
     if orders.len() == 0 || cabs.len() == 0 {
-        println!("No cabs available");
+        warn!("No cabs available");
         return None;
     }
-    println!("Initial count, demand={}, supply={}", orders.len(), cabs.len());
-    orders = getRidOfDistantCustomers(&orders, &cabs);
+    info!("Initial count, demand={}, supply={}", orders.len(), cabs.len());
+    orders = get_rid_of_distant_customers(&orders, &cabs);
     if orders.len() == 0 {
-      println!("No suitable demand, too distant");
+      info!("No suitable demand, too distant");
       return None; 
     }
-    cabs = getRidOfDistantCabs(&orders, &cabs);
+    cabs = get_rid_of_distant_cabs(&orders, &cabs);
     if cabs.len() == 0 {
-      println!("No cabs available, too distant");
+      info!("No cabs available, too distant");
       return None; 
     }
     return Some((orders, cabs));
@@ -365,38 +395,31 @@ fn expire_orders(client: &mut Client, demand: & Vec<Order>) -> Vec<Order> {
       //if (o.getCustomer() == null) {
       //  continue; // TODO: how many such orders? the error comes from AddOrderAsync in API, update of Customer fails
       //}
-        let minutesRcvd = get_elapsed(o.received);
-        let minutesAt : i64 = get_elapsed(o.at_time);
+        let minutes_rcvd = get_elapsed(o.received)/60;
+        let minutes_at : i64 = get_elapsed(o.at_time)/60;
         unsafe {
-        if (minutesAt == -1 && minutesRcvd > cnfg.max_assign_time)
-                    || (minutesAt != -1 && minutesAt > cnfg.max_assign_time) {
+        if (minutes_at == -1 && minutes_rcvd > CNFG.max_assign_time)
+                    || (minutes_at != -1 && minutes_at > CNFG.max_assign_time) {
             ids = ids + &o.id.to_string() + &",".to_string();
         } else {
             ret.push(*o);
         }}
     }
     if ids.len() > 0 {
-      let sql = ids[0..ids.len() - 1].to_string(); // remove last comma
-      client.execute(
-        "UPDATE taxi_order SET status=6 WHERE id IN ($1);\n", &[&sql]); //OrderStatus.REFUSED
-      println!("{} refused, max assignment time exceeded", &ids);
+        let sql = ids[0..ids.len() - 1].to_string(); // remove last comma
+        match client.execute(
+            "UPDATE taxi_order SET status=6 WHERE id IN ($1);\n", &[&sql]) { //OrderStatus.REFUSED
+            Ok(_) => {}
+            Err(err) => {
+                warn!("Expire orders failed for {}, err: {}", sql, err);
+            }
+        }
+        debug!("{} refused, max assignment time exceeded", &ids);
     }
     return ret;
 }
 
-fn get_elapsed(val: Option<SystemTime>) -> i64 {
-    match val {
-        Some(x) => { 
-            match x.elapsed() {
-                Ok(elapsed) => (elapsed.as_secs()/60) as i64,
-                Err(_) => -1
-            }
-        }
-        None => -1
-    }
-}
-
-fn getRidOfDistantCustomers(demand: &Vec<Order>, supply: &Vec<Cab>) -> Vec<Order> {
+fn get_rid_of_distant_customers(demand: &Vec<Order>, supply: &Vec<Cab>) -> Vec<Order> {
     let mut ret: Vec<Order> = Vec::new();
     for o in demand.iter() {
       for c in supply.iter() {
@@ -412,7 +435,7 @@ fn getRidOfDistantCustomers(demand: &Vec<Order>, supply: &Vec<Cab>) -> Vec<Order
     return ret;
 }
 
-fn getRidOfDistantCabs(demand: &Vec<Order>, supply: &Vec<Cab>) -> Vec<Cab> {
+fn get_rid_of_distant_cabs(demand: &Vec<Order>, supply: &Vec<Cab>) -> Vec<Cab> {
     let mut ret: Vec<Cab> = Vec::new();
     for c in supply.iter() {
         for o in demand.iter() {
