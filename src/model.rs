@@ -1,4 +1,4 @@
-use std::time::{SystemTime};
+use std::time::SystemTime;
 
 pub const MAXSTOPSNUMB : usize = 5200;
 pub const MAXORDERSNUMB: usize = 2000;

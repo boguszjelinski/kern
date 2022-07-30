@@ -257,7 +257,6 @@ void rmFinalDuplicates(int inPool) {
     int size = nodeSize[lev];
     Branch *arr = node[lev];
     register Branch *ptr;
-    retCount = 0;
     if (nodeSize[lev] < 1) return;
 
     qsort(arr, size, sizeof(Branch), compareCost);
