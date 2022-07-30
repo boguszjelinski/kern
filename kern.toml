@@ -1,4 +1,4 @@
-db_conn = "postgresql://kabina:kaboot@localhost:5432/kabina"
+db_conn = "postgresql://kabina:kaboot@192.168.10.176:5432/kabina"
 run_after = 15
 max_assign_time = 3
 max_solver_size = 500
