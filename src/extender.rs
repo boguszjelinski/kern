@@ -1,5 +1,5 @@
 use std::thread;
-use log::{debug,info};
+use log::{debug,info,error};
 use std::io::Write;
 use postgres::{Client, NoTls};
 use crate::model::{ Order, Stop, Leg, RouteStatus };
@@ -10,15 +10,17 @@ use crate::pool::bearing_diff;
 use crate::stats::{add_avg_element, Stat};
 use crate::utils::get_elapsed;
 
-//#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy)]
 struct LegIndicesWithDistance {
     idx_from: i32,
     idx_to: i32, 
-    dist: i32
+    dist: i32,
+    order: Order
 }
 
-pub fn find_matching_routes(itr: i32, host: &String, client: &mut Client, demand: &Vec<Order>, stops: &Vec<Stop>, 
+pub fn find_matching_routes(thr_numb: i32, itr: i32, host: &String, client: &mut Client, demand: &Vec<Order>, stops: &Vec<Stop>, 
                             max_leg_id: &mut i64) -> (Vec<Order>, thread::JoinHandle<()>) {
+    let mut t_numb = thr_numb;
     if demand.len() == 0 {
         return (Vec::new(), thread::spawn(|| { }));
     }
@@ -29,15 +31,68 @@ pub fn find_matching_routes(itr: i32, host: &String, client: &mut Client, demand
     info!("findMatchingRoutes START, orders count={} legs count={}", demand.len(), legs.len());
     let mut ret: Vec<Order> = Vec::new();
     let mut sql_bulk: String = String::from("");
-    for taxi_order in demand.iter() {
-        let sql: String = try_to_extend_route(&taxi_order, &mut legs, &stops, max_leg_id);
-        if sql == "nope" { // if not matched or extended
-            ret.push(*taxi_order); // it will go to pool finder
-        } else {
-            sql_bulk += &(sql + "\n");
+    let mut feasible: Vec<LegIndicesWithDistance> = Vec::new();
+    let mut extended: Vec<i32> = vec![]; // to help skip legs indices, feasible extensions which match other extensions 
+    let mut children = vec![];
+
+    // divide the task into threads
+    let chunk_size: f32 = demand.len() as f32 / t_numb as f32;
+    if ((t_numb as f32 * chunk_size).round() as i16) < demand.len() as i16 { 
+      t_numb += 1; 
+    } // last thread will be the reminder of division
+    
+    for i in 0..t_numb { 
+      let orders = demand.to_vec();
+      let bus_stops = stops.to_vec();
+      let legs_cpy = legs.to_vec();
+
+      children.push(thread::spawn(move || {
+        let mut part_feas: Vec<LegIndicesWithDistance> = Vec::new();
+        let mut part_order: Vec<Order> = Vec::new();
+        let start = (i as f32 * chunk_size).round() as i32;
+        let mut stop = ((i + 1) as f32 * chunk_size).round() as i32;
+        stop = if stop > orders.len() as i32 { orders.len() as i32 } else { stop };
+
+        for o in start..stop {
+            let taxi_order = orders[o as usize];
+            let feas = try_to_extend_route(&taxi_order, &legs_cpy, &bus_stops);
+            match feas {
+              Some(x) => part_feas.push(x),
+              None => part_order.push(taxi_order) // it will go to pool
+            }
         }
+        return (part_feas, part_order);
+      }));
+    }
+
+    for handle in children {
+      let mut cpy : (Vec<LegIndicesWithDistance>, Vec<Order>) = handle.join().unwrap();
+      feasible.append(&mut cpy.0);
+      ret.append(&mut cpy.1);
+    }
+
+    let mut count_skipped = 0;
+    for f in feasible.iter() {
+      // TASK: MAX LOSS check
+      if extended.contains(&f.idx_from) || extended.contains(&f.idx_to) {
+        ret.push(f.order); // this feasible case colides with other, which modified a leg
+        count_skipped += 1;
+        continue;
+      }
+      let from_leg: Leg = legs[f.idx_from as usize];
+      let to_leg: Leg = legs[f.idx_to as usize];
+      if f.order.from != from_leg.from { // leg will be added
+        extended.push(f.idx_from);
+      }
+      if f.order.to != to_leg.to { 
+        extended.push(f.idx_to);
+      } 
+      sql_bulk += &modify_legs(f, max_leg_id, &mut legs);
     }
     info!("findMatchingRoutes STOP, rest orders count={}", ret.len());
+    if count_skipped > 0 {
+      info!("Matching but skipped by extender: {}", count_skipped);
+    }
     write_sql_to_file(itr, &sql_bulk, "route_extender");
     // EXECUTE SQL !!
     let handle = get_handle(host.clone(), sql_bulk, "extender".to_string());
@@ -45,13 +100,14 @@ pub fn find_matching_routes(itr: i32, host: &String, client: &mut Client, demand
 }
 
 pub fn write_sql_to_file(itr: i32, sql: &String, label: &str) {
-  let file_name = format!("{}-{}.sql", label.to_string(), itr);
+  /*let file_name = format!("{}-{}.sql", label.to_string(), itr);
   let msg = format!("SQL for {} failed", file_name);
   let mut file = std::fs::File::create(&file_name).expect(&("Create ".to_string() + &msg));
   file.write_all(sql.as_bytes()).expect(&("Write ".to_string() + &msg));
+  */
 }
 
-fn try_to_extend_route(demand: & Order, legs: &mut Vec<Leg>, stops: &Vec<Stop>, max_leg_id: &mut i64) -> String {
+fn try_to_extend_route(demand: & Order, legs: &Vec<Leg>, stops: &Vec<Stop>) -> Option<LegIndicesWithDistance> {
     unsafe {
       let mut feasible: Vec<LegIndicesWithDistance> = Vec::new();
       let mut i = 1;
@@ -62,19 +118,23 @@ fn try_to_extend_route(demand: & Order, legs: &mut Vec<Leg>, stops: &Vec<Stop>, 
         // they can get aboard
         // TASK: MAX WAIT check
         let leg: Leg = legs[i];
+        if leg.id == -1 { // some bug in modify_leg / extends_legs_in_vec ?
+          i += 1;
+          continue;
+        }
         let not_too_long: bool = count_legs(leg.route_id, legs) <= CNFG.max_legs;
         if leg.status == RouteStatus::ASSIGNED as i32 || leg.status == RouteStatus::ACCEPTED as i32 {
           initial_distance += leg.dist as i16;
         }
-        if demand.from != leg.to // direct hit in the next leg
+        if demand.from != leg.to // direct hit in the next leg OUT
             // previous leg is from the same route
             && legs[i - 1].route_id == leg.route_id
             // the previous leg cannot be completed TASK!! in the future consider other statuses here
             && legs[i - 1].status != RouteStatus::COMPLETED as i32
             && (demand.from == leg.from // direct hit
               || (not_too_long
-                    && DIST[leg.from as usize][demand.from as usize] + DIST[demand.from as usize][leg.to as usize]
-                       < (leg.dist as f32 * CNFG.extend_margin) as i16
+                    && ((DIST[leg.from as usize][demand.from as usize] + DIST[demand.from as usize][leg.to as usize]) as f32)
+                       < (leg.dist as f32) * CNFG.extend_margin
                     && bearing_diff(stops[leg.from as usize].bearing, stops[demand.from as usize].bearing) < CNFG.max_angle
                     && bearing_diff(stops[demand.from as usize].bearing, stops[leg.to as usize].bearing) < CNFG.max_angle
                     ) // 5% TASK - global config, wait at stop?
@@ -91,7 +151,7 @@ fn try_to_extend_route(demand: & Order, legs: &mut Vec<Leg>, stops: &Vec<Stop>, 
             if i != k { // 'i' countet already
               distance_in_pool += legs[k].dist as i16;
             }
-            if !legs[k].route_id == leg.route_id {
+            if legs[k].route_id != leg.route_id {
               initial_distance = 0; // new route
               // won't find; this leg is the first leg in the next route and won't be checked as i++
               break;
@@ -101,9 +161,9 @@ fn try_to_extend_route(demand: & Order, legs: &mut Vec<Leg>, stops: &Vec<Stop>, 
               break;
             }
             if not_too_long
-                && DIST[legs[k].from as usize][demand.to as usize] 
-                   + DIST[demand.to as usize][legs[k].to as usize]
-                      < (legs[k].dist as f32 * CNFG.extend_margin) as i16
+                && ((DIST[legs[k].from as usize][demand.to as usize] 
+                   + DIST[demand.to as usize][legs[k].to as usize]) as f32)
+                      < (legs[k].dist as f32) * CNFG.extend_margin
                 && bearing_diff(stops[legs[k].from as usize].bearing, stops[demand.to as usize].bearing) < CNFG.max_angle
                 && bearing_diff(stops[demand.to as usize].bearing, stops[legs[k].to as usize].bearing) < CNFG.max_angle {
               // passenger is dropped before "getToStand", but the whole distance is counted above
@@ -120,7 +180,8 @@ fn try_to_extend_route(demand: & Order, legs: &mut Vec<Leg>, stops: &Vec<Stop>, 
               feasible.push(LegIndicesWithDistance{
                   idx_from: i as i32, 
                   idx_to: k as i32, 
-                  dist: (initial_distance + distance_in_pool) as i32
+                  dist: (initial_distance + distance_in_pool) as i32,
+                  order: *demand
               });
           }
           i = k;
@@ -129,47 +190,69 @@ fn try_to_extend_route(demand: & Order, legs: &mut Vec<Leg>, stops: &Vec<Stop>, 
       }
       // TASK: sjekk if demand.from == last leg.toStand - this might be feasible
       if feasible.len() == 0 { // empty
-          return "nope".to_string();
+          return None;
       }
       feasible.sort_by_key(|e| e.dist.clone());
-      // TASK: MAX LOSS check
-      return modify_leg(demand, legs, &mut feasible[0], max_leg_id);
+      return Some(feasible[0]); 
     }
   }
   
-fn modify_leg(demand: &Order, legs: &mut Vec<Leg>, idxs: &mut LegIndicesWithDistance, max_leg_id: &mut i64) -> String {
+fn modify_legs(f: &LegIndicesWithDistance, max_leg_id: &mut i64, legs: &mut Vec<Leg>) -> String {
+    let demand = f.order;
+    let from_leg: Leg = legs[f.idx_from as usize];
+
     // pickup phase
     let mut sql: String = String::from("");
-    let from_leg: Leg = legs[idxs.idx_from as usize];
     debug!("Order {} assigned to existing route: {}", demand.id, from_leg.route_id);
     if demand.from == from_leg.from { // direct hit, we don't modify that leg
       // TODO: eta should be calculated !!!!!!!!!!!!!!!!!!!!!
       sql += &assign_order_find_cab(demand.id, from_leg.id, from_leg.route_id, 0, "matchRoute IN");
     } else { 
-      sql += &extend_legs_in_db(&from_leg, demand.from, max_leg_id, "IN");
+      sql += &extend_legs_in_db(&from_leg, demand.from, from_leg.place, from_leg.id, max_leg_id, "IN");
       // now assign the order to the new leg
-      sql += &assign_order_find_leg_cab(demand.id, 
-                                  from_leg.place + 1, from_leg.route_id, 0, "extendRoute IN");
-
+      sql += &assign_order_find_cab(demand.id, *max_leg_id -1 , from_leg.route_id, 0, "extendRoute IN");
+      //sql += &assign_order_find_leg_cab(demand.id, 
+      //                            from_leg.place + 1, from_leg.route_id, 0, "extendRoute IN");
+      // modify 'legs' vector
+      update_places((f.idx_from + 1) as usize, legs);
       // now do it all in the copy of the database - "legs" vector
       // legs will be used for another order, the list must be updated
-      extends_legs_in_vec(from_leg, demand.from, idxs.idx_from, legs);
+      //extends_legs_in_vec(from_leg, demand.from, idxs.idx_from, legs, *max_leg_id - 1); // extend_legs executes create_leg, which increments id
     }
     add_avg_element(Stat::AvgOrderAssignTime, get_elapsed(demand.received));
     // drop-off phase
-    let to_leg: Leg = legs[idxs.idx_to as usize];
+    let mut to_leg: Leg = legs[f.idx_to as usize];
     if demand.to != to_leg.to { // one leg more, ignore situation with ==
-    sql += &extend_legs_in_db(&to_leg, demand.to, max_leg_id, "OUT");
-    extends_legs_in_vec(to_leg, demand.to, idxs.idx_to, legs);
+      // if from_leg == to_leg, which means we put a customer's 'from' and 'to'between to stops of a route,
+      // then two things change - one more leg there, 'place'+1, and we will modify the new leg inserted above, 
+      // not the leg stored in 'legs', the ID will differ
+      if f.idx_from == f.idx_to {
+        sql += &extend_legs_in_db(&to_leg, demand.to, to_leg.place + 1, *max_leg_id -1, max_leg_id, "OUT");
+      } else {
+        sql += &extend_legs_in_db(&to_leg, demand.to, to_leg.place, to_leg.id, max_leg_id, "OUT");
+      }
+      update_places((f.idx_to + 1) as usize, legs);
+      //extends_legs_in_vec(to_leg, demand.to, idxs.idx_to, legs, *max_leg_id - 1);
     }
     return sql;
 }
-  
-fn extends_legs_in_vec(leg: Leg, from: i32, idx:i32, legs: &mut Vec<Leg>) {
+
+fn update_places(idx: usize, legs: &mut Vec<Leg>) {
+  if idx >= legs.len() {
+    return; //nothing to correct
+  }
+  let mut i = idx;
+  while i < legs.len() && legs[i].place != 0  { // 0 means the next route, legs should be sorted
+    legs[i].place += 1; 
+    i += 1;
+  }
+}
+/*
+fn extends_legs_in_vec(leg: Leg, from: i32, idx:i32, legs: &mut Vec<Leg>, leg_id: i64) {
   unsafe {
     // new leg
     let new_leg = Leg { 
-        id: -1, // we don't know what it will be during insert
+        id: leg_id, // we don't know what it will be during insert
         route_id: leg.route_id,
         from: from,
         to: leg.to,
@@ -193,30 +276,30 @@ fn extends_legs_in_vec(leg: Leg, from: i32, idx:i32, legs: &mut Vec<Leg>) {
     }
   }
 }
-  
-fn extend_legs_in_db(leg: &Leg, from: i32, max_leg_id: &mut i64, label: &str) -> String {
+  */
+fn extend_legs_in_db(leg: &Leg, from: i32, place: i32, leg_id: i64, max_leg_id: &mut i64, label: &str) -> String {
   unsafe {
     let mut sql: String = String::from("");
-    debug!("new, extended {} leg, route {}, place {}", label, leg.route_id, leg.place + 1);
-    // we will add a new leg on "place", but there is already a leg with that place
-    // we have to increment place in that leg and in all subsequent ones
-    sql += &update_places_in_legs(leg.route_id, leg.place + 1);
+    debug!("new, extended {} leg, route {}, place {}", label, leg.route_id, place + 1);
+    // we will add a new leg on "place"
+    // we have to increment places in all subsequent legs
+    sql += &update_places_in_legs(leg.route_id, place + 1);
     // one leg more in that free place
     sql += &create_leg(from,
                         leg.to,
-                        leg.place + 1,
+                        place + 1,
                         RouteStatus::ASSIGNED,
                         DIST[from as usize][leg.to as usize],
                         leg.route_id as i64, 
                         max_leg_id, // TODO: all IDs should be i64
                         &("route extender ".to_string() + &label.to_string()));
 
-    // modify existing leg so that it goes to a new waypoint in-between
-    if leg.id != -1 {
-      sql += &update_leg_a_bit(leg.id, from, 
+    // modify existing leg (to_stand, dist) so that it goes to a new waypoint in-between
+    if leg_id != -1 {
+      sql += &update_leg_a_bit(leg_id, from, 
                 DIST[leg.from as usize][from as usize]);
     } else { // less efficient & more risky (there can always be a bug in "placing")
-      sql += &update_leg_with_route_id(leg.route_id, leg.place, from, 
+      sql += &update_leg_with_route_id(leg.route_id, place, from, 
                 DIST[leg.from as usize][from as usize]);
     }
     return sql;
@@ -253,3 +336,14 @@ pub fn get_handle(host: String, sql: String, label: String)  -> thread::JoinHand
   });
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_add() {
+      let mut legs: Vec<Leg> = vec![];
+      legs.push(Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 0, dist: 1, started: None, completed: None, status: 0});
+      assert_eq!(count_legs(123, &legs), 1);
+  }
+}

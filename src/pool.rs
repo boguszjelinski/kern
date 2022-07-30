@@ -62,10 +62,10 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16) -> Vec<Branch> {
 	if ((t_numb as f32 * chunk).round() as i16) < ORDERS_LEN as i16 { t_numb += 1; } // last thread will be the reminder of division
 	
     for i in 0..t_numb { // TASK: allocated orders might be spread unevenly -> count non-allocated and devide chunks ... evenly
-		let node = prev_node.to_vec(); //clone();
-		children.push(thread::spawn(move || {
-			iterate(lev as usize, in_pool, i, chunk, &node)
-        }));
+      let node = prev_node.to_vec(); //clone();
+      children.push(thread::spawn(move || {
+        iterate(lev as usize, in_pool, i, chunk, &node)
+      }));
     }
 	for handle in children {
 		let mut cpy : Vec<Branch> = handle.join().unwrap().to_vec();

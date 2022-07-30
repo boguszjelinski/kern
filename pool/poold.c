@@ -13,7 +13,7 @@
 time_t rawtime;
 struct tm * timeinfo;
 
-int maxInPool[3]= {151, 410, 800};
+int maxInPool[3]= {200, 500, 800};
 int inPool[3]= {4, 3, 2};
 
 short *distance;
@@ -72,13 +72,16 @@ void freeMem() {
 
 extern short dist(int row, int col);
 
-void dynapool(int numbThreads, 
+void dynapool(int numbThreads, int pool4size, int pool3size, int pool2size,
                 short *dista, int distSize,
                 Stop *stands, int stopsSize,
                 Order *orders, int ordersSize, 
                 Cab *cabs, int cabsSize, 
                 Branch *ret, int retSize, 
-                int *count
+                int *count,
+                int *pool4time, 
+                int *pool3time, 
+                int *pool2time
                 ) {
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
@@ -100,9 +103,27 @@ void dynapool(int numbThreads,
     stops = stands;
     retNode = ret;
 
+    maxInPool[0] = pool4size;
+    maxInPool[1] = pool3size;
+    maxInPool[2] = pool2size;
+    retCount = 0; // surprise - static variables keep value between calls, like a daemon
+    struct timeval begin, end;
+
     for (int i=0; i<3; i++)
-        if (demandNumb < maxInPool[i])
-            findPool(inPool[i], numbThreads); 
+      if (demandNumb < maxInPool[i]) {
+        gettimeofday(&begin, 0);
+        findPool(inPool[i], numbThreads); 
+        gettimeofday(&end, 0);
+        long seconds = end.tv_sec - begin.tv_sec;
+        long microseconds = end.tv_usec - begin.tv_usec;
+        double elapsed = seconds + microseconds*1e-6;
+        printf("Pool with %d took %f seconds\n", inPool[i], elapsed);
+        switch (i) {
+          case 0: *pool4time = elapsed; break;
+          case 1: *pool3time = elapsed; break;
+          case 2: *pool2time = elapsed; break;
+        }
+      }
     
     *count = retCount;
 

@@ -3,7 +3,7 @@
 #define MAXORDID MAXINPOOL*2
 #define MAXANGLE 120.0
 #define MAXNODE MAXINPOOL+MAXINPOOL-1
-#define MAXTHREADMEM 1000000
+#define MAXTHREADMEM 2000000
 
 #define true 1
 #define false 0
