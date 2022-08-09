@@ -42,7 +42,8 @@ DROP TABLE route CASCADE;
 CREATE TABLE route (
     id bigint NOT NULL,
     status integer,
-    cab_id bigint NOT NULL
+    cab_id bigint NOT NULL,
+    reserve integer,
 );
 ALTER TABLE route OWNER TO kabina;
 ALTER TABLE ONLY route ADD CONSTRAINT route_pkey PRIMARY KEY (id);

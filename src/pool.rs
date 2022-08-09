@@ -84,7 +84,8 @@ fn store_leaves() -> Vec<Branch> {
 		for d in 0..ORDERS_LEN {
 		  if ORDERS[d].id != -1 { // not allocated in previous search: inPool+1 (e.g. in_pool=4 and now we search in_pool=3)
 		 	// to situations: <1in, 1out>, <1out, 2out>
-		 	if c == d  {
+		 	if c == d
+         && bearing_diff(STOPS[ORDERS[c].from as usize].bearing, STOPS[ORDERS[d].to as usize].bearing) < CNFG.max_angle as f32  {
 			// IN and OUT of the same passenger, we don't check bearing as they are probably distant stops
 		 		ret.push(add_branch(c as i32, d as i32, 'i', 'o', 1));
 		 	} else if (DIST[ORDERS[c].to as usize][ORDERS[d].to as usize] as f32)
@@ -119,22 +120,11 @@ pub fn bearing_diff(a: i32, b: i32 ) -> f32 {
 }
 
 fn add_branch(id1: i32, id2: i32, dir1: char, dir2: char, outs: u8) -> Branch {
-    let mut br : Branch = Branch::new();
-    if id1 < id2 || (id1==id2 && dir1 == 'i') {
-		//br.key = sprintf!("%d%c%d%c", id1, dir1, id2, dir2).unwrap();
-        br.ord_ids_sorted[0] = id1;
-        br.ord_ids_sorted[1] = id2;
-        br.ord_actions_sorted[0] = dir1 as i8;
-        br.ord_actions_sorted[1] = dir2 as i8;
-    }
-    else if id1 > id2 || id1 == id2 {
-        br.ord_ids_sorted[0] = id2;
-        br.ord_ids_sorted[1] = id1;
-        br.ord_actions_sorted[0] = dir2 as i8;
-        br.ord_actions_sorted[1] = dir1 as i8;
-    }
+  let mut br : Branch = Branch::new();
 	unsafe {
-    	br.cost = DIST[ORDERS[id1 as usize].to as usize][ORDERS[id2 as usize].to as usize];
+      let from = ORDERS[id1 as usize].to as usize;
+      let to = ORDERS[id2 as usize].to as usize;
+    	br.cost = DIST[from][to] + if from == to { 0 } else { CNFG.stop_wait };
 	}
     br.outs = outs;
     br.ord_ids[0] = id1;
@@ -218,11 +208,12 @@ fn is_too_long(dist: i16, br: &Branch) -> bool {
         if br.ord_actions[i] == 'i' as i8 && wait > ORDERS[id].wait as i16 { return true; }
 		
         if i + 1 < br.ord_numb as usize {
-            wait += DIST[if br.ord_actions[i] == 'i' as i8 { ORDERS[id].from as usize} 
-							 else { ORDERS[id].to as usize }] 
-							[if br.ord_actions[i + 1] == 'i' as i8 { ORDERS[br.ord_ids[i + 1] as usize].from as usize }
-							 else { ORDERS[br.ord_ids[i + 1] as usize].to as usize } ];
-		}
+            let from = if br.ord_actions[i] == 'i' as i8 { ORDERS[id].from as usize} 
+                              else { ORDERS[id].to as usize };
+            let to = if br.ord_actions[i + 1] == 'i' as i8 { ORDERS[br.ord_ids[i + 1] as usize].from as usize }
+                         else { ORDERS[br.ord_ids[i + 1] as usize].to as usize };
+            wait += DIST[from][to] + if from == to { 0 } else { CNFG.stop_wait };
+		    }
     }
     return false;
 	}
@@ -236,20 +227,17 @@ fn store_branch(action: char, lev: u8, ord_id: i32, b: &Branch, in_pool: u8) -> 
     br.ord_numb = (in_pool + in_pool - lev) as i16;
     br.ord_ids[0] = ord_id;
     br.ord_actions[0] = action as i8;
-    br.ord_ids_sorted[0] = ord_id;
-    br.ord_actions_sorted[0] = action as i8;
-    
+
     for j in 0.. (br.ord_numb as usize - 1) { // further stage has one passenger less: -1
       br.ord_ids[j + 1]      = b.ord_ids[j];
       br.ord_actions[j + 1]  = b.ord_actions[j];
-      br.ord_ids_sorted[j + 1]= b.ord_ids[j];
-      br.ord_actions_sorted[j + 1] = b.ord_actions[j];
     }
 	unsafe {
-    br.cost = DIST[if action == 'i' { ORDERS[ord_id as usize].from as usize} 
-						else { ORDERS[ord_id as usize].to as usize }]
-                      [if b.ord_actions[0] == 'i' as i8 { ORDERS[b.ord_ids[0] as usize].from as usize} 
-					   else { ORDERS[b.ord_ids[0]as usize].to as usize} ] + b.cost;
+    let from = if action == 'i' { ORDERS[ord_id as usize].from as usize} 
+                   else { ORDERS[ord_id as usize].to as usize };
+    let to = if b.ord_actions[0] == 'i' as i8 { ORDERS[b.ord_ids[0] as usize].from as usize} 
+                   else { ORDERS[b.ord_ids[0]as usize].to as usize};
+    br.cost = DIST[from][to] + b.cost + if from == to { 0 } else { CNFG.stop_wait };
 	}
     br.outs = if action == 'o' { b.outs + 1 } else { b.outs };
     return br;
@@ -363,8 +351,9 @@ fn constraints_met(el: Branch, dist_cab: i32) -> bool {
       }
       let o2: Order = ORDERS[el.ord_ids[i+1] as usize];
       if i < el.ord_numb as usize - 1 {
-        dist += DIST[ if el.ord_actions[i] == ('i' as i8) { o.from as usize } else { o.to as usize }]
-                    [ if el.ord_actions[i + 1] == 'i' as i8 { o2.from as usize } else { o2.to as usize}] as i32;
+        let from = if el.ord_actions[i] == ('i' as i8) { o.from as usize } else { o.to as usize };
+        let to = if el.ord_actions[i + 1] == 'i' as i8 { o2.from as usize } else { o2.to as usize};
+        dist += DIST[from][to] as i32 + if from == to { 0 } else { CNFG.stop_wait as i32 };
       }
     }
     }

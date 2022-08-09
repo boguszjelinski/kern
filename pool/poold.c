@@ -13,7 +13,7 @@
 time_t rawtime;
 struct tm * timeinfo;
 
-int maxInPool[3]= {200, 500, 800};
+int maxInPool[3]= {160, 500, 800};
 int inPool[3]= {4, 3, 2};
 
 short *distance;
@@ -31,7 +31,7 @@ int cabsNumb;
 extern struct Branch;
 typedef struct Branch Branch;
 
-int memSize[MAXNODE] = {5000000, 14000000, 20000000, 20000000, 12000000, 1500000, 50000};
+int memSize[MAXNODE] = {5000000, 14000000, 16000000, 16000000, 12000000, 1500000, 50000};
 Branch *node[MAXNODE];
 int nodeSize[MAXNODE];
 int nodeSizeSMP[NUMBTHREAD];

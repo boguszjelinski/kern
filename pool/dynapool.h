@@ -1,9 +1,11 @@
 #define NUMBTHREAD 9
 #define MAXINPOOL 4
 #define MAXORDID MAXINPOOL*2
-#define MAXANGLE 120.0
 #define MAXNODE MAXINPOOL+MAXINPOOL-1
-#define MAXTHREADMEM 2000000
+#define MAXTHREADMEM 4000000
+
+#define MAXANGLE 120.0
+#define STOP_WAIT 1 // minute, how long it takes at a bus stop
 
 #define true 1
 #define false 0
@@ -45,8 +47,6 @@ struct Branch {
   short ordNumb; // it is in fact ord number *2; length of vectors below - INs & OUTs
   int ordIDs[MAXORDID]; // we could get rid of it to gain on memory (key stores this too); but we would lose time on parsing
   char ordActions[MAXORDID];
-  int ordIDsSorted[MAXORDID]; 
-  char ordActionsSorted[MAXORDID];
   int cab;
 };
 
