@@ -46,18 +46,15 @@ void storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inP
     ptr->ordNumb = inPool + inPool - lev;
     ptr->ordIDs[0] = ordId;
     ptr->ordActions[0] = action;
-    ptr->ordIDsSorted[0] = ordId;
-    ptr->ordActionsSorted[0] = action;
     // ? memcpy
     for (int j = 0; j < ptr->ordNumb - 1; j++) { // further stage has one passenger less: -1
       ptr->ordIDs[j + 1]      = b->ordIDs[j];
       ptr->ordActions[j + 1]  = b->ordActions[j];
-      ptr->ordIDsSorted[j + 1]= b->ordIDs[j];
-      ptr->ordActionsSorted[j + 1] = b->ordActions[j];
     }
     //sprintf (ptr->key, "%d%c%s", ordId, action, b->key);
-    ptr->cost = dist (action == 'i' ? demand[ordId].fromStand : demand[ordId].toStand,
-                      b->ordActions[0] == 'i' ? demand[b->ordIDs[0]].fromStand : demand[b->ordIDs[0]].toStand) + b->cost;
+    short from = action == 'i' ? demand[ordId].fromStand : demand[ordId].toStand;
+    short to = b->ordActions[0] == 'i' ? demand[b->ordIDs[0]].fromStand : demand[b->ordIDs[0]].toStand;
+    ptr->cost = dist(from, to) + b->cost + from == to ? 0 : STOP_WAIT;
     ptr->outs = action == 'o' ? b->outs + 1: b->outs;
     nodeSizeSMP[thread]++;
 }
@@ -121,19 +118,8 @@ void addBranch(int id1, int id2, char dir1, char dir2, int outs, int lev)
     }
     Branch *ptr = &node[lev][nodeSize[lev]];
 
-    if (id1 < id2 || (id1==id2 && dir1 == 'i')) {
-        ptr->ordIDsSorted[0] = id1;
-        ptr->ordIDsSorted[1] = id2;
-        ptr->ordActionsSorted[0] = dir1;
-        ptr->ordActionsSorted[1] = dir2;
-    }
-    else if (id1 > id2 || id1 == id2) {
-        ptr->ordIDsSorted[0] = id2;
-        ptr->ordIDsSorted[1] = id1;
-        ptr->ordActionsSorted[0] = dir2;
-        ptr->ordActionsSorted[1] = dir1;
-    }
-    ptr->cost = dist(demand[id1].toStand, demand[id2].toStand);
+    ptr->cost = dist(demand[id1].toStand, demand[id2].toStand) 
+                + demand[id1].toStand == demand[id2].toStand ? 0 : STOP_WAIT;
     ptr->outs = outs;
     ptr->ordIDs[0] = id1;
     ptr->ordIDs[1] = id2;
@@ -149,8 +135,8 @@ void storeLeaves(int lev) {
         for (int d = 0; d < demandNumb; d++)
           if (demand[d].id != -1) {
             // to situations: <1in, 1out>, <1out, 2out>
-            if (c == d)  {
-                // IN and OUT of the same passenger, we don't check bearing as they are probably distant stops
+            if (c == d && bearingDiff(stops[demand[c].fromStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)  {
+                // IN and OUT of the same passenger
                 addBranch(c, d, 'i', 'o', 1, lev);
             } else if (dist(demand[c].toStand, demand[d].toStand)
                         < dist(demand[d].fromStand, demand[d].toStand) * (100.0 + demand[d].maxLoss) / 100.0
@@ -216,14 +202,16 @@ int bearingDiff(int a, int b)
 
 boolean isTooLong(int wait, Branch *b)
 {
+    short from, to;
     for (int i = 0; i < b->ordNumb; i++) {
         if (wait >  //distance[demand[b->ordIDs[i]].fromStand][demand[b->ordIDs[i]].toStand] 
                 demand[b->ordIDs[i]].distance * (100.0 + demand[b->ordIDs[i]].maxLoss) / 100.0) 
                   return true;
         if (b->ordActions[i] == 'i' && wait > demand[b->ordIDs[i]].maxWait) return true;
+        from = b->ordActions[i] == 'i' ? demand[b->ordIDs[i]].fromStand : demand[b->ordIDs[i]].toStand;
+        to = b->ordActions[i + 1] == 'i' ? demand[b->ordIDs[i + 1]].fromStand : demand[b->ordIDs[i + 1]].toStand;
         if (i + 1 < b->ordNumb) 
-            wait += dist(b->ordActions[i] == 'i' ? demand[b->ordIDs[i]].fromStand : demand[b->ordIDs[i]].toStand,
-                         b->ordActions[i + 1] == 'i' ? demand[b->ordIDs[i + 1]].fromStand : demand[b->ordIDs[i + 1]].toStand);
+            wait += dist(from, to) + from == to ? 0 : STOP_WAIT;
     }
     return false;
 }
@@ -298,6 +286,7 @@ boolean constraintsMet(Branch *el, int distCab) {
   // TASK: distances in pool should be stored to speed-up this check
   int dst = 0;
   Order *o, *o2;
+  short from, to;
   for (int i = 0; i < el->ordNumb; i++) {
     o = &demand[el->ordIDs[i]];
     if (el->ordActions[i] == 'i' && dst + distCab > o->maxWait) {
@@ -307,9 +296,10 @@ boolean constraintsMet(Branch *el, int distCab) {
       return false;
     }
     o2 = &demand[el->ordIDs[i + 1]];
+    from = el->ordActions[i] == 'i' ? o->fromStand : o->toStand;
+    to = el->ordActions[i + 1] == 'i' ? o2->fromStand : o2->toStand;
     if (i < el->ordNumb - 1) {
-      dst += dist(el->ordActions[i] == 'i' ? o->fromStand : o->toStand,
-                  el->ordActions[i + 1] == 'i' ? o2->fromStand : o2->toStand);
+      dst += dist(from, to) + from == to ? 0 : STOP_WAIT;
     }
   }
   return true;

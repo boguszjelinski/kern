@@ -1,6 +1,7 @@
-use log::debug;
+use log::{debug, warn};
 use postgres::Client;
 use chrono::{DateTime, Local};
+use std::collections::HashMap;
 use std::time::SystemTime;
 use crate::model::{KernCfg,Order, OrderStatus, Stop, Cab, CabStatus, Leg, RouteStatus, Branch,MAXORDERSNUMB };
 use crate::distance::DIST;
@@ -16,7 +17,9 @@ pub static mut CNFG: KernCfg = KernCfg {
     extend_margin: 1.05,
     max_angle: 120.0,
     use_ext_pool: true,
-    thread_numb: 4
+    thread_numb: 4,
+    stop_wait: 1,
+    cab_speed: 60
 };
 
 pub fn find_orders_by_status_and_time(client: &mut Client, status: OrderStatus, at_time: DateTime<Local>) -> Vec<Order> {
@@ -98,6 +101,16 @@ pub fn find_legs_by_status(client: &mut Client, status: RouteStatus) -> Vec<Leg>
     }
     return ret;
 }
+
+pub fn find_routes_by_status(client: &mut Client, status: RouteStatus) -> HashMap<i64, i32> {
+    let mut ret: HashMap<i64, i32> = HashMap::new();
+    for row in client.query("SELECT id, reserve FROM route WHERE status = $1",
+                                 &[&(status as i32)]).unwrap() {
+        ret.insert(row.get(0), row.get(1));
+    }
+    return ret;
+}
+
 
 pub fn assign_order_find_cab(order_id: i64, leg_id: i64, route_id: i64, eta: i32, called_by: &str) -> String {   
     debug!("Assigning order_id={} to route_id={}, leg_id={}, routine {}",
@@ -203,9 +216,12 @@ fn assign_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16
     return sql;
 }
 
+
+
 fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Branch, mut eta: i16,
                                 max_leg_id: &mut i64, orders: &[Order; MAXORDERSNUMB]) -> String {
     //logPool2(cab, route_id, e);
+    let mut route_reserve: i16 = 16000; // we will decrease the number
     let mut sql: String = String::from("");
     for c in 0 .. (e.ord_numb - 1) as usize {
       let order = orders[e.ord_ids[c] as usize];
@@ -231,13 +247,38 @@ fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Br
                 sql += &assign_order_no_leg(order.id, cab_id, route_id, eta, "true", "assignOrdersAndSaveLegs2");
             }
             add_avg_element(Stat::AvgOrderAssignTime, get_elapsed(order.received));
+            let reserve = check_route_reserve(e, c, orders);
+            if reserve < route_reserve { route_reserve = reserve; }
         }
         if stand1 != stand2 {
             eta += dist;
         }
       }
     }
+    // reserve is number of minutes that can be utilized in route extender, MIN(individual reserves)
+    sql += &format!("UPDATE route SET reserve={} WHERE route_id={}", route_reserve, route_id).to_string();
     return sql;
+}
+
+// count individual reserve
+// just subtract the real distance from solo_distance * maxloss  
+fn check_route_reserve(e: Branch, start: usize, orders: &[Order; MAXORDERSNUMB]) -> i16 {
+  let mut dist: i16 = 0;
+  let o: Order = orders[e.ord_ids[start] as usize];
+  for c in start .. (e.ord_numb - 1) as usize {
+    let order: Order = orders[e.ord_ids[c] as usize];
+    if e.ord_actions[c] == 'o' as i8 && o.id == order.id {
+        return dist;
+    }
+    let stand1: i32 = if e.ord_actions[c] == 'i' as i8 { order.from } else { order.to };
+    let stand2: i32 = if e.ord_actions[c + 1] == 'i' as i8
+                      { orders[e.ord_ids[c + 1] as usize].from } else { orders[e.ord_ids[c + 1] as usize ].to } ;
+    if stand1 != stand2 { // there is movement
+        unsafe { dist += DIST[stand1 as usize][stand2 as usize]; }
+    }
+  }
+  warn!("check_route_reserve has not found OUT action for order_id={}, ", o.id);
+  return 0;
 }
 
 pub fn assign_cust_to_cab_lcm(sol: Vec<(i16,i16)>, cabs: &Vec<Cab>, demand: &Vec<Order>, max_route_id: &mut i64, 

@@ -117,6 +117,13 @@ impl RouteStatus {
     }
 }
 */
+
+#[derive(Clone)]
+pub struct Route {
+	pub id: i64,
+    pub reserve: i32
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Branch {
@@ -125,8 +132,6 @@ pub struct Branch {
 	pub ord_numb: i16, // it is in fact ord number *2; length of vectors below - INs & OUTs
 	pub ord_ids : [i32; MAXORDID], // we could get rid of it to gain on memory (key stores this too); but we would lose time on parsing
 	pub ord_actions: [i8; MAXORDID],
-	pub ord_ids_sorted: [i32; MAXORDID],
-	pub ord_actions_sorted: [i8; MAXORDID],
 	pub cab :i32
 }
 
@@ -138,8 +143,6 @@ impl Branch {
 			ord_numb: 0,
 			ord_ids: [0; MAXORDID],
 			ord_actions: [0; MAXORDID],
-			ord_ids_sorted: [0; MAXORDID],
-			ord_actions_sorted: [0; MAXORDID],
 			cab : -1
         }
     }
@@ -153,5 +156,7 @@ pub struct KernCfg{
     pub extend_margin: f32,
     pub max_angle: f32,
     pub use_ext_pool: bool,
-    pub thread_numb: i32
+    pub thread_numb: i32,
+    pub stop_wait: i16,
+    pub cab_speed: i8
 }

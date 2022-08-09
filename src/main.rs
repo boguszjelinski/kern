@@ -33,7 +33,7 @@ use log4rs::{
 const CFG_FILE_DEFAULT: &str = "kern.toml";
 
 fn main() -> Result<(), Error> {
-    println!("cargo:rustc-link-lib=dynapool39");
+    println!("cargo:rustc-link-lib=dynapool40");
     // reading Config
     let mut cfg_file: String = CFG_FILE_DEFAULT.to_string();
     let args: Vec<String> = env::args().collect();
@@ -64,6 +64,8 @@ fn main() -> Result<(), Error> {
             max_angle:       cfg["max_angle"].parse::<f32>().unwrap(),
             use_ext_pool:    cfg["use_ext_pool"].parse::<bool>().unwrap(),
             thread_numb:     cfg["thread_numb"].parse().unwrap(),
+            stop_wait:       cfg["stop_wait"].parse().unwrap(),
+            cab_speed:       cfg["cab_speed"].parse().unwrap(),
         };
     }
     setup_logger(cfg["log_file"].clone());
@@ -76,6 +78,8 @@ fn main() -> Result<(), Error> {
         info!("max_angle: {}", CNFG.max_angle);
         info!("use_ext_pool: {}", CNFG.use_ext_pool);
         info!("thread_numb: {}", CNFG.thread_numb);
+        info!("stop_wait: {}", CNFG.stop_wait);
+        info!("cab_speed: {}", CNFG.cab_speed);
     }
     // init DB
     let mut client = Client::connect(&db_conn_str, NoTls)?; // 192.168.10.176
@@ -133,7 +137,7 @@ fn setup_logger(file_path: String) {
             Root::builder()
                 .appender("logfile")
                 .appender("stderr")
-                .build(LevelFilter::Trace),
+                .build(LevelFilter::Info),
         )
         .unwrap();
 
@@ -144,7 +148,7 @@ fn setup_logger(file_path: String) {
     let _handle = log4rs::init_config(config);
 }
 
-#[link(name = "dynapool39")]
+#[link(name = "dynapool40")]
 extern "C" {
     fn dynapool(
 		numbThreads: i32,

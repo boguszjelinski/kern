@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::thread;
-use log::{debug,info,error};
-use std::io::Write;
+use log::{debug,info};
+//use std::io::Write;
 use postgres::{Client, NoTls};
 use crate::model::{ Order, Stop, Leg, RouteStatus };
-use crate::repo::{CNFG,find_legs_by_status,assign_order_find_cab,assign_order_find_leg_cab,update_places_in_legs,
-                  create_leg,update_leg_a_bit,update_leg_with_route_id};
+use crate::repo::{CNFG,find_legs_by_status,assign_order_find_cab, update_places_in_legs,
+                  create_leg,update_leg_a_bit,update_leg_with_route_id, find_routes_by_status};
 use crate::distance::DIST;
 use crate::pool::bearing_diff;
 use crate::stats::{add_avg_element, Stat};
@@ -25,10 +26,11 @@ pub fn find_matching_routes(thr_numb: i32, itr: i32, host: &String, client: &mut
         return (Vec::new(), thread::spawn(|| { }));
     }
     let mut legs: Vec<Leg> = find_legs_by_status(client, RouteStatus::ASSIGNED);
+    let mut routes: HashMap<i64, i32> = find_routes_by_status(client, RouteStatus::ASSIGNED);
     if legs.len() == 0 {
         return (demand.to_vec(), thread::spawn(|| { }));
     }
-    info!("findMatchingRoutes START, orders count={} legs count={}", demand.len(), legs.len());
+    info!("Extender START, orders count={} legs count={}", demand.len(), legs.len());
     let mut ret: Vec<Order> = Vec::new();
     let mut sql_bulk: String = String::from("");
     let mut feasible: Vec<LegIndicesWithDistance> = Vec::new();
@@ -45,6 +47,7 @@ pub fn find_matching_routes(thr_numb: i32, itr: i32, host: &String, client: &mut
       let orders = demand.to_vec();
       let bus_stops = stops.to_vec();
       let legs_cpy = legs.to_vec();
+      let routes_cpy = routes.clone();
 
       children.push(thread::spawn(move || {
         let mut part_feas: Vec<LegIndicesWithDistance> = Vec::new();
@@ -55,7 +58,7 @@ pub fn find_matching_routes(thr_numb: i32, itr: i32, host: &String, client: &mut
 
         for o in start..stop {
             let taxi_order = orders[o as usize];
-            let feas = try_to_extend_route(&taxi_order, &legs_cpy, &bus_stops);
+            let feas = try_to_extend_route(&taxi_order, &legs_cpy, &routes_cpy, &bus_stops);
             match feas {
               Some(x) => part_feas.push(x),
               None => part_order.push(taxi_order) // it will go to pool
@@ -81,6 +84,31 @@ pub fn find_matching_routes(thr_numb: i32, itr: i32, host: &String, client: &mut
       }
       let from_leg: Leg = legs[f.idx_from as usize];
       let to_leg: Leg = legs[f.idx_to as usize];
+      // first check once again if we have any reserve for that route
+      // as one route could be accepted for extension by different threads
+      let mut reserve: i32 = match routes.get(&from_leg.route_id) { // both legs have the same route_id
+        Some(x) => { *x }
+        None => 0
+      }; 
+      if f.order.from != from_leg.from { // leg will be added
+        unsafe {
+          reserve -= (DIST[from_leg.from as usize][f.order.from as usize] + DIST[f.order.from as usize][from_leg.to as usize]) as i32 
+                                - from_leg.dist;
+        }
+      }
+      if f.order.to != to_leg.to { 
+        unsafe {
+          reserve -= (DIST[to_leg.from as usize][f.order.from as usize] + DIST[f.order.from as usize][to_leg.to as usize]) as i32 
+                                - to_leg.dist;
+        }
+      } 
+      if reserve < 0 {
+        continue; // non-feasible extension
+      }
+      sql_bulk += &format!("UPDATE route SET reserve={} WHERE route_id={}", reserve, from_leg.route_id).to_string();
+      routes.remove(&from_leg.route_id); //
+      routes.insert(from_leg.route_id, reserve);
+
       if f.order.from != from_leg.from { // leg will be added
         extended.push(f.idx_from);
       }
@@ -88,8 +116,9 @@ pub fn find_matching_routes(thr_numb: i32, itr: i32, host: &String, client: &mut
         extended.push(f.idx_to);
       } 
       sql_bulk += &modify_legs(f, max_leg_id, &mut legs);
+      
     }
-    info!("findMatchingRoutes STOP, rest orders count={}", ret.len());
+    info!("Extender STOP, rest orders count={}", ret.len());
     if count_skipped > 0 {
       info!("Matching but skipped by extender: {}", count_skipped);
     }
@@ -107,34 +136,69 @@ pub fn write_sql_to_file(itr: i32, sql: &String, label: &str) {
   */
 }
 
-fn try_to_extend_route(demand: & Order, legs: &Vec<Leg>, stops: &Vec<Stop>) -> Option<LegIndicesWithDistance> {
+fn check_if_perfect_match_from(from: i32, legs: &Vec<Leg>, start: usize) -> usize {
+  let mut i = start;
+  while i<legs.len() && legs[i].route_id == legs[start].route_id {
+    if legs[i].from == from {
+      return i;
+    }
+    i += 1;
+  }
+  return start;
+}
+
+fn check_if_perfect_match_to(to: i32, legs: &Vec<Leg>, start: usize) -> usize {
+  let mut i = start;
+  while i<legs.len() && legs[i].route_id == legs[start].route_id {
+    if legs[i].to == to {
+      return i;
+    }
+    i += 1;
+  }
+  return start;
+}
+
+// this algo is not ideal, finds just first satisfying solution, but not the best
+
+fn try_to_extend_route(demand: &Order, legs: &Vec<Leg>, routes: &HashMap<i64, i32>, stops: &Vec<Stop>) -> Option<LegIndicesWithDistance> {
     unsafe {
       let mut feasible: Vec<LegIndicesWithDistance> = Vec::new();
-      let mut i = 1;
+      let mut i = check_if_perfect_match_from(demand.from, legs, 1); // we do not start at 0 as there must be at least one leg before 'not astarted', assigned
       let mut initial_distance: i16 = 0;
       while i < legs.len() {
-        // not from 0 as each leg we are looking for must have a predecessor
+        // not from 0 as each leg we are looking for must have a non-completed predecessor
         // routes from the same stand which have NOT started will surely be seen by passengers,
         // they can get aboard
         // TASK: MAX WAIT check
+
+        // firts find perfect match when new route to check
+        if legs[i].route_id != legs[i-1].route_id {
+          i = check_if_perfect_match_from(demand.from, legs, i);
+        }
         let leg: Leg = legs[i];
         if leg.id == -1 { // some bug in modify_leg / extends_legs_in_vec ?
           i += 1;
           continue;
         }
         let not_too_long: bool = count_legs(leg.route_id, legs) <= CNFG.max_legs;
-        if leg.status == RouteStatus::ASSIGNED as i32 || leg.status == RouteStatus::ACCEPTED as i32 {
-          initial_distance += leg.dist as i16;
-        }
-        if demand.from != leg.to // direct hit in the next leg OUT
+       
+        let mut dist_new_path = DIST[leg.from as usize][demand.from as usize] + DIST[demand.from as usize][leg.to as usize];
+        // with dist_allowed we get a reserve in the route, here we check maxloss of other orders
+        let mut dist_allowed = match routes.get(&leg.route_id) {
+          Some(x) => { *x }
+          None => 0
+        };
+        if demand.from != leg.to // == means direct hit in the next leg/iteration, leg.from; here we miss one possibility, where leg is the last leg in that route
             // previous leg is from the same route
             && legs[i - 1].route_id == leg.route_id
             // the previous leg cannot be completed TASK!! in the future consider other statuses here
             && legs[i - 1].status != RouteStatus::COMPLETED as i32
-            && (demand.from == leg.from // direct hit
+            // check MAXLOSS
+            && dist_allowed >= dist_new_path as i32 - leg.dist // new path - old path length; integers so it can even be negative :)
+            && ((demand.from == leg.from && demand.wait >= initial_distance as i32 )// direct hit and maxwait check
               || (not_too_long
-                    && ((DIST[leg.from as usize][demand.from as usize] + DIST[demand.from as usize][leg.to as usize]) as f32)
-                       < (leg.dist as f32) * CNFG.extend_margin
+                    && demand.wait >= (initial_distance + DIST[leg.from as usize][demand.from as usize]) as i32 // MAXWAIT
+                    && ((dist_new_path + CNFG.stop_wait) as f32) < (leg.dist as f32) * CNFG.extend_margin
                     && bearing_diff(stops[leg.from as usize].bearing, stops[demand.from as usize].bearing) < CNFG.max_angle
                     && bearing_diff(stops[demand.from as usize].bearing, stops[leg.to as usize].bearing) < CNFG.max_angle
                     ) // 5% TASK - global config, wait at stop?
@@ -143,10 +207,11 @@ fn try_to_extend_route(demand: & Order, legs: &Vec<Leg>, stops: &Vec<Stop>) -> O
         // to give some time for both parties to get the assignment
         {
           // OK, so we found the first 'pickup' leg, either direct hit or can be extended
+          dist_allowed -= dist_new_path as i32 - leg.dist;
           let mut to_found: bool = false;
           let mut distance_in_pool: i16 = 0;
           // we have found "from", now let's find "to"
-          let mut k = i; // "to might be in the same leg as "from", we have to start from 'i'
+          let mut k = check_if_perfect_match_to(demand.to, legs, i); // "to might be in the same leg as "from", we have to start from 'i'
           while k < legs.len() {
             if i != k { // 'i' countet already
               distance_in_pool += legs[k].dist as i16;
@@ -160,10 +225,10 @@ fn try_to_extend_route(demand: & Order, legs: &Vec<Leg>, stops: &Vec<Stop>) -> O
               to_found = true;
               break;
             }
+            dist_new_path = DIST[legs[k].from as usize][demand.to as usize] + DIST[demand.to as usize][legs[k].to as usize];
             if not_too_long
-                && ((DIST[legs[k].from as usize][demand.to as usize] 
-                   + DIST[demand.to as usize][legs[k].to as usize]) as f32)
-                      < (legs[k].dist as f32) * CNFG.extend_margin
+                && dist_allowed >= dist_new_path as i32
+                && ((dist_new_path + CNFG.stop_wait) as f32) < (legs[k].dist as f32) * CNFG.extend_margin
                 && bearing_diff(stops[legs[k].from as usize].bearing, stops[demand.to as usize].bearing) < CNFG.max_angle
                 && bearing_diff(stops[demand.to as usize].bearing, stops[legs[k].to as usize].bearing) < CNFG.max_angle {
               // passenger is dropped before "getToStand", but the whole distance is counted above
@@ -185,6 +250,9 @@ fn try_to_extend_route(demand: & Order, legs: &Vec<Leg>, stops: &Vec<Stop>) -> O
               });
           }
           i = k;
+        }
+        if leg.status == RouteStatus::ASSIGNED as i32 || leg.status == RouteStatus::ACCEPTED as i32 {
+          initial_distance += leg.dist as i16;
         }
         i += 1;
       }
@@ -346,4 +414,69 @@ mod tests {
       legs.push(Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 0, dist: 1, started: None, completed: None, status: 0});
       assert_eq!(count_legs(123, &legs), 1);
   }
+
+  #[test]
+  fn test_extend_legs_in_db_returns_sql() {
+    let leg = Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 0, dist: 1, started: None, completed: None, status: 0};
+    let max_leg_id: &mut i64 = &mut 1;
+    let sql = extend_legs_in_db(&leg, 2, 1, 123, max_leg_id, "label");
+    assert_eq!(sql, "UPDATE leg SET place=place+1 WHERE route_id=123 AND place >= 2;\n\
+        INSERT INTO leg (id, from_stand, to_stand, place, distance, status, route_id) VALUES (1,2,2,2,0,1,123);\n\
+        UPDATE leg SET to_stand=2, distance=0 WHERE id=123;\n");
+  }
+
+  #[test]
+  fn test_update_places() {
+    let mut legs: Vec<Leg> = vec![
+      Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 0, dist: 1, started: None, completed: None, status: 0},
+      Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: 1, started: None, completed: None, status: 0}
+    ];
+    update_places(1, &mut legs);
+    assert_eq!(legs[1].place, 2);
+  }
+
+  #[test]
+  fn test_try_to_extend_route_when_perfect_match() {
+    let legs: Vec<Leg> = vec![
+      Leg{ id: 0, route_id: 123, from: 0, to: 1, place: 0, dist: 1, started: None, completed: None, status: 0},
+      Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: 1, started: None, completed: None, status: 0},
+      Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 0, dist: 1, started: None, completed: None, status: 0},
+    ];
+    let order1= Order{ id: 1, 
+      from: 1,
+      to: 2,
+      wait: 10,loss: 50,dist: 2,shared: true,in_pool: false,received: None,started: None,completed: None,at_time: None,eta: 0,
+    };
+    let order2= Order{ id: 1, 
+      from: 1,
+      to: 3, // !!!
+      wait: 10,loss: 50,dist: 2,shared: true,in_pool: false,received: None,started: None,completed: None,at_time: None,eta: 0,
+    };
+    let stops: Vec<Stop> = vec![
+      Stop{ id: 0, bearing: 0, latitude: 1.0, longitude: 1.0},
+      Stop{ id: 1, bearing: 0, latitude: 1.000000001, longitude: 1.000000001},
+      Stop{ id: 2, bearing: 0, latitude: 1.000000002, longitude: 1.000000002},
+      Stop{ id: 3, bearing: 0, latitude: 1.000000003, longitude: 1.000000003}
+    ];
+    let mut indices: LegIndicesWithDistance = LegIndicesWithDistance {
+      idx_from: -1, idx_to: -1, dist: 0, order: order1
+    };
+    /*
+    match try_to_extend_route(&order1, &legs, &stops) {
+      Some(x) => indices = x,
+      None => {}
+    }
+    assert_eq!(indices.idx_from, 1);
+    assert_eq!(indices.idx_to, 1);
+   
+    match try_to_extend_route(&order2, &legs, &stops) {
+      Some(x) => indices = x,
+      None => {}
+    }
+    assert_eq!(indices.idx_from, 1);
+    assert_eq!(indices.idx_to, 2);
+    */
+  }
+  
+  
 }
