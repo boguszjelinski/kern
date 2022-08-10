@@ -3,7 +3,7 @@ use postgres::Client;
 use chrono::{DateTime, Local};
 use std::collections::HashMap;
 use std::time::SystemTime;
-use crate::model::{KernCfg,Order, OrderStatus, Stop, Cab, CabStatus, Leg, RouteStatus, Branch,MAXORDERSNUMB };
+use crate::model::{KernCfg,Order, OrderStatus, Stop, Cab, CabStatus, Leg, RouteStatus, Branch,MAXORDERSNUMB,MAXORDID};
 use crate::distance::DIST;
 use crate::stats::{STATS, Stat, add_avg_element};
 use crate::utils::get_elapsed;
@@ -139,6 +139,7 @@ pub fn assign_order_no_leg(order_id: i64, cab_id: i64, route_id: i64, eta: i16, 
         route_id, cab_id, eta, in_pool, order_id);
 }
 
+/*
 pub fn assign_order_find_leg_cab(order_id: i64, place: i32, route_id: i64, eta: i32, called_by: &str) -> String {   
     debug!("Assigning order_id={} to route_id={}, leg_id=UNKNOWN, place={}, routine {}",
                                             order_id, route_id, place, called_by);
@@ -148,6 +149,7 @@ pub fn assign_order_find_leg_cab(order_id: i64, place: i32, route_id: i64, eta: 
         AND o.id={} AND o.status=0;", // it might be cancelled in the meantime, we have to be sure. 
         route_id, eta, route_id, route_id, place, order_id);
 }
+*/
 
 pub fn create_leg(from: i32, to: i32, place: i32, status: RouteStatus, dist: i16,
                   route_id: i64, max_leg_id: &mut i64, called_by: &str) -> String {
@@ -201,7 +203,7 @@ fn assign_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16
     // alter table route alter column id add generated always as identity
     // ALTER TABLE route ADD PRIMARY KEY (id)
     // ALTER TABLE taxi_order ALTER COLUMN customer_id DROP NOT NULL;
-    sql += &format!("INSERT INTO route (id, status, cab_id) VALUES ({},{},{});\n", 
+    sql += &format!("INSERT INTO route (id, status, cab_id, reserve) VALUES ({},{},{},0);\n", // 0 will be updated soon
                     *max_route_id, 1, cab.id).to_string(); // 1=ASSIGNED
 
     if cab.location != order.from { // cab has to move to pickup the first customer
@@ -216,7 +218,16 @@ fn assign_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16
     return sql;
 }
 
-
+/*
+fn count_reserves(e: Branch, orders: &[Order; MAXORDERSNUMB]) -> [i16; MAXORDID] {
+    let ret: [i16; MAXORDID] = [0; MAXORDID];
+    // not all "c" values will produce legs below in "assign...", but we will use it as index for values -> ret[c]
+    for c in 0 .. (e.ord_numb - 1) as usize {
+        let mut reserve
+    }
+    return ret;
+}
+*/
 
 fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Branch, mut eta: i16,
                                 max_leg_id: &mut i64, orders: &[Order; MAXORDERSNUMB]) -> String {
@@ -256,25 +267,31 @@ fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Br
       }
     }
     // reserve is number of minutes that can be utilized in route extender, MIN(individual reserves)
-    sql += &format!("UPDATE route SET reserve={} WHERE route_id={}", route_reserve, route_id).to_string();
+    sql += &format!("UPDATE route SET reserve={} WHERE id={};", route_reserve, route_id).to_string();
     return sql;
 }
 
 // count individual reserve
 // just subtract the real distance from solo_distance * maxloss  
+// there are two cases
+// 1) we are checking an order which happens to have OUT in the last cell in ord_ids, we will not hit the first "if" in the loop 
+// 2) all others
 fn check_route_reserve(e: Branch, start: usize, orders: &[Order; MAXORDERSNUMB]) -> i16 {
   let mut dist: i16 = 0;
   let o: Order = orders[e.ord_ids[start] as usize];
   for c in start .. (e.ord_numb - 1) as usize {
     let order: Order = orders[e.ord_ids[c] as usize];
     if e.ord_actions[c] == 'o' as i8 && o.id == order.id {
-        return dist;
+        return (o.dist as f32 * (1.0 + o.loss as f32 / 100.0)) as i16 - dist;
     }
     let stand1: i32 = if e.ord_actions[c] == 'i' as i8 { order.from } else { order.to };
     let stand2: i32 = if e.ord_actions[c + 1] == 'i' as i8
                       { orders[e.ord_ids[c + 1] as usize].from } else { orders[e.ord_ids[c + 1] as usize ].to } ;
     if stand1 != stand2 { // there is movement
         unsafe { dist += DIST[stand1 as usize][stand2 as usize]; }
+    }
+    if c as i16 == e.ord_numb - 2 && o.id == orders[e.ord_ids[c+1] as usize].id { // last leg is always OUT
+        return (o.dist as f32 * (1.0 + o.loss as f32 / 100.0)) as i16 - dist;
     }
   }
   warn!("check_route_reserve has not found OUT action for order_id={}, ", o.id);
@@ -332,4 +349,70 @@ pub fn save_status() -> String {
         sql += &format!("UPDATE stat SET int_val={} WHERE UPPER(name)=UPPER('{}');", STATS[*s as usize], s.to_string());
     }}
     return sql;
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn init_test_data(order_count: u8) -> [Order; MAXORDERSNUMB] {
+    let stop_count = 8;
+    unsafe {
+        for i in 0..stop_count { DIST[i][i+1]= 2 ; }
+        for i in 0..order_count as usize { 
+            DIST[i][stop_count -1 -i] = 2*(stop_count -1 -i*2) as i16;
+        }
+    }
+    let o: Order = Order { id: 0, from: 0, to: stop_count as i32 - 1, wait: 10, loss: 90, dist: 7, shared: true, in_pool: true, 
+                            received: None, started: None, completed: None, at_time: None, eta: 10 };
+    let mut orders: [Order; MAXORDERSNUMB] = [o; MAXORDERSNUMB];
+    for i in 0..order_count as usize {
+        let to: i32 = stop_count as i32 -1 -i as i32;
+        unsafe{
+            orders[i] = Order { id: i as i64, from: i as i32, to: to, wait: 10, loss: 90, dist: DIST[i as usize][to as usize] as i32, 
+                            shared: true, in_pool: true, received: None, started: None, completed: None, at_time: None, eta: 10 };
+        }
+    }
+    return orders;
+  }
+
+  fn get_test_branch(order_count: u8) -> Branch {
+    let mut br: Branch = Branch::new();
+    br.cost = 1;
+    br.outs = order_count;
+    br.ord_numb = (order_count * 2) as i16;
+    br.ord_ids = [0,1,2,3,3,2,1,0];
+    br.ord_actions = ['i' as i8, 'i' as i8,'i' as i8,'i' as i8, 'o' as i8, 'o' as i8, 'o' as i8, 'o' as i8,];
+    br.cab = 0;
+    return br;
+  }
+
+  #[test]
+  fn test_assign_orders_and_save_legs() {
+    let place = 0;
+    let eta: i16 =0;
+    let mut max_leg_id: i64 =0;
+    let order_count = 4;
+
+    let br = get_test_branch(order_count);
+    
+    let orders = init_test_data(order_count);
+    
+    let sql = assign_orders_and_save_legs(0, 0, place, br, eta, &mut max_leg_id, &orders);
+    //println!("{}", sql);
+    assert_eq!(sql.contains("UPDATE route SET reserve=1 WHERE id=0"), true); //=1 as this is MIN of four reserves, see below the last assert
+  }
+
+  #[test]
+  fn test_check_route_reserve() {
+    let order_count = 4;
+    let br = get_test_branch(order_count);
+    let orders = init_test_data(order_count);
+    // this is a linear route, so we have to have 90% reserve of the shortest distance on that route
+    // 90% of 1 is 0 (truncated int)
+    // so therefore we had to use '2' as minimal distance
+    assert_eq!(check_route_reserve(br, 0, &orders), 12); // 14*90%-14 = 12.6 (solo*loss - actual duration)
+    assert_eq!(check_route_reserve(br, 3, &orders), 1); // 2*90%-1 = 1
+  }
+
 }

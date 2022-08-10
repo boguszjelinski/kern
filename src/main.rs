@@ -33,7 +33,7 @@ use log4rs::{
 const CFG_FILE_DEFAULT: &str = "kern.toml";
 
 fn main() -> Result<(), Error> {
-    println!("cargo:rustc-link-lib=dynapool40");
+    println!("cargo:rustc-link-lib=dynapool46");
     // reading Config
     let mut cfg_file: String = CFG_FILE_DEFAULT.to_string();
     let args: Vec<String> = env::args().collect();
@@ -148,7 +148,7 @@ fn setup_logger(file_path: String) {
     let _handle = log4rs::init_config(config);
 }
 
-#[link(name = "dynapool40")]
+#[link(name = "dynapool46")]
 extern "C" {
     fn dynapool(
 		numbThreads: i32,
@@ -368,9 +368,9 @@ fn find_extern_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<St
     unsafe {
         dynapool(
             threads,
-            200,
-            500,
-            800,
+            120,
+            300,
+            600,
             &DIST,
             MAXSTOPSNUMB as i32,
             &stops_to_array(&stops),
@@ -400,10 +400,16 @@ fn find_extern_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<St
     }
 */
     let mut sql: String = String::from("");
-    for i in 0 .. cnt as usize {
+    'outer: for i in 0 .. cnt as usize {
         if br[i].cab == -1 || br[i].cab >= cabs.len() as i32 {
             error!("Wrong cab index: {}, array len: {}, array index: {}", br[i].cab, cnt, i);
             continue;
+        }
+        for c in 0 .. br[i].ord_numb as usize {
+            if br[i].ord_ids[c] < 0 || br[i].ord_ids[c] as usize > MAXORDERSNUMB {
+                error!("Wrong order index: {}", br[i].ord_ids[c]);
+                continue 'outer;
+            }
         }
         ret.push(br[i]); // just convert to vec
         sql += &assign_pool_to_cab(cabs[br[i].cab as usize], &orders_to_array(&demand), br[i], max_route_id, max_leg_id);
@@ -427,7 +433,7 @@ fn prepare_data(client: &mut Client) -> Option<(Vec<Order>, Vec<Cab>)> {
     }
     info!("Orders, input: {}", orders.len());
     
-    //orders = expire_orders(client, &orders);
+    orders = expire_orders(client, &orders);
     if orders.len() == 0 {
         info!("No demand, expired");
         return None;

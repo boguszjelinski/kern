@@ -102,13 +102,15 @@ pub fn find_matching_routes(thr_numb: i32, itr: i32, host: &String, client: &mut
                                 - to_leg.dist;
         }
       } 
-      if reserve < 0 {
+      // !!!!!!!!!!!! test with this IF below
+/*      if reserve < 0 {
         continue; // non-feasible extension
       }
-      sql_bulk += &format!("UPDATE route SET reserve={} WHERE route_id={}", reserve, from_leg.route_id).to_string();
-      routes.remove(&from_leg.route_id); //
+     
+      sql_bulk += &format!("UPDATE route SET reserve={} WHERE id={};", reserve, from_leg.route_id).to_string();
+      routes.remove(&from_leg.route_id); // no update ?
       routes.insert(from_leg.route_id, reserve);
-
+*/
       if f.order.from != from_leg.from { // leg will be added
         extended.push(f.idx_from);
       }
