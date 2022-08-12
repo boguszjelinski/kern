@@ -182,7 +182,8 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, ret
 	
     if !in_found
         && out_found
-        && !is_too_long(DIST[ORDERS[id].from as usize][next_stop], br)
+        && !is_too_long('o', ord_id, DIST[ORDERS[id].from as usize][next_stop]
+                        + if ORDERS[id].from == next_stop as i32 { 0 } else { CNFG.stop_wait }, br)
         // TASK? if the next stop is OUT of passenger 'c' - we might allow bigger angle
         && bearing_diff(STOPS[ORDERS[id].from as usize].bearing, STOPS[next_stop].bearing) < CNFG.max_angle as f32
         { ret.push(store_branch('i', lev, ord_id, br, in_pool)); 
@@ -191,29 +192,33 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, ret
     if lev > 0 // the first stop cannot be OUT
         && br.outs < in_pool // numb OUT must be numb IN
         && !out_found // there is no such OUT later on
-        && !is_too_long(DIST[ORDERS[id].to as usize][next_stop], br)
+        && !is_too_long('o', ord_id, DIST[ORDERS[id].to as usize][next_stop]
+                        + if ORDERS[id].to == next_stop as i32 { 0 } else { CNFG.stop_wait }, br)
         && bearing_diff(STOPS[ORDERS[id].to as usize].bearing, STOPS[next_stop].bearing) < CNFG.max_angle as f32
         { ret.push(store_branch('o', lev, ord_id, br, in_pool)); 
 		}
 	}
 }
 
-fn is_too_long(dist: i16, br: &Branch) -> bool {
+fn is_too_long(action: char, ord_id: i32, dist: i16, br: &Branch) -> bool {
 	unsafe {
-	let mut wait = dist;
-    for i in 0..(br.ord_numb as usize) {
-		let id = br.ord_ids[i] as usize;
-        if wait as f32 >  //distance[orders[br.ordIDs[i]].fromStand][orders[br.ordIDs[i]].toStand] 
-            ORDERS[id].dist as f32 * (100.0 + ORDERS[id].loss as f32) / 100.0 { return true; }
-        if br.ord_actions[i] == 'i' as i8 && wait > ORDERS[id].wait as i16 { return true; }
-		
-        if i + 1 < br.ord_numb as usize {
-            let from = if br.ord_actions[i] == 'i' as i8 { ORDERS[id].from as usize} 
-                              else { ORDERS[id].to as usize };
-            let to = if br.ord_actions[i + 1] == 'i' as i8 { ORDERS[br.ord_ids[i + 1] as usize].from as usize }
-                         else { ORDERS[br.ord_ids[i + 1] as usize].to as usize };
-            wait += DIST[from][to] + if from == to { 0 } else { CNFG.stop_wait };
-		    }
+	  let mut wait = dist;
+    for i in 0..(br.ord_numb as usize) -1 {
+		  let id = br.ord_ids[i] as usize;
+      if br.ord_actions[i] == 'o' as i8 && action == 'i' && ord_id == br.ord_ids[i] &&
+        wait as f32 >  //distance[orders[br.ordIDs[i]].fromStand][orders[br.ordIDs[i]].toStand] 
+          ORDERS[id].dist as f32 * (100.0 + ORDERS[id].loss as f32) / 100.0 { return true; }
+      if br.ord_actions[i] == 'i' as i8 && wait > ORDERS[id].wait as i16 { return true; }
+
+      let from = if br.ord_actions[i] == 'i' as i8 { ORDERS[id].from as usize} 
+                        else { ORDERS[id].to as usize };
+      let to = if br.ord_actions[i + 1] == 'i' as i8 { ORDERS[br.ord_ids[i + 1] as usize].from as usize }
+                    else { ORDERS[br.ord_ids[i + 1] as usize].to as usize };
+      wait += DIST[from][to] + if from == to { 0 } else { CNFG.stop_wait };
+    }
+    if action == 'i' && ord_id == br.ord_ids[br.ord_numb as usize] &&
+      wait as f32 > ORDERS[ord_id as usize].dist as f32 * (100.0 + ORDERS[ord_id as usize].loss as f32) / 100.0 { 
+          return true; 
     }
     return false;
 	}
@@ -268,7 +273,7 @@ fn rm_final_duplicates(in_pool: usize, arr: &mut Vec<Branch>, mut max_route_id: 
         let dist_cab = DIST[CABS[cab_idx as usize].location as usize]
                           [ORDERS[arr[i].ord_ids[0] as usize].from as usize];
         if dist_cab == 0 // constraints inside pool are checked while "diving"
-                || constraints_met(arr[i], dist_cab as i32) {
+                || constraints_met(arr[i], (dist_cab + CNFG.stop_wait) as i32 ) {
             ret.push(arr[i]);
             // allocate
             sql += &assign_and_remove(arr, in_pool, i, cab_idx as usize, &mut max_route_id, &mut max_leg_id);
@@ -338,22 +343,18 @@ fn find_nearest_cab(o_idx: i32) -> i32 {
 
 fn constraints_met(el: Branch, dist_cab: i32) -> bool {
     // TASK: distances in pool should be stored to speed-up this check
-    let mut dist = 0;
+    let mut dist = dist_cab;
     unsafe {
-    for i in 0..el.ord_numb as usize {
+    for i in 0..el.ord_numb as usize -1 {
       let o: Order = ORDERS[el.ord_ids[i] as usize];
-      if el.ord_actions[i] == 'i' as i8 && dist + dist_cab > o.wait {
-        return false;
-      }
-      if el.ord_actions[i] == 'o' as i8 && dist as f32 > (1.0 + o.loss as f32 / 100.0) * o.dist as f32 {
-        // TASK: remove this calculation above, it should be stored
+      if el.ord_actions[i] == 'i' as i8 && dist > o.wait {
         return false;
       }
       let o2: Order = ORDERS[el.ord_ids[i+1] as usize];
-      if i < el.ord_numb as usize - 1 {
-        let from = if el.ord_actions[i] == ('i' as i8) { o.from as usize } else { o.to as usize };
-        let to = if el.ord_actions[i + 1] == 'i' as i8 { o2.from as usize } else { o2.to as usize};
-        dist += DIST[from][to] as i32 + if from == to { 0 } else { CNFG.stop_wait as i32 };
+      let from = if el.ord_actions[i] == ('i' as i8) { o.from as usize } else { o.to as usize };
+      let to = if el.ord_actions[i + 1] == 'i' as i8 { o2.from as usize } else { o2.to as usize};
+      if from != to {
+        dist += (DIST[from][to] + CNFG.stop_wait) as i32;
       }
     }
     }

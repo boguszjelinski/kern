@@ -54,9 +54,35 @@ void storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inP
     //sprintf (ptr->key, "%d%c%s", ordId, action, b->key);
     short from = action == 'i' ? demand[ordId].fromStand : demand[ordId].toStand;
     short to = b->ordActions[0] == 'i' ? demand[b->ordIDs[0]].fromStand : demand[b->ordIDs[0]].toStand;
-    ptr->cost = dist(from, to) + b->cost + from == to ? 0 : STOP_WAIT;
+    ptr->cost = dist(from, to) + (b->cost + from == to ? 0 : STOP_WAIT);
     ptr->outs = action == 'o' ? b->outs + 1: b->outs;
     nodeSizeSMP[thread]++;
+}
+
+// we need to check the following distances while iterating thru IDs
+// 1) if the new branch is 'i' then wait until 'o' with this ID and check max_loss against sum of distances 
+//    between ID-s ("if there is movement" takes more time than taking ZERO from DIST)
+//    We only need to check max_loss once when we put 'i' 
+// 2) while iterating if you encounter any 'i' check wait of that ID
+boolean isTooLong(int ordId, char oper, int start_wait, Branch *b) {
+  int from, to, wait;
+  wait = start_wait;
+  for (int i = 0; i < b->ordNumb - 1; i++) {
+      if (b->ordActions[i] == 'o' && oper == 'i' && ordId == b->ordIDs[i] &&
+          wait >  //distance[demand[b->ordIDs[i]].fromStand][demand[b->ordIDs[i]].toStand] 
+              demand[ordId].distance * (100.0 + demand[ordId].maxLoss) / 100.0) // this value could be stored, do not calculate each time
+                return true;
+      if (b->ordActions[i] == 'i' && wait > demand[b->ordIDs[i]].maxWait) 
+        return true;
+      from = b->ordActions[i] == 'i' ? demand[b->ordIDs[i]].fromStand : demand[b->ordIDs[i]].toStand;
+      to = b->ordActions[i + 1] == 'i' ? demand[b->ordIDs[i + 1]].fromStand : demand[b->ordIDs[i + 1]].toStand;
+      if (from != to) wait += dist(from, to) + STOP_WAIT;
+  }
+  // just check the last 'o', if it is the OUT of the order that we are checking now (with IN)
+  if (oper == 'i' && ordId == b->ordIDs[b->ordNumb - 1] &&
+      wait > demand[ordId].distance * (100.0 + demand[ordId].maxLoss) / 100.0) // this value could be stored, do not calculate each time
+          return true;
+  return false;
 }
 
 // branch is index of existing Branch in lev+1
@@ -83,7 +109,8 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
                     ? demand[ptr->ordIDs[0]].fromStand : demand[ptr->ordIDs[0]].toStand;
     if (!inFound
         && outFound
-        && !isTooLong(dist(demand[ordId].fromStand, nextStop), ptr)
+        && !isTooLong(ordId, 'i', dist(demand[ordId].fromStand, nextStop) 
+                                  + (demand[ordId].fromStand != nextStop ? STOP_WAIT : 0), ptr)
         // TASK? if the next stop is OUT of passenger 'c' - we might allow bigger angle
         && bearingDiff(stops[demand[ordId].fromStand].bearing, stops[nextStop].bearing) < MAXANGLE
         ) storeBranch(thread, 'i', lev, ordId, ptr, inPool);
@@ -91,14 +118,15 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
     if (lev > 0 // the first stop cannot be OUT
         && ptr->outs < inPool // numb OUT must be numb IN
         && !outFound // there is no such OUT later on
-        && !isTooLong(dist(demand[ordId].toStand, nextStop), ptr)
+        && !isTooLong(ordId, 'o', dist(demand[ordId].toStand, nextStop)
+                                + (demand[ordId].toStand != nextStop ? STOP_WAIT : 0), ptr)
         && bearingDiff(stops[demand[ordId].toStand].bearing, stops[nextStop].bearing) < MAXANGLE
         ) storeBranch(thread, 'o', lev, ordId, ptr, inPool);
 }
 
 void iterate(void *arguments) {
   struct arg_struct *ar = arguments;
-  int size = round((ar->i + 1) * ar->chunk) > demandNumb ? demandNumb : round((ar->i + 1) * ar->chunk);
+  int size = round(((ar->i + 1) * ar->chunk) > demandNumb) ? demandNumb : round((ar->i + 1) * ar->chunk);
   
   for (int ordId = round(ar->i * ar->chunk); ordId < size; ordId++) 
    if (demand[ordId].id != -1) { // not allocated in previous search (inPool+1)
@@ -110,8 +138,7 @@ void iterate(void *arguments) {
   }
 }
 
-void addBranch(int id1, int id2, char dir1, char dir2, int outs, int lev)
-{
+void addBranch(int id1, int id2, char dir1, char dir2, int outs, int lev) {
     if (nodeSize[lev] >= memSize[lev]) {
       printf("addBranch: allocated mem too low, level: %d\n", lev);
       return;
@@ -119,7 +146,7 @@ void addBranch(int id1, int id2, char dir1, char dir2, int outs, int lev)
     Branch *ptr = &node[lev][nodeSize[lev]];
 
     ptr->cost = dist(demand[id1].toStand, demand[id2].toStand) 
-                + demand[id1].toStand == demand[id2].toStand ? 0 : STOP_WAIT;
+                + (demand[id1].toStand == demand[id2].toStand ? 0 : STOP_WAIT);
     ptr->outs = outs;
     ptr->ordIDs[0] = id1;
     ptr->ordIDs[1] = id2;
@@ -153,71 +180,52 @@ void storeLeaves(int lev) {
           }
 }
 
-void dive(int lev, int inPool, int numbThreads)
-{
-    //printf("DIVE, inPool: %d, lev:%d\n", inPool, lev);
-    if (lev > inPool + inPool - 3) { // lev >= 2*inPool-2, where -2 are last two levels
-      storeLeaves(lev);
-      return; // last two levels are "leaves"
-    }
-    dive(lev + 1, inPool, numbThreads);
-    const float chunk = demandNumb / numbThreads;
-    if (round(numbThreads*chunk) < demandNumb) numbThreads++; // last thread will be the reminder of division
+void dive(int lev, int inPool, int numbThreads) {
+  //printf("DIVE, inPool: %d, lev:%d\n", inPool, lev);
+  if (lev > inPool + inPool - 3) { // lev >= 2*inPool-2, where -2 are last two levels
+    storeLeaves(lev);
+    return; // last two levels are "leaves"
+  }
+  dive(lev + 1, inPool, numbThreads);
+  const float chunk = demandNumb / numbThreads;
+  if (round(numbThreads*chunk) < demandNumb) numbThreads++; // last thread will be the reminder of division
 
-    for (int i = 0; i<numbThreads; i++) { // TASK: allocated orders might be spread unevenly -> count non-allocated and devide chunks ... evenly
-        args[i]->i = i; 
-        args[i]->chunk = chunk; 
-        args[i]->lev = lev; 
-        args[i]->inPool = inPool;
-        nodeSizeSMP[i] = 0;
-        if (pthread_create(&myThread[i], NULL, &iterate, args[i]) != 0) {
-            printf("Err creating thread %d!\n", i);
-        }
-    }
-    for (int i = 0; i<numbThreads; i++) {
-        pthread_join(myThread[i], NULL); // Wait until thread is finished 
-    }
-    int idx = 0;
-    for (int i = 0; i<numbThreads; i++) {
-        if (idx + nodeSizeSMP[i] >= memSize[lev]) {
-          printf("dive: allocated mem too low, level: %d\n", lev);
-          break;
-        }
-        memcpy(&node[lev][idx], nodeSMP[i], nodeSizeSMP[i] * sizeof(Branch));
-        idx += nodeSizeSMP[i];
-    }
-    nodeSize[lev] = idx;
+  for (int i = 0; i<numbThreads; i++) { // TASK: allocated orders might be spread unevenly -> count non-allocated and devide chunks ... evenly
+      args[i]->i = i; 
+      args[i]->chunk = chunk; 
+      args[i]->lev = lev; 
+      args[i]->inPool = inPool;
+      nodeSizeSMP[i] = 0;
+      if (pthread_create(&myThread[i], NULL, &iterate, args[i]) != 0) {
+          printf("Err creating thread %d!\n", i);
+      }
+  }
+  for (int i = 0; i<numbThreads; i++) {
+      pthread_join(myThread[i], NULL); // Wait until thread is finished 
+  }
+  int idx = 0;
+  for (int i = 0; i<numbThreads; i++) {
+      if (idx + nodeSizeSMP[i] >= memSize[lev]) {
+        printf("dive: allocated mem too low, level: %d\n", lev);
+        break;
+      }
+      memcpy(&node[lev][idx], nodeSMP[i], nodeSizeSMP[i] * sizeof(Branch));
+      idx += nodeSizeSMP[i];
+  }
+  nodeSize[lev] = idx;
 }
 
-int bearingDiff(int a, int b) 
-{
-    int r = (a - b) % 360;
-    if (r < -180.0) {
-      r += 360.0;
-    } else if (r >= 180.0) {
-      r -= 360.0;
-    }
-    return abs(r);
+int bearingDiff(int a, int b) {
+  int r = (a - b) % 360;
+  if (r < -180.0) {
+    r += 360.0;
+  } else if (r >= 180.0) {
+    r -= 360.0;
+  }
+  return abs(r);
 }
 
-boolean isTooLong(int wait, Branch *b)
-{
-    short from, to;
-    for (int i = 0; i < b->ordNumb; i++) {
-        if (wait >  //distance[demand[b->ordIDs[i]].fromStand][demand[b->ordIDs[i]].toStand] 
-                demand[b->ordIDs[i]].distance * (100.0 + demand[b->ordIDs[i]].maxLoss) / 100.0) 
-                  return true;
-        if (b->ordActions[i] == 'i' && wait > demand[b->ordIDs[i]].maxWait) return true;
-        from = b->ordActions[i] == 'i' ? demand[b->ordIDs[i]].fromStand : demand[b->ordIDs[i]].toStand;
-        to = b->ordActions[i + 1] == 'i' ? demand[b->ordIDs[i + 1]].fromStand : demand[b->ordIDs[i + 1]].toStand;
-        if (i + 1 < b->ordNumb) 
-            wait += dist(from, to) + from == to ? 0 : STOP_WAIT;
-    }
-    return false;
-}
-
-int compareCost(const void * a, const void * b)
-{
+int compareCost(const void * a, const void * b) {
   Branch *brA = (Branch *)a;
   Branch *brB = (Branch *)b;
   return brA->cost - brB->cost;
@@ -248,7 +256,7 @@ void rmFinalDuplicates(int inPool) {
     if (nodeSize[lev] < 1) return;
 
     qsort(arr, size, sizeof(Branch), compareCost);
-    
+
     for (int i = 0; i < size; i++) {
       ptr = arr + i;
       if (ptr->cost == -1) continue; // not dropped earlier or (!) later below
@@ -263,11 +271,12 @@ void rmFinalDuplicates(int inPool) {
       }
       distCab = dist(supply[cabIdx].location, from);
       if (distCab == 0 // constraints inside pool are checked while "diving" in recursion
-              || constraintsMet(ptr, distCab)) {
+              || constraintsMet(i, ptr, distCab + STOP_WAIT)) { // for the first passenger STOP_WAIT is wrong, but it will concern the others
         // hipi! we have a pool
         ptr->cab = cabIdx; // not supply[cabIdx].id as it is faster to reference it in Boot (than finding IDs)
         // mark cab and order ass allocated
         supply[ptr->cab].id = -1; // allocated
+
         for (int o=0; o < ptr->ordNumb; o++) // ordNumb is pool*2 but 'if' would cost more
           demand[ptr->ordIDs[o]].id = -1;
         if (retCount < retNumb) {
@@ -277,36 +286,30 @@ void rmFinalDuplicates(int inPool) {
         // remove any further duplicates
         for (int j = i + 1; j < size; j++)
           if (arr[j].cost != -1 && isFound(ptr, arr+j, inPool+inPool-1)) // -1 as last action is always OUT
-            arr[j].cost = -1; // duplicated; we remove an element with greater costs (list is pre-sorted)
+            arr[j].cost = -1; // duplicated; we remove an element with greater costs (list is pre-sorted)      
       } else ptr->cost = -1; // constraints not met, mark as unusable
     } 
 }
 
-boolean constraintsMet(Branch *el, int distCab) {
+// maxWait check only, maxLoss is checked in isTooLong
+boolean constraintsMet(int idx, Branch *el, int distCab) {
   // TASK: distances in pool should be stored to speed-up this check
-  int dst = 0;
+  int dst = distCab;
   Order *o, *o2;
-  short from, to;
-  for (int i = 0; i < el->ordNumb; i++) {
+  int from, to;
+  for (int i = 0; i < el->ordNumb -1; i++) {
     o = &demand[el->ordIDs[i]];
-    if (el->ordActions[i] == 'i' && dst + distCab > o->maxWait) {
+    if (el->ordActions[i] == 'i' && dst > o->maxWait) 
       return false;
-    }
-    if (el->ordActions[i] == 'o' && dst > (1 + o->maxLoss/100.0) * o->distance) { // TASK: remove this calcul
-      return false;
-    }
     o2 = &demand[el->ordIDs[i + 1]];
     from = el->ordActions[i] == 'i' ? o->fromStand : o->toStand;
     to = el->ordActions[i + 1] == 'i' ? o2->fromStand : o2->toStand;
-    if (i < el->ordNumb - 1) {
-      dst += dist(from, to) + from == to ? 0 : STOP_WAIT;
-    }
+    if (from != to) dst += dist(from, to) + STOP_WAIT;
   }
   return true;
 }
 
-boolean isFound(Branch *br1, Branch *br2, int size) 
-{   
+boolean isFound(Branch *br1, Branch *br2, int size) {   
     for (int x = 0; x < size; x++)
       if (br1->ordActions[x] == 'i') 
         for (int y = 0; y < size; y++) 

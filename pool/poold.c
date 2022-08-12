@@ -31,7 +31,7 @@ int cabsNumb;
 extern struct Branch;
 typedef struct Branch Branch;
 
-int memSize[MAXNODE] = {10000000, 30000000, 50000000, 40000000, 22000000, 1500000, 50000};
+int memSize[MAXNODE] = {50000000, 100000000, 100000000, 100000000, 50000000, 1000000, 50000};
 Branch *node[MAXNODE];
 int nodeSize[MAXNODE];
 int nodeSizeSMP[NUMBTHREAD];
@@ -53,8 +53,13 @@ void handle_signal(int signum) {
 }
 
 void initMem() {
-  for (int i=0; i<MAXNODE; i++)
+  for (int i=0; i<MAXNODE; i++) {
     node[i] = malloc(sizeof(Branch) * memSize[i]);
+    if (node[i] == NULL) {
+      printf("Error allocating node mem");
+      exit(0);
+    }
+  }
   for (int i = 0; i<NUMBTHREAD; i++)
     args[i] = malloc(sizeof(struct arg_struct) * 1);
 }
@@ -83,12 +88,12 @@ void dynapool(int numbThreads, int pool4size, int pool3size, int pool2size,
                 int *pool3time, 
                 int *pool2time
                 ) {
-    signal(SIGINT, handle_signal);
-    signal(SIGTERM, handle_signal);
-    signal(SIGABRT, handle_signal);
+    // signal(SIGINT, handle_signal);
+    // signal(SIGTERM, handle_signal);
+    // signal(SIGABRT, handle_signal);
     printf("Orders: %d\nCabs: %d\n", ordersSize, cabsSize);
 
-    initMem();
+    //initMem();
     
     distNumb = distSize;
     stopsNumb = stopsSize;
@@ -127,5 +132,5 @@ void dynapool(int numbThreads, int pool4size, int pool3size, int pool2size,
     
     *count = retCount;
 
-    freeMem();
+    //freeMem();
 }

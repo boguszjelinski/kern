@@ -33,7 +33,7 @@ use log4rs::{
 const CFG_FILE_DEFAULT: &str = "kern.toml";
 
 fn main() -> Result<(), Error> {
-    println!("cargo:rustc-link-lib=dynapool46");
+    println!("cargo:rustc-link-lib=dynapool86");
     // reading Config
     let mut cfg_file: String = CFG_FILE_DEFAULT.to_string();
     let args: Vec<String> = env::args().collect();
@@ -86,6 +86,11 @@ fn main() -> Result<(), Error> {
     let stops = repo::read_stops(&mut client);
     distance::init_distance(&stops);
     let mut itr: i32 = 0;
+    unsafe {
+        if CNFG.use_ext_pool {
+            initMem();
+        }
+    }
     loop {
         let start = Instant::now();
         let tmp_model = prepare_data(&mut client);
@@ -148,7 +153,7 @@ fn setup_logger(file_path: String) {
     let _handle = log4rs::init_config(config);
 }
 
-#[link(name = "dynapool46")]
+#[link(name = "dynapool86")]
 extern "C" {
     fn dynapool(
 		numbThreads: i32,
@@ -168,6 +173,9 @@ extern "C" {
         pool3time: &mut i32,
         pool2time: &mut i32
     );
+    
+    fn initMem();
+    fn freeMem();
 }
 
 fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>) {
@@ -196,7 +204,7 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
     } else {
         info!("Extender has not helped");
     }
-    
+
     if cabs.len() == 0 {
         info!("No cabs");
         extender_handle.join().expect("Extender SQL thread being joined has panicked");
@@ -399,6 +407,7 @@ fn find_extern_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<St
         info!("{}", str);
     }
 */
+
     let mut sql: String = String::from("");
     'outer: for i in 0 .. cnt as usize {
         if br[i].cab == -1 || br[i].cab >= cabs.len() as i32 {
@@ -411,6 +420,14 @@ fn find_extern_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<St
                 continue 'outer;
             }
         }
+        /*unsafe {
+        if !wait_constraints_met(&br[i], 
+                            DIST[cabs[br[i].cab as usize].location as usize][demand[br[i].ord_ids[0] as usize].from as usize],
+                            &demand
+                        ) {
+            continue;
+        }
+        }*/
         ret.push(br[i]); // just convert to vec
         sql += &assign_pool_to_cab(cabs[br[i].cab as usize], &orders_to_array(&demand), br[i], max_route_id, max_leg_id);
         // remove the cab from list so that it cannot be allocated twice, by LCM or Munkres
@@ -422,7 +439,33 @@ fn find_extern_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<St
     }
     //  RUN SQL
     return (ret, sql);
-  }
+}
+
+// checking only maxWait
+fn wait_constraints_met(el: &Branch, dist_cab: i16, orders: &Vec<Order>) -> bool {
+    // TASK: distances in pool should be stored to speed-up this check
+    let mut dist = dist_cab;
+    unsafe {
+    for i in 0..el.ord_numb as usize -1 {
+        let o: Order = orders[el.ord_ids[i] as usize];
+        if el.ord_actions[i] == 'i' as i8 && dist > o.wait as i16 {
+            println!("WAIT: i:{}, ord_numb={} real={} > requested={}, id={}, order_id={}", 
+                i, el.ord_numb, dist, o.wait, el.ord_ids[i], orders[el.ord_ids[i] as usize].id);
+            for k in 0..el.ord_numb as usize {
+                print!("{}{},", el.ord_ids[k], el.ord_actions[k])
+            }
+            println!("");
+            return false;
+        }
+        let o2: Order = orders[el.ord_ids[i+1] as usize];
+        let from = if el.ord_actions[i] == ('i' as i8) { o.from as usize } else { o.to as usize };
+        let to = if el.ord_actions[i + 1] == 'i' as i8 { o2.from as usize } else { o2.to as usize};
+        if from != to { 
+            dist += DIST[from][to] + CNFG.stop_wait;
+        }
+    }}
+    return true;
+}
 
 fn prepare_data(client: &mut Client) -> Option<(Vec<Order>, Vec<Cab>)> {
     let mut orders = repo::find_orders_by_status_and_time(
