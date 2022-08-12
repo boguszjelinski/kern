@@ -191,7 +191,7 @@ pub fn assign_pool_to_cab(cab: Cab, orders: &[Order; MAXORDERSNUMB], pool: Branc
     let mut eta = 0; // expected time of arrival
     let mut sql: String = assign_cab_add_route(&cab, &order, &mut place, &mut eta, max_route_id, &mut max_leg_id);
     // legs & routes are assigned to customers in Pool
-    sql += &assign_orders_and_save_legs(cab.id, *max_route_id, place, pool, eta, &mut max_leg_id, orders);
+    sql += &assign_orders_and_save_legs(cab, *max_route_id, place, pool, eta, &mut max_leg_id, orders);
     *max_route_id += 1;
     return sql;
 }
@@ -218,22 +218,77 @@ fn assign_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16
     return sql;
 }
 
-/*
-fn count_reserves(e: Branch, orders: &[Order; MAXORDERSNUMB]) -> [i16; MAXORDID] {
-    let ret: [i16; MAXORDID] = [0; MAXORDID];
-    // not all "c" values will produce legs below in "assign...", but we will use it as index for values -> ret[c]
-    for c in 0 .. (e.ord_numb - 1) as usize {
-        let mut reserve
+// count reserves on legs
+// reserves have to obey max_wait and max_loss
+fn count_reserves(cab_dist: i16, br: Branch, orders: &[Order; MAXORDERSNUMB]) -> [i32; MAXORDID] {
+    // not all "c" values will produce legs below in "assign...", but we will use it as index for values -> res[c]
+    let mut res: [i32; MAXORDID] = [16000; MAXORDID]; // we will decreas value
+    // first max_wait
+    let mut dist:i32 = cab_dist as i32;
+   
+    for c in 0 .. (br.ord_numb - 1) as usize { // the last cell is 'o', no need to check
+        if br.ord_actions[c] == 'i' as i8 {
+            let mut reserve: i32 = orders[br.ord_ids[c] as usize].wait - dist;
+            if reserve < 0 {
+                warn!("Max wait of order {} is not met", orders[br.ord_ids[c] as usize].id);
+                reserve = 0;
+            }
+            if reserve < res[c-1] { // we have to update all legs before, including current
+                for d in 0..c + 1 {
+                    res[d] = reserve;
+                }
+            }
+        }
+        let stand1: i32 = if br.ord_actions[c] == 'i' as i8 
+                            { orders[br.ord_ids[c] as usize].from } else { orders[br.ord_ids[c] as usize].to };
+        let stand2: i32 = if br.ord_actions[c + 1] == 'i' as i8
+                          { orders[br.ord_ids[c + 1] as usize].from } else { orders[br.ord_ids[c + 1] as usize ].to };
+        if stand1 != stand2 {
+            unsafe { dist += (DIST[stand1 as usize][stand2 as usize] + CNFG.stop_wait) as i32; }
+        }
+    }    
+    // max_loss
+    for c in 0 .. (br.ord_numb - 1) as usize {
+        if br.ord_actions[c] == 'i' as i8 {
+            dist = 0;
+            for d in c + 1 .. br.ord_numb as usize {
+                let stand1: i32 = if br.ord_actions[d-1] == 'i' as i8 
+                            { orders[br.ord_ids[d-1] as usize].from } else { orders[br.ord_ids[d-1] as usize].to };
+                let stand2: i32 = if br.ord_actions[d] == 'i' as i8
+                          { orders[br.ord_ids[d] as usize].from } else { orders[br.ord_ids[d] as usize ].to };
+                if stand1 != stand2 {
+                    unsafe { dist +=(DIST[stand1 as usize][stand2 as usize] + CNFG.stop_wait) as i32; }
+                }
+                if br.ord_actions[d] == 'o' as i8 && br.ord_ids[d] == br.ord_ids[c] {
+                    // TODO: this should not be counted each time, store it!!
+                    let acceptable_distance: i32 = ((1.0 + orders[br.ord_ids[c] as usize].loss as f32 / 100.0) 
+                                                    * orders[br.ord_ids[c] as usize].dist as f32) as i32;
+                    let mut reserve:i32  = acceptable_distance - dist;
+                    if reserve < 0 {
+                        warn!("Max loss of order {} is not met", orders[br.ord_ids[c] as usize].id);
+                        reserve = 0;
+                    }
+                    for e in c..d { // which means excluding d
+                        if res[e] > reserve { // correct only those legs that have bigger reserve, there might be legs with smaller reserve
+                            res[e] = reserve;
+                        }
+                    }
+                }
+            }
+        }
     }
-    return ret;
+    return res;
 }
-*/
 
-fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Branch, mut eta: i16,
+
+fn assign_orders_and_save_legs(cab: Cab, route_id: i64, mut place: i32, e: Branch, mut eta: i16,
                                 max_leg_id: &mut i64, orders: &[Order; MAXORDERSNUMB]) -> String {
     //logPool2(cab, route_id, e);
     let mut route_reserve: i16 = 16000; // we will decrease the number
     let mut sql: String = String::from("");
+    let cab_dist = unsafe { DIST[cab.location as usize][orders[e.ord_ids[0] as usize].from as usize] };
+    let res = count_reserves(cab_dist, e, orders);
+
     for c in 0 .. (e.ord_numb - 1) as usize {
       let order = orders[e.ord_ids[c] as usize];
       let stand1: i32 = if e.ord_actions[c] == 'i' as i8 { order.from } else { order.to };
@@ -253,9 +308,9 @@ fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Br
             if place > 0 {
                 // TODO: leg_id-1 might indicate a leg incomming to "from" or starting from "from", depending on stand1!=stand above 
                 // leg_id-1 because create_leg increments ID
-                sql += &assign_order(order.id, cab_id, *max_leg_id -1, route_id, eta, "true", "assignOrdersAndSaveLegs1");
+                sql += &assign_order(order.id, cab.id, *max_leg_id -1, route_id, eta, "true", "assignOrdersAndSaveLegs1");
             } else {
-                sql += &assign_order_no_leg(order.id, cab_id, route_id, eta, "true", "assignOrdersAndSaveLegs2");
+                sql += &assign_order_no_leg(order.id, cab.id, route_id, eta, "true", "assignOrdersAndSaveLegs2");
             }
             add_avg_element(Stat::AvgOrderAssignTime, get_elapsed(order.received));
             let reserve = check_route_reserve(e, c, orders);
@@ -397,8 +452,8 @@ mod tests {
     let br = get_test_branch(order_count);
     
     let orders = init_test_data(order_count);
-    
-    let sql = assign_orders_and_save_legs(0, 0, place, br, eta, &mut max_leg_id, &orders);
+    let cab = Cab { id:0, location:0 };
+    let sql = assign_orders_and_save_legs(cab, 0, place, br, eta, &mut max_leg_id, &orders);
     //println!("{}", sql);
     assert_eq!(sql.contains("UPDATE route SET reserve=1 WHERE id=0"), true); //=1 as this is MIN of four reserves, see below the last assert
   }

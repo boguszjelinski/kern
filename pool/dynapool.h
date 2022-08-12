@@ -1,8 +1,8 @@
-#define NUMBTHREAD 9
+#define NUMBTHREAD 17
 #define MAXINPOOL 4
 #define MAXORDID MAXINPOOL*2
 #define MAXNODE MAXINPOOL+MAXINPOOL-1
-#define MAXTHREADMEM 12500000
+#define MAXTHREADMEM 10000000
 
 #define MAXANGLE 120.0
 #define STOP_WAIT 1 // minute, how long it takes at a bus stop

@@ -9,4 +9,4 @@ cab_speed = 60
 stop_wait = 1
 log_file = "log/kern.log"
 use_ext_pool = true
-thread_numb = 4
+thread_numb = 10
