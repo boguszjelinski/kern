@@ -29,6 +29,7 @@ CREATE TABLE leg (
     place integer NOT NULL,
     started timestamp without time zone,
     status integer,
+    reserve integer,
     to_stand integer NOT NULL,
     route_id bigint NOT NULL
 );
@@ -42,8 +43,7 @@ DROP TABLE route CASCADE;
 CREATE TABLE route (
     id bigint NOT NULL,
     status integer,
-    cab_id bigint NOT NULL,
-    reserve integer,
+    cab_id bigint NOT NULL
 );
 ALTER TABLE route OWNER TO kabina;
 ALTER TABLE ONLY route ADD CONSTRAINT route_pkey PRIMARY KEY (id);

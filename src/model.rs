@@ -62,6 +62,7 @@ pub struct Leg {
     pub to: i32,
     pub place: i32,
     pub dist: i32,
+    pub reserve: i32,
     pub started: Option<SystemTime>,
     pub completed: Option<SystemTime>,
     pub status: i32 // TODO: RouteStatus

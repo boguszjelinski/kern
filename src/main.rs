@@ -142,7 +142,7 @@ fn setup_logger(file_path: String) {
             Root::builder()
                 .appender("logfile")
                 .appender("stderr")
-                .build(LevelFilter::Info),
+                .build(LevelFilter::Debug),
         )
         .unwrap();
 
@@ -323,7 +323,7 @@ fn lcm(host: &String, cabs: &Vec<Cab>, orders: &Vec<Order>, max_route_id: &mut i
         cabs_cpy[smin as usize].id = -1;
         orders_cpy[dmin as usize].id = -1;
     }
-    let sql = repo::assign_cust_to_cab_lcm(pairs, &cabs, &orders, max_route_id, max_leg_id);
+    let sql = repo::assign_order_to_cab_lcm(pairs, &cabs, &orders, max_route_id, max_leg_id);
     return get_handle(host.clone(), sql, "LCM".to_string());
 }
 
