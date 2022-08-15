@@ -157,8 +157,7 @@ pub fn create_leg(order_id: i64, from: i32, to: i32, place: i32, status: RouteSt
 pub fn update_leg_a_bit(route_id: i64, leg_id: i64, to: i32, dist: i16, reserve: i32) -> String {
     debug!("Updating existing route_id={}, leg_id={}, to={} reserve={}", route_id, leg_id, to, reserve);
     return format!("\
-        UPDATE leg SET to_stand={}, distance={}, reserve={} \
-        WHERE id={};\n", to, dist, reserve, leg_id);
+        UPDATE leg SET to_stand={}, distance={}, reserve={} WHERE id={};\n", to, dist, reserve, leg_id);
 }
 
 pub fn update_leg_with_route_id(route_id: i64, place: i32, to: i32, dist: i16, reserve: i32) -> String {
@@ -169,7 +168,7 @@ pub fn update_leg_with_route_id(route_id: i64, place: i32, to: i32, dist: i16, r
         WHERE route_id={} AND place={};\n", to, dist, reserve, route_id, place);
 }
 
-pub fn update_places_in_legs(route_id: i64, place: i32, dist_diff: i32) -> String {
+pub fn update_place_and_reserve_in_legs(route_id: i64, place: i32, dist_diff: i32) -> String {
     debug!("Updating places in route_id={} starting with place={}, dist_diff={}", 
                 route_id, place, dist_diff);
     if dist_diff < 0 {
@@ -181,6 +180,14 @@ pub fn update_places_in_legs(route_id: i64, place: i32, dist_diff: i32) -> Strin
     return format!("\
         UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-{}) \
         WHERE route_id={} AND place >= {};\n", dist_diff, route_id, place);
+}
+
+pub fn update_reserves_in_legs(route_id: i64, place: i32, wait_diff: i32) -> String {
+    debug!("Updating reserve in route_id={} starting with place={}, wait_diff={}", 
+            route_id, place, wait_diff);
+    return format!("\
+        UPDATE leg SET reserve=LEAST(reserve, {}) WHERE route_id={} AND place <= {};\n", 
+                wait_diff, route_id, place);
 }
 
 pub fn assign_pool_to_cab(cab: Cab, orders: &[Order; MAXORDERSNUMB], pool: Branch, max_route_id: &mut i64, 
