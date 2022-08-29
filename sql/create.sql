@@ -6,11 +6,12 @@ CREATE TABLE cab (
     id bigint NOT NULL,
     location integer NOT NULL,
     name character varying(255),
-    status integer
+    status integer NOT NULL,
+    sits integer NOT NULL
 );
 ALTER TABLE cab OWNER TO kabina;
 ALTER TABLE ONLY cab ADD CONSTRAINT cab_pkey PRIMARY KEY (id);
-INSERT INTO cab (id, location, status) SELECT *, 0,2 FROM generate_series(0, 10000);
+INSERT INTO cab (id, location, status, sits) SELECT *, 0,2,10 FROM generate_series(0, 10000);
 
 -- CUSTOMER
 DROP TABLE customer CASCADE;
@@ -28,8 +29,9 @@ CREATE TABLE leg (
     from_stand integer NOT NULL,
     place integer NOT NULL,
     started timestamp without time zone,
-    status integer,
-    reserve integer,
+    status integer NOT NULL,
+    reserve integer NOT NULL,
+    passengers integer NOT NULL,
     to_stand integer NOT NULL,
     route_id bigint NOT NULL
 );
@@ -42,7 +44,7 @@ ALTER TABLE ONLY leg
 DROP TABLE route CASCADE;
 CREATE TABLE route (
     id bigint NOT NULL,
-    status integer,
+    status integer NOT NULL,
     cab_id bigint NOT NULL
 );
 ALTER TABLE route OWNER TO kabina;

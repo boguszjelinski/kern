@@ -1,7 +1,7 @@
 use log::{debug, warn};
 use postgres::Client;
 use chrono::{DateTime, Local};
-use std::collections::HashMap;
+use std::cmp;
 use std::time::SystemTime;
 use crate::model::{KernCfg,Order, OrderStatus, Stop, Cab, CabStatus, Leg, RouteStatus, Branch,MAXORDERSNUMB,MAXORDID};
 use crate::distance::DIST;
@@ -86,7 +86,7 @@ pub fn find_cab_by_status(client: &mut Client, status: CabStatus) -> Vec<Cab>{
 pub fn find_legs_by_status(client: &mut Client, status: RouteStatus) -> Vec<Leg> {
     let mut ret: Vec<Leg> = Vec::new();
     for row in client.query("SELECT id, from_stand, to_stand, place, distance, \
-        started, completed, route_id, status, reserve FROM leg WHERE status = $1 \
+        started, completed, route_id, status, reserve, passengers FROM leg WHERE status = $1 \
         ORDER BY route_id ASC, place ASC", &[&(status as i32)]).unwrap() {
         ret.push(Leg {
             id: row.get(0),
@@ -99,6 +99,7 @@ pub fn find_legs_by_status(client: &mut Client, status: RouteStatus) -> Vec<Leg>
             route_id: row.get(7), 
             status: row.get(8),
             reserve: row.get(9),
+            passengers: row.get(10),
         });
     }
     return ret;
@@ -144,12 +145,13 @@ pub fn assign_order_find_leg_cab(order_id: i64, place: i32, route_id: i64, eta: 
 */
 
 pub fn create_leg(order_id: i64, from: i32, to: i32, place: i32, status: RouteStatus, dist: i16, reserve: i32,
-                  route_id: i64, max_leg_id: &mut i64, called_by: &str) -> String {
+                  route_id: i64, max_leg_id: &mut i64, passengers: i8, called_by: &str) -> String {
     debug!("Adding leg to route: leg_id={}, route_id={}, order_id={}, from={}, to={}, place={}, distance={}, reserve={}, routine {}", 
-                                *max_leg_id, route_id, order_id, from, to, place, dist, reserve, called_by);
+                                *max_leg_id, route_id, order_id, from, to, place, dist,
+                                cmp::max(reserve, 0), called_by);
     let ret = format!("\
-        INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id) VALUES \
-        ({},{},{},{},{},{},{},{});\n", *max_leg_id, from, to, place, dist, status as u8, reserve, route_id);
+        INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES \
+        ({},{},{},{},{},{},{},{},{});\n", *max_leg_id, from, to, place, dist, status as u8, cmp::max(reserve, 0), route_id, passengers);
     *max_leg_id += 1;
     return ret;
 }
@@ -168,7 +170,7 @@ pub fn update_leg_with_route_id(route_id: i64, place: i32, to: i32, dist: i16, r
         WHERE route_id={} AND place={};\n", to, dist, reserve, route_id, place);
 }
 
-pub fn update_place_and_reserve_in_legs(route_id: i64, place: i32, dist_diff: i32) -> String {
+pub fn update_place_and_reserve_in_legs_after(route_id: i64, place: i32, dist_diff: i32) -> String {
     debug!("Updating places in route_id={} starting with place={}, dist_diff={}", 
                 route_id, place, dist_diff);
     if dist_diff < 0 {
@@ -182,7 +184,20 @@ pub fn update_place_and_reserve_in_legs(route_id: i64, place: i32, dist_diff: i3
         WHERE route_id={} AND place >= {};\n", dist_diff, route_id, place);
 }
 
-pub fn update_reserves_in_legs(route_id: i64, place: i32, wait_diff: i32) -> String {
+pub fn update_orders_reserve_in_legs_after(route_id: i64, place_from: i32, place_to: i32, loss_reserve: i32) -> String {
+    debug!("Updating reserves in route_id={} from place={} to place={}, order_loss_reserve={}", 
+                route_id, place_from, place_to, loss_reserve);
+    // TODO: probably we should increase passengers only to place_to -1
+    if loss_reserve < 0 {
+        return format!("\
+        UPDATE leg SET reserve=0, passengers=passengers+1 WHERE route_id={} AND place BETWEEN {} AND {};\n", route_id, place_from, place_to);
+    }
+    return format!("\
+        UPDATE leg SET reserve=LEAST(reserve, {}), passengers=passengers+1 \
+        WHERE route_id={} AND place BETWEEN {} AND {};\n", loss_reserve, route_id, place_from, place_to);
+}
+
+pub fn update_reserves_in_legs_before_and_including(route_id: i64, place: i32, wait_diff: i32) -> String {
     debug!("Updating reserve in route_id={} starting with place={}, wait_diff={}", 
             route_id, place, wait_diff);
     return format!("\
@@ -221,7 +236,7 @@ fn update_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16
             *eta = DIST[cab.location as usize][order.from as usize];
         }
         sql += &create_leg(order.id, cab.location, order.from, *place, RouteStatus::ASSIGNED, *eta, reserve,
-                            *max_route_id, max_leg_id, "assignCab");
+                            *max_route_id, max_leg_id, 0, "assignCab");
         *place += 1;
         //TODO: statSrvc.addToIntVal("total_pickup_distance", Math.abs(cab.getLocation() - order.fromStand));
     }
@@ -305,6 +320,7 @@ fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Br
                                 max_leg_id: &mut i64, orders: &[Order; MAXORDERSNUMB], reserve: [i32; MAXORDID]) -> String {
     log_pool(cab_id, route_id, e, orders);
     let mut sql: String = String::from("");
+    let mut passengers: i8 = 0;
 
     for c in 0 .. (e.ord_numb - 1) as usize {
       let order = orders[e.ord_ids[c] as usize];
@@ -312,10 +328,15 @@ fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Br
       let stand2: i32 = if e.ord_actions[c + 1] == 'i' as i8
                         { orders[e.ord_ids[c + 1] as usize].from } else { orders[e.ord_ids[c + 1] as usize ].to } ;
       unsafe {
+        if e.ord_actions[c] == 'i' as i8 {
+            passengers += 1;
+        } else {
+            passengers -= 1;
+        }
         let dist: i16 = DIST[stand1 as usize][stand2 as usize];
         if stand1 != stand2 { // there is movement
             sql += &create_leg(order.id, stand1, stand2, place, RouteStatus::ASSIGNED, dist, reserve[c],
-                                route_id, max_leg_id, "assignOrdersAndSaveLegs");
+                                route_id, max_leg_id, passengers, "assignOrdersAndSaveLegs");
             place += 1;
         }
         if e.ord_actions[c] == 'i' as i8 {
@@ -395,7 +416,7 @@ fn assign_order_to_cab(order: Order, cab: Cab, place: i32, eta: i16, reserve: i3
     let mut sql: String = String::from("");
     unsafe {
         sql += &create_leg(order.id, order.from, order.to, place, RouteStatus::ASSIGNED, 
-                       DIST[order.from as usize][order.to as usize], reserve, route_id, max_leg_id, called_by);
+                       DIST[order.from as usize][order.to as usize], reserve, route_id, max_leg_id, 1, called_by);
     }
     sql += &assign_order(order.id, cab.id, *max_leg_id -1 , route_id, // -1 cause it is incremented in create_leg
                         eta, "false", "assignOrderToCab");
