@@ -65,7 +65,8 @@ pub struct Leg {
     pub reserve: i32,
     pub started: Option<SystemTime>,
     pub completed: Option<SystemTime>,
-    pub status: i32 // TODO: RouteStatus
+    pub status: i32, // TODO: RouteStatus
+    pub passengers: i32,
 }
 
 /*pub struct Customer {
