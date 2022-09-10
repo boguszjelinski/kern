@@ -1,11 +1,11 @@
 use std::time::SystemTime;
 
 pub const MAXSTOPSNUMB : usize = 5200;
-pub const MAXORDERSNUMB: usize = 2000;
+pub const MAXORDERSNUMB: usize = 2000; // max not assigned
 pub const MAXCABSNUMB: usize = 10000;
-pub const MAXBRANCHNUMB: usize = 1000;
+pub const MAXBRANCHNUMB: usize = 1000; // size of pool finder's response
 
-pub const MAXINPOOL : usize = 4;
+pub const MAXINPOOL : usize = 4;  // it might be 5 with limited demand
 pub const MAXORDID : usize = MAXINPOOL * 2;
 
 #[repr(C)]
@@ -22,20 +22,21 @@ pub struct Order {
     pub id: i64, // -1 as to-be-dropped
 	pub from: i32,
     pub to: i32,
-	pub wait: i32,
-	pub loss: i32,
-	pub dist: i32,
-    pub shared: bool,
-    pub in_pool: bool,
+	pub wait: i32, // expected pick up time
+	pub loss: i32, // allowed loss of time in detour
+	pub dist: i32, // distance without pool
+    pub shared: bool, // agreed to be in pool
+    pub in_pool: bool, // actually in pool
     pub received: Option<SystemTime>,
     pub started: Option<SystemTime>,
     pub completed: Option<SystemTime>,
     pub at_time: Option<SystemTime>,
-    pub eta: i32,
+    pub eta: i32, // proposed wait time
   //  cab: Cab,
   //  customer: Customer
 }
 
+// transfer object for external pool
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct OrderTransfer {
@@ -51,7 +52,7 @@ pub struct OrderTransfer {
 #[derive(Copy, Clone)]
 pub struct Cab {
     pub id: i64,
-	pub location: i32
+	pub location: i32 // last known location, current location if FREE
 }
 
 #[derive(Copy, Clone)]
@@ -60,13 +61,13 @@ pub struct Leg {
     pub route_id: i64,
     pub from: i32,
     pub to: i32,
-    pub place: i32,
+    pub place: i32, // place in route
     pub dist: i32,
-    pub reserve: i32,
+    pub reserve: i32, // to match constraints - wait, loss
     pub started: Option<SystemTime>,
     pub completed: Option<SystemTime>,
     pub status: i32, // TODO: RouteStatus
-    pub passengers: i32,
+    pub passengers: i32, // to meet cab's capacity
 }
 
 /*pub struct Customer {
@@ -74,6 +75,9 @@ pub struct Leg {
 	pub name: String
 }
 */
+
+// dispatcher is interested only into free cabs and non-assigned customers
+// TODO: cabs on last leg should be considered
 pub enum CabStatus {
 //    ASSIGNED,
     FREE = 1,
@@ -123,13 +127,13 @@ impl RouteStatus {
 #[derive(Clone)]
 pub struct Route {
 	pub id: i64,
-    pub reserve: i32
+//    pub reserve: i32
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Branch {
-	pub cost: i16,
+	pub cost: i16, // the length of the route
 	pub outs: u8, // BYTE, number of OUT nodes, so that we can guarantee enough IN nodes
 	pub ord_numb: i16, // it is in fact ord number *2; length of vectors below - INs & OUTs
 	pub ord_ids : [i32; MAXORDID], // we could get rid of it to gain on memory (key stores this too); but we would lose time on parsing
@@ -150,6 +154,7 @@ impl Branch {
     }
 }
 
+// config read from a file
 pub struct KernCfg{
 	pub max_assign_time: i64,
     pub max_solver_size: usize,

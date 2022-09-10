@@ -107,12 +107,11 @@ pub fn find_matching_routes(thr_numb: i32, itr: i32, host: &String, client: &mut
 }
 
 pub fn write_sql_to_file(itr: i32, sql: &String, label: &str) {
-  /*
   let file_name = format!("{}-{}.sql", label.to_string(), itr);
   let msg = format!("SQL for {} failed", file_name);
   let mut file = std::fs::File::create(&file_name).expect(&("Create ".to_string() + &msg));
   file.write_all(sql.as_bytes()).expect(&("Write ".to_string() + &msg));
-  */
+  
 }
 
 // try to find a matching leg, if not found - return the starting index so that we could look for non-prefect matches
@@ -312,6 +311,7 @@ fn update_places(idx: usize, legs: &mut Vec<Leg>, route_id: i64) {
     i += 1;
   }
 }
+
 /*
 fn extends_legs_in_vec(leg: Leg, from: i32, idx:i32, legs: &mut Vec<Leg>, leg_id: i64) {
   unsafe {
@@ -450,7 +450,7 @@ fn extend_legs_in_db(order: &Order, from_leg_idx: i32, leg_idx: i32, legs: &mut 
     // when extender puts both IN and OUT into one 
     // but somehow we managed to extend many time - a bug to be fixed ... now
     legs[leg_idx as usize].reserve = reserve;
-    legs[leg_idx as usize].dist = unsafe { DIST[leg.from as usize][from as usize] as i32 };
+    legs[leg_idx as usize].dist = DIST[leg.from as usize][from as usize] as i32 ;
 
     if leg_id != -1 {
       sql += &update_leg_a_bit(leg.route_id, leg_id, from, 
@@ -555,9 +555,9 @@ mod tests {
 
   fn get_test_legs() -> Vec<Leg> {
     return vec![
-      Leg{ id: 0, route_id: 123, from: 0, to: 1, place: 0, dist: 1, reserve:0, started: None, completed: None, status: 0, passengers:1},
-      Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: 1, reserve:0, started: None, completed: None, status: 0, passengers:1},
-      Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 0, dist: 1, reserve:0, started: None, completed: None, status: 0, passengers:1},
+      Leg{ id: 0, route_id: 123, from: 0, to: 1, place: 0, dist: 1, reserve:1, started: None, completed: None, status: 0, passengers:1},
+      Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: 1, reserve:2, started: None, completed: None, status: 0, passengers:1},
+      Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: 1, reserve:3, started: None, completed: None, status: 0, passengers:1},
     ];
   }
 
@@ -577,13 +577,6 @@ mod tests {
         UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-1) WHERE route_id=123 AND place >= 2;\n\
         INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (1,2,1,2,0,1,0,123,1);\n\
         UPDATE leg SET to_stand=2, distance=0, reserve=0 WHERE id=0;\n");
-  }
-
-  #[test]
-  fn test_update_places() {
-    let mut legs = get_test_legs();
-    update_places(1, &mut legs, 123);
-    assert_eq!(legs[1].place, 2);
   }
 
   #[test]
@@ -648,6 +641,61 @@ mod tests {
     INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (1,1,1,1,0,1,0,123,1);\n\
     UPDATE leg SET to_stand=1, distance=0, reserve=0 WHERE id=0;\nUPDATE taxi_order AS o SET route_id=123, \
     leg_id=1, cab_id=r.cab_id, status=1, eta=0 FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n");
+  }
+
+  #[test]
+  fn test_update_places() {
+    let mut legs = get_test_legs();
+    assert_eq!(legs[1].place, 1);
+    update_places(1, &mut legs, 123);
+    assert_eq!(legs[0].place, 0);
+    assert_eq!(legs[1].place, 2);
+    assert_eq!(legs[2].place, 3);
+  }
+
+  #[test]
+  fn test_count_actual_distance() {
+    let legs = get_test_legs();
+    let order= Order{ id: 1, from: 1, to: 2, wait: 10,loss: 50,dist: 2,
+      shared: true,in_pool: false,received: None,started: None,completed: None,at_time: None,eta: 0,
+    };
+    let ret = count_actual_distance(0, 2, &legs, &order);
+    assert_eq!(ret, 3);
+  }
+
+  #[test]
+  fn test_decrease_reserve_after() {
+    let mut legs = get_test_legs();
+    assert_eq!(legs[0].reserve, 1);
+    assert_eq!(legs[2].reserve, 3);
+    decrease_reserve_after(1, &mut legs, 1);
+    assert_eq!(legs[0].reserve, 1);
+    assert_eq!(legs[2].reserve, 2);
+  }
+
+  #[test]
+  fn test_decrease_reserve_before() {
+    let mut legs = get_test_legs();
+    assert_eq!(legs[0].reserve, 1);
+    assert_eq!(legs[2].reserve, 3);
+    decrease_reserve_before(1, &mut legs, 0);
+    assert_eq!(legs[0].reserve, 0);
+    assert_eq!(legs[2].reserve, 3);
+  }
+
+  #[test]
+  fn test_decrease_reserve_between() {
+    let mut legs = get_test_legs();
+    assert_eq!(legs[1].reserve, 2);
+    decrease_reserve_between(0, 1, &mut legs, 0);
+    assert_eq!(legs[1].reserve, 0);
+  }
+
+  #[test]
+  fn test_sum_distances() {
+    let legs = get_test_legs();
+    let ret = sum_distances(&legs, 1);
+    assert_eq!(ret, 4);
   }
 
 }

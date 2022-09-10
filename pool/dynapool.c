@@ -1,11 +1,21 @@
+/// Kabina minibus/taxi dispatcher
+/// Copyright (c) 2022 by Bogusz Jelinski bogusz.jelinski@gmail.com
+/// 
+/// Pool finder submodule.
+/// A pool is a group of orders to be picked up by a cab in a prescribed sequence
+/// 'Branch' structure describes one such group (saved as route in the database)
+/// 
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
 #include "dynapool.h"
 
+// each thread has its own chunk of branches, they will be merged
 Branch nodeSMP[NUMBTHREAD][MAXTHREADMEM];
 pthread_t myThread[NUMBTHREAD];
 
+// thread arguments - which part of a task each gets
 struct arg_struct {
    int i;
    float chunk;
@@ -13,11 +23,12 @@ struct arg_struct {
    int inPool;
 } *args[NUMBTHREAD];
 
-extern int memSize[MAXNODE];
-extern Branch *node[MAXNODE];
-extern int nodeSize[MAXNODE];
-extern int nodeSizeSMP[NUMBTHREAD];
+extern int memSize[MAXNODE]; // sizes of statically allocated memory
+extern Branch *node[MAXNODE];  // main memory consumer 
+extern int nodeSize[MAXNODE]; // actual size of branches
+extern int nodeSizeSMP[NUMBTHREAD]; // size of thread memory
 
+// pointers allocated and passed by Rust
 extern short *distance;
 extern int distNumb;
 
@@ -33,10 +44,14 @@ extern int cabsNumb;
 extern Branch *retNode;
 extern int retCount, retNumb; // number of branches returned to Rust
 
-short dist(int row, int col) {
+inline short dist(int row, int col) {
   return *(distance + (row * distNumb) + col);
 }
 
+/// adding an order to a pool
+///  b is existing Branch in lev+1
+/// 
+/// adds an extended pool to the current level (temporary SMP memory)
 void storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inPool) {
     if (nodeSizeSMP[thread] >= MAXTHREADMEM) {
       printf("storeBranch: allocated mem too low, level: %d, inPool: %d\n", lev, inPool);
@@ -47,6 +62,7 @@ void storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inP
     ptr->ordIDs[0] = ordId;
     ptr->ordActions[0] = action;
     // ? memcpy
+    // make space for the new order - TODO: maybe we could have the last order at [0]? the other way round
     for (int j = 0; j < ptr->ordNumb - 1; j++) { // further stage has one passenger less: -1
       ptr->ordIDs[j + 1]      = b->ordIDs[j];
       ptr->ordActions[j + 1]  = b->ordActions[j];
@@ -71,8 +87,11 @@ boolean isTooLong(int ordId, char oper, int start_wait, Branch *b) {
       if (b->ordActions[i] == 'o' && oper == 'i' && ordId == b->ordIDs[i] &&
           wait >  //distance[demand[b->ordIDs[i]].fromStand][demand[b->ordIDs[i]].toStand] 
               demand[ordId].distance * (100.0 + demand[ordId].maxLoss) / 100.0) // this value could be stored, do not calculate each time
+                // max loss of the new order (which we are trying to put in) is violated
+                // max loss check of other orders have been checked earlier, here, in lev+1, of course only that with IN & OUT
                 return true;
       if (b->ordActions[i] == 'i' && wait > demand[b->ordIDs[i]].maxWait) 
+        // wait time of an already existing order (in the pool; lev+1) is violated
         return true;
       from = b->ordActions[i] == 'i' ? demand[b->ordIDs[i]].fromStand : demand[b->ordIDs[i]].toStand;
       to = b->ordActions[i + 1] == 'i' ? demand[b->ordIDs[i + 1]].fromStand : demand[b->ordIDs[i + 1]].toStand;
@@ -84,46 +103,48 @@ boolean isTooLong(int ordId, char oper, int start_wait, Branch *b) {
           return true;
   return false;
 }
-
-// branch is index of existing Branch in lev+1
+/// check how an order fits into a pool
+/// branch is index of existing Branch in lev+1
+/// returns: just pushes to temporary array
 void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, int branch, int inPool) {
     // two situations: c IN and c OUT
     // c IN has to have c OUT in level+1, and c IN cannot exist in level + 1
     // c OUT cannot have c OUT in level +1
-    boolean inFound = false;
     boolean outFound = false;
     Branch *ptr = &node[lev+1][branch];
     for (int i = 0; i < ptr->ordNumb; i++) {
       if (ptr->ordIDs[i] == ordId) {
         if (ptr->ordActions[i] == 'i') {
-          inFound = true;
+          //inFound = true; what was I thinking - if IN is found it must be also OUT, we cannot proceed
+          return;
         } else {
           outFound = true;
+          break; //
         }
-        // current passenger is in the branch below
       }
     }
     // now checking if anyone in the branch does not lose too much with the pool
     // c IN
     int nextStop = ptr->ordActions[0] == 'i'
                     ? demand[ptr->ordIDs[0]].fromStand : demand[ptr->ordIDs[0]].toStand;
-    if (!inFound
-        && outFound
-        && !isTooLong(ordId, 'i', dist(demand[ordId].fromStand, nextStop) 
+    if (outFound) {
+      if (!isTooLong(ordId, 'i', dist(demand[ordId].fromStand, nextStop) 
                                   + (demand[ordId].fromStand != nextStop ? STOP_WAIT : 0), ptr)
         // TASK? if the next stop is OUT of passenger 'c' - we might allow bigger angle
         && bearingDiff(stops[demand[ordId].fromStand].bearing, stops[nextStop].bearing) < MAXANGLE
-        ) storeBranch(thread, 'i', lev, ordId, ptr, inPool);
+        ) 
+        storeBranch(thread, 'i', lev, ordId, ptr, inPool);
+    }
     // c OUT
-    if (lev > 0 // the first stop cannot be OUT
+    else if (lev > 0 // the first stop cannot be OUT
         && ptr->outs < inPool // numb OUT must be numb IN
-        && !outFound // there is no such OUT later on
         && !isTooLong(ordId, 'o', dist(demand[ordId].toStand, nextStop)
                                 + (demand[ordId].toStand != nextStop ? STOP_WAIT : 0), ptr)
         && bearingDiff(stops[demand[ordId].toStand].bearing, stops[nextStop].bearing) < MAXANGLE
         ) storeBranch(thread, 'o', lev, ordId, ptr, inPool);
 }
 
+/// just a loop and calling store_branch...
 void iterate(void *arguments) {
   struct arg_struct *ar = arguments;
   int size = round(((ar->i + 1) * ar->chunk) > demandNumb) ? demandNumb : round((ar->i + 1) * ar->chunk);
@@ -156,16 +177,25 @@ void addBranch(int id1, int id2, char dir1, char dir2, int outs, int lev) {
     nodeSize[lev]++;
 }
 
+/// generate permutatations of leaves - last two stops (well, it might be one stop), we skip some checks here
+/// just two nested loops
+/// a leafe is e.g.: 1out-2out or 1in-1out, the last one must be OUT, 'o'
 void storeLeaves(int lev) {
     for (int c = 0; c < demandNumb; c++)
       if (demand[c].id != -1) // assigned in inPool=4 while looking for inPool=3
         for (int d = 0; d < demandNumb; d++)
           if (demand[d].id != -1) {
             // to situations: <1in, 1out>, <1out, 2out>
-            if (c == d && bearingDiff(stops[demand[c].fromStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)  {
+            if (c == d) {
+              // 'bearing' checks if stops are in line, it promotes straight paths to avoid unlife solutions
+              // !! we might not check bearing here as they are probably distant stops
+              if (bearingDiff(stops[demand[c].fromStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)  {
                 // IN and OUT of the same passenger
                 addBranch(c, d, 'i', 'o', 1, lev);
-            } else if (dist(demand[c].toStand, demand[d].toStand)
+              }
+            } 
+            // now <1out, 2out>
+            else if (dist(demand[c].toStand, demand[d].toStand)
                         < dist(demand[d].fromStand, demand[d].toStand) * (100.0 + demand[d].maxLoss) / 100.0
                     && bearingDiff(stops[demand[c].toStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE
             ) {
@@ -180,6 +210,15 @@ void storeLeaves(int lev) {
           }
 }
 
+/// finding all feasible pools - sequences of passengers' pick-ups and drop-offs 
+/// recursive dive in the permutation tree
+/// level ZERO will have (in 'node' variable) all pickups and dropoffs, 
+/// node ONE will miss the first IN marked with 'i' in 'ord_actions'
+/// twice as much depths as passengers in pool (pickup and dropoff), 
+/// minus leaves generated by a dedicated, simple routine  
+/// 
+/// lev: starting always with zero
+/// in_pool: number of passengers going together
 void dive(int lev, int inPool, int numbThreads) {
   //printf("DIVE, inPool: %d, lev:%d\n", inPool, lev);
   if (lev > inPool + inPool - 3) { // lev >= 2*inPool-2, where -2 are last two levels
@@ -190,6 +229,7 @@ void dive(int lev, int inPool, int numbThreads) {
   const float chunk = demandNumb / numbThreads;
   if (round(numbThreads*chunk) < demandNumb) numbThreads++; // last thread will be the reminder of division
 
+  // run the threads, each thread gets its own range of orders to iterate over - hence 'iterate'
   for (int i = 0; i<numbThreads; i++) { // TASK: allocated orders might be spread unevenly -> count non-allocated and devide chunks ... evenly
       args[i]->i = i; 
       args[i]->chunk = chunk; 
@@ -200,9 +240,14 @@ void dive(int lev, int inPool, int numbThreads) {
           printf("Err creating thread %d!\n", i);
       }
   }
+
+  // join the threads
   for (int i = 0; i<numbThreads; i++) {
       pthread_join(myThread[i], NULL); // Wait until thread is finished 
   }
+
+  // collect the data from threads
+  // there might be 'duplicates', 1-2-3 and 1-3-2 and so on, they will be filtered out later
   int idx = 0;
   for (int i = 0; i<numbThreads; i++) {
       if (idx + nodeSizeSMP[i] >= memSize[lev]) {
@@ -245,6 +290,9 @@ void showBranch(int no, Branch *ptr) {
   printf("}\n");   
 }
 
+/// there might be pools with same passengers (orders) but in different ... order (sequence of INs and OUTs) 
+/// the list will be sorted by total length of the pool, worse pools with same passengers will be removed
+/// cabs will be assigned with greedy method 
 void rmFinalDuplicates(int inPool) {
     int lev = 0;
     int cabIdx = -1;
@@ -291,6 +339,7 @@ void rmFinalDuplicates(int inPool) {
     } 
 }
 
+/// checking max wait of all orders
 // maxWait check only, maxLoss is checked in isTooLong
 boolean constraintsMet(int idx, Branch *el, int distCab) {
   // TASK: distances in pool should be stored to speed-up this check
@@ -306,9 +355,11 @@ boolean constraintsMet(int idx, Branch *el, int distCab) {
     to = el->ordActions[i + 1] == 'i' ? o2->fromStand : o2->toStand;
     if (from != to) dst += dist(from, to) + STOP_WAIT;
   }
+  // we don't need to check the last leg as it does not concern "loss", this has been check earlier 
   return true;
 }
 
+/// check if passengers in pool 'x' exist in pool 'y'
 boolean isFound(Branch *br1, Branch *br2, int size) {   
     for (int x = 0; x < size; x++)
       if (br1->ordActions[x] == 'i') 
@@ -339,6 +390,8 @@ void findPool(int inPool, int numbThreads) {
     for (int i=0; i<MAXNODE; i++) nodeSize[i] = 0;
     for (int i=0; i<NUMBTHREAD; i++) nodeSizeSMP[i] = 0;
     dive(0, inPool, numbThreads);
+
+    // debug, to identify needed memory
     for (int i = 0; i < inPool + inPool - 1; i++)
         printf("node[%d].size: %d\n", i, countNodeSize(i));
     rmFinalDuplicates(inPool);
