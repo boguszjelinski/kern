@@ -251,7 +251,7 @@ fn count_reserves(cab_dist: i16, br: Branch, orders: &[Order; MAXORDERSNUMB]) ->
     let mut res: [i32; MAXORDID] = [16000; MAXORDID]; // we will decreas value
     // first max_wait
     let mut dist:i32 = cab_dist as i32;
-    let mut cab_reserve:i32 =0;
+    let cab_reserve:i32;
     for c in 0 .. (br.ord_numb - 1) as usize { // the last cell is 'o', no need to check
         if br.ord_actions[c] == 'i' as i8 {
             let mut reserve: i32 = orders[br.ord_ids[c] as usize].wait - dist;
