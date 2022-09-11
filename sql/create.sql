@@ -100,7 +100,7 @@ CREATE TABLE stop (
 );
 ALTER TABLE stop OWNER TO kabina;
 ALTER TABLE ONLY stop ADD CONSTRAINT stop_pkey PRIMARY KEY (id);
-COPY stop(id, no, name, latitude, longitude, bearing) FROM 'stops-Budapest-import.csv' DELIMITER ',' CSV HEADER ENCODING 'UTF8';
+--COPY stop(id, no, name, latitude, longitude, bearing) FROM 'stops-Budapest-import.csv' DELIMITER ',' CSV HEADER ENCODING 'UTF8';
 
 -- ORDER
 DROP TABLE taxi_order CASCADE;
