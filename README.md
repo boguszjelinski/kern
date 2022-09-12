@@ -52,7 +52,7 @@ This will create example stop, cab and customer entities.
  4) Edit config file <em>kern.toml</em>
 
 | Parameter | Purpose
-|----------|--------|----------|----------------------------------
+|----------|--------
 | db_conn | database connection string - user, password, address, port, schema
 | run_after | time difference in seconds between dispatcher executions
 | max_assign_time | time in minutes after which orders expire
@@ -65,8 +65,11 @@ This will create example stop, cab and customer entities.
 | log_file  | log file location and name
 | use_ext_pool | if external pool finder (C library) should be used
 | thread_numb | how many threads should be used
+| pool4_size | max allowed size of demand for pools with 4 passengers (depends on hardware performance)
+| pool3_size | max allowed size of demand for pools with 3 passengers
+| pool2_size | max allowed size of demand for pools with 2 passengers
 
-Scheduler can be started with *target/release/kern*
+Scheduler can be started with `target/release/kern` or `cargo run --release`
 Though nothing will happen until cabs will report their availability and customers will submit their trip requests, both via RestAPI. 
 
 ### Rest API 
@@ -76,16 +79,16 @@ There are four API implementations, only that written in Rust will be maintained
 [Kaboot](https://gitlab.com/kabina/kaboot): Java (Spring Boot)
 [Kore](https://gitlab.com/kabina/kore): C# (.Net Core)
 
-Just build the Rust one with *cargo build --release* and run with *target/release/kapir*
+Just build the Rust one with `cargo build --release` and run with `target/release/kapir`
 
 ### Rest API client simulators
 There are two implementations, Go will be maintained:
 [Kapi](https://gitlab.com/kabina/kapi/-/tree/main/client): Go
 [Kaboot](https://gitlab.com/kabina/kaboot/-/tree/master/generators/src) Java (see [README.md](https://gitlab.com/kabina/kaboot/-/blob/master/README.md) how to run it)
 
-*go build* will make a **kabina** executable that runs in two ways:
-*./kabina* runs threads with customers
-*./kabina cab* runs threads with cabs. You should run it first and wait a minute so that cabs manage to update their availability.
+`go build` will make a **kabina** executable that runs in two ways:
+`./kabina` runs threads with customers
+`./kabina cab` runs threads with cabs. You should run it first and wait a minute so that cabs manage to update their availability.
 
 ### How to rerun
 One has to clean up some tables to run a simulation again:
@@ -128,7 +131,20 @@ delete from route;
 * take a trip
 * mark the end (COMPLETED)
 
-## Current work in kaboot
+### An example of an actual route saved in database
+
+| id	| from_stand | to_stand |	distance | passengers |	status| started |	completed | reserve |	route_id | place
+|-|-|-|-|-|-|-|-|-|-|-
+| 8| 	2861| 	2078|	1|	1| 	6| 	2022-08-24 22:38:30	|2022-08-24 22:39:30	| 1| 	2|	0
+| 9|	2078|	2176|	3|	2|	6|	2022-08-24 22:40:30|	2022-08-24 22:43:30|	1|	2|	1
+|10|	2176|	2698|	3|	3|	6|	2022-08-24 22:44:30|	2022-08-24 22:47:30|	1|	2|	2
+|11|	2698|	3127|	1|	4|	6|	2022-08-24 22:48:31|	2022-08-24 22:49:31|	0|	2|	3
+|101|	3127|	2081|	2|	5|	6|	2022-08-24 22:50:31|	2022-08-24 22:52:31|	0|	2|	4
+|12|	2081|	2863|	4|	4|	6|	2022-08-24 22:53:31|	2022-08-24 22:57:31|	0|	2|	5
+|13|	2863|	3130|	4|	3|	6|	2022-08-24 22:58:31|	2022-08-24 23:02:31|	0|	2|	6
+|102|	3130|	2179|	3|	2|	6|	2022-08-24 23:03:31|	2022-08-24 23:06:31|	0|	2|	7
+|14|	2179|	2701|	4|	1|	6|	2022-08-24 23:07:31|	2022-08-24 23:11:31|	0|	2|	8
+## Current work in Kern
 * faster sigle threaded route extender (single thread has its pros)
 
 ## Future work
@@ -165,6 +181,20 @@ tuning of the core:
 - max_solver_time		
 - total_lcm_used		
 - total_pickup_distance
+
+## Helpful SQL queries
+
+1. Orders' statuses
+`select status, count(*) from taxi_order group by status`
+
+2. Legs of routes with specific number of passengers 
+`select passengers,count(*) from leg group by passengers`
+
+3. Number of orders in routes
+`SELECT order_count, COUNT(*) AS route_count from
+(SELECT route.id, count(taxi_order.id) as order_count        
+from route left join taxi_order on (route.id = taxi_order.route_id) group by route.id)
+AS aa GROUP BY order_count`
 
 ## Copyright notice
 

@@ -71,6 +71,9 @@ fn main() -> Result<(), Error> {
             thread_numb:     cfg["thread_numb"].parse().unwrap(),
             stop_wait:       cfg["stop_wait"].parse().unwrap(),
             cab_speed:       cfg["cab_speed"].parse().unwrap(),
+            pool4_size:      cfg["pool4_size"].parse().unwrap(),
+            pool3_size:      cfg["pool3_size"].parse().unwrap(),
+            pool2_size:      cfg["pool2_size"].parse().unwrap(),
         };
     }
     setup_logger(cfg["log_file"].clone());
@@ -85,6 +88,9 @@ fn main() -> Result<(), Error> {
         info!("thread_numb: {}", CNFG.thread_numb);
         info!("stop_wait: {}", CNFG.stop_wait);
         info!("cab_speed: {}", CNFG.cab_speed);
+        info!("pool4_size: {}", CNFG.pool4_size);
+        info!("pool3_size: {}", CNFG.pool3_size);
+        info!("pool2_size: {}", CNFG.pool2_size);
     }
     // init DB
     let mut client = Client::connect(&db_conn_str, NoTls)?; // 192.168.10.176
@@ -403,9 +409,9 @@ fn find_extern_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<St
     unsafe {
         dynapool(
             threads,
-            120,
-            300,
-            600,
+            CNFG.pool4_size,
+            CNFG.pool3_size,
+            CNFG.pool2_size,
             &DIST,
             MAXSTOPSNUMB as i32,
             &stops_to_array(&stops),

@@ -165,5 +165,8 @@ pub struct KernCfg{
     pub use_ext_pool: bool,
     pub thread_numb: i32,
     pub stop_wait: i16,
-    pub cab_speed: i8
+    pub cab_speed: i8,
+    pub pool4_size: i32,
+    pub pool3_size: i32,
+    pub pool2_size: i32,
 }

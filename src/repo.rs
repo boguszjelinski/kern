@@ -19,7 +19,10 @@ pub static mut CNFG: KernCfg = KernCfg {
     use_ext_pool: true,
     thread_numb: 4,
     stop_wait: 1,
-    cab_speed: 60
+    cab_speed: 60,
+    pool4_size: 120,
+    pool3_size: 300,
+    pool2_size: 600
 };
 
 pub fn find_orders_by_status_and_time(client: &mut Client, status: OrderStatus, at_time: DateTime<Local>) -> Vec<Order> {
