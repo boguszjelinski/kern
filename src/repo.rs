@@ -20,9 +20,10 @@ pub static mut CNFG: KernCfg = KernCfg {
     thread_numb: 4,
     stop_wait: 1,
     cab_speed: 60,
-    pool4_size: 120,
-    pool3_size: 300,
-    pool2_size: 600
+    max_pool4_size: 120,
+    max_pool3_size: 300,
+    max_pool2_size: 600,
+    max_extender_size: 200
 };
 
 pub fn find_orders_by_status_and_time(client: &mut Client, status: OrderStatus, at_time: DateTime<Local>) -> Vec<Order> {
@@ -108,13 +109,13 @@ pub fn find_legs_by_status(client: &mut Client, status: RouteStatus) -> Vec<Leg>
     return ret;
 }
 
-pub fn assign_order_find_cab(order_id: i64, leg_id: i64, route_id: i64, eta: i32, called_by: &str) -> String {   
+pub fn assign_order_find_cab(order_id: i64, leg_id: i64, route_id: i64, eta: i32, in_pool: &str, called_by: &str) -> String {   
     debug!("Assigning order_id={} to route_id={}, leg_id={}, routine {}",
                                             order_id, route_id, leg_id, called_by);
     return format!("\
-        UPDATE taxi_order AS o SET route_id={}, leg_id={}, cab_id=r.cab_id, status=1, eta={} \
+        UPDATE taxi_order AS o SET route_id={}, leg_id={}, cab_id=r.cab_id, status=1, eta={}, in_pool={} \
         FROM route AS r WHERE r.id={} AND o.id={} AND o.status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
-        route_id, leg_id, eta, route_id, order_id);
+        route_id, leg_id, eta, in_pool, route_id, order_id);
 }
 
 pub fn assign_order(order_id: i64, cab_id: i64, leg_id: i64, route_id: i64, eta: i16, in_pool: &str, called_by: &str) -> String {   
@@ -187,7 +188,7 @@ pub fn update_place_and_reserve_in_legs_after(route_id: i64, place: i32, dist_di
         WHERE route_id={} AND place >= {};\n", dist_diff, route_id, place);
 }
 
-pub fn update_orders_reserve_in_legs_after(route_id: i64, place_from: i32, place_to: i32, loss_reserve: i32) -> String {
+pub fn update_reserve_and_pass_in_legs_between(route_id: i64, place_from: i32, place_to: i32, loss_reserve: i32) -> String {
     debug!("Updating reserves in route_id={} from place={} to place={}, order_loss_reserve={}", 
                 route_id, place_from, place_to, loss_reserve);
     // TODO: probably we should increase passengers only to place_to -1
@@ -198,6 +199,30 @@ pub fn update_orders_reserve_in_legs_after(route_id: i64, place_from: i32, place
     return format!("\
         UPDATE leg SET reserve=LEAST(reserve, {}), passengers=passengers+1 \
         WHERE route_id={} AND place BETWEEN {} AND {};\n", loss_reserve, route_id, place_from, place_to);
+}
+
+pub fn update_reserve_in_legs_between(route_id: i64, place_from: i32, place_to: i32, loss_reserve: i32) -> String {
+    debug!("Updating reserves in route_id={} from place={} to place={}, order_loss_reserve={}", 
+                route_id, place_from, place_to, loss_reserve);
+    // TODO: probably we should increase passengers only to place_to -1
+    if loss_reserve < 0 {
+        return format!("\
+        UPDATE leg SET reserve=0 WHERE route_id={} AND place BETWEEN {} AND {};\n", route_id, place_from, place_to);
+    }
+    return format!("\
+        UPDATE leg SET reserve=LEAST(reserve, {}) \
+        WHERE route_id={} AND place BETWEEN {} AND {};\n", loss_reserve, route_id, place_from, place_to);
+}
+
+pub fn update_passengers(route_id: i64, idx_from: usize, idx_to: usize, legs: &mut Vec<Leg>) -> String {
+    debug!("Updating passengers in route_id={} from place={} to place={}", 
+                route_id, legs[idx_from].place, legs[idx_to].place);
+    for i in idx_from .. idx_to +1 { 
+        legs[i].passengers += 1;
+    }
+    return format!("\
+        UPDATE leg SET passengers=passengers+1 \
+        WHERE route_id={} AND place BETWEEN {} AND {};\n", route_id, legs[idx_from].place, legs[idx_from].place);
 }
 
 pub fn update_reserves_in_legs_before_and_including(route_id: i64, place: i32, wait_diff: i32) -> String {
