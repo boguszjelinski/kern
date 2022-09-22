@@ -4,7 +4,7 @@
 mod repo;
 mod model;
 mod distance;
-mod extender;
+mod extender2;
 mod pool;
 mod stats;
 mod utils;
@@ -13,7 +13,7 @@ use model::{KernCfg,Order,OrderStatus,OrderTransfer,Stop,Cab,CabStatus,Branch,MA
 use stats::{Stat,update_max_and_avg_time,update_max_and_avg_stats,incr_val};
 use pool::{orders_to_array,orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
 use repo::{CNFG, assign_pool_to_cab};
-use extender::{find_matching_routes, write_sql_to_file, get_handle};
+use extender2::{find_matching_routes, write_sql_to_file, get_handle};
 use utils::get_elapsed;
 use postgres::{Client, NoTls, Error};
 use chrono::{Local, Duration};
@@ -71,9 +71,10 @@ fn main() -> Result<(), Error> {
             thread_numb:     cfg["thread_numb"].parse().unwrap(),
             stop_wait:       cfg["stop_wait"].parse().unwrap(),
             cab_speed:       cfg["cab_speed"].parse().unwrap(),
-            pool4_size:      cfg["pool4_size"].parse().unwrap(),
-            pool3_size:      cfg["pool3_size"].parse().unwrap(),
-            pool2_size:      cfg["pool2_size"].parse().unwrap(),
+            max_pool4_size:  cfg["max_pool4_size"].parse().unwrap(),
+            max_pool3_size:  cfg["max_pool3_size"].parse().unwrap(),
+            max_pool2_size:  cfg["max_pool2_size"].parse().unwrap(),
+            max_extender_size:  cfg["max_extender_size"].parse().unwrap(),
         };
     }
     setup_logger(cfg["log_file"].clone());
@@ -88,9 +89,10 @@ fn main() -> Result<(), Error> {
         info!("thread_numb: {}", CNFG.thread_numb);
         info!("stop_wait: {}", CNFG.stop_wait);
         info!("cab_speed: {}", CNFG.cab_speed);
-        info!("pool4_size: {}", CNFG.pool4_size);
-        info!("pool3_size: {}", CNFG.pool3_size);
-        info!("pool2_size: {}", CNFG.pool2_size);
+        info!("pool4_size: {}", CNFG.max_pool4_size);
+        info!("pool3_size: {}", CNFG.max_pool3_size);
+        info!("pool2_size: {}", CNFG.max_pool2_size);
+        info!("max_extender_size: {}", CNFG.max_extender_size);
     }
     // init DB
     let mut client = Client::connect(&db_conn_str, NoTls)?; // 192.168.10.176
@@ -409,9 +411,9 @@ fn find_extern_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<St
     unsafe {
         dynapool(
             threads,
-            CNFG.pool4_size,
-            CNFG.pool3_size,
-            CNFG.pool2_size,
+            CNFG.max_pool4_size,
+            CNFG.max_pool3_size,
+            CNFG.max_pool2_size,
             &DIST,
             MAXSTOPSNUMB as i32,
             &stops_to_array(&stops),
@@ -643,26 +645,37 @@ mod tests {
     ];
   }
 
-  fn test_cabs_invalid() -> Vec<Cab> {
-    return vec![
-        Cab{ id: -1, location: 0},
-        Cab{ id: 2, location: 1}
-    ];
-  }
-
   fn test_orders() -> Vec<Order> {
     return vec![
-        Order{ id: 1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
+        Order{ id: 0, from: 0, to: 1, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
             received: None,started: None,completed: None,at_time: None,eta: 0},
-        Order{ id: 2, from: 0, to: 3, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
+        Order{ id: 1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
             received: None,started: None,completed: None,at_time: None,eta: 0}
     ];
   }
 
   fn test_cabs() -> Vec<Cab> {
     return vec![
+        Cab{ id: 0, location: 2},
+        Cab{ id: 1, location: 3}
+    ];
+  }
+
+  fn test_cabs_invalid() -> Vec<Cab> {
+    return vec![
         Cab{ id: 1, location: 0},
-        Cab{ id: 2, location: 1}
+        Cab{ id: -1, location: 1}
+    ];
+  }
+
+  fn test_stops() -> Vec<Stop> {
+    return vec![
+      Stop{ id: 0, bearing: 0, latitude: 1.0, longitude: 1.0},
+      Stop{ id: 1, bearing: 0, latitude: 1.000000001, longitude: 1.000000001},
+      Stop{ id: 2, bearing: 0, latitude: 1.000000002, longitude: 1.000000002},
+      Stop{ id: 3, bearing: 0, latitude: 1.000000003, longitude: 1.000000003},
+      Stop{ id: 4, bearing: 0, latitude: 1.000000004, longitude: 1.000000004},
+      Stop{ id: 5, bearing: 0, latitude: 1.000000005, longitude: 1.000000005}
     ];
   }
 
@@ -702,5 +715,27 @@ mod tests {
     let cabs: Vec<Cab> = test_cabs_invalid();
     let ret = get_rid_of_distant_customers(&orders, &cabs);
     assert_eq!(ret.len(), 2); // not distant
+  }
+
+  #[test]
+  #[serial]
+  fn test_find_extern_pool() {
+    let mut orders: Vec<Order> = test_orders();
+    let mut cabs: Vec<Cab> = test_cabs();
+    let stops = test_stops();
+    let max_route_id: &mut i64 = &mut 0;
+    let max_leg_id: &mut i64 = &mut 0;
+    unsafe { initMem(); }
+    let ret = find_extern_pool(&mut orders, &mut cabs, &stops, 1, max_route_id, max_leg_id); 
+    assert_eq!(ret.0.len(), 1); 
+    assert_eq!(ret.1, 
+        "UPDATE cab SET status=0 WHERE id=0;\n\
+        INSERT INTO route (id, status, cab_id) VALUES (0,1,0);\n\
+        INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (0,2,1,0,0,1,8,0,0);\n\
+        INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (1,1,2,1,0,1,2,0,1);\n\
+        UPDATE taxi_order SET route_id=0, leg_id=1, cab_id=0, status=1, eta=0, in_pool=true WHERE id=1 AND status=0;\n\
+        INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (2,2,0,2,0,1,8,0,0);\n\
+        INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (3,0,1,3,0,1,2,0,1);\n\
+        UPDATE taxi_order SET route_id=0, leg_id=3, cab_id=0, status=1, eta=0, in_pool=true WHERE id=0 AND status=0;\n"); 
   }
 }

@@ -4,18 +4,18 @@ This repository contains a subproject of Kabina - Kern minibus dispatcher, which
 Kern dispatcher consists of three main components:
 * **solver**, which allocates passengers to free cabs ([Hungarian](https://en.wikipedia.org/wiki/Hungarian_algorithm) and [Least Cost Method](https://www.educationlessons.co.in/notes/least-cost-method) are used)
 * **pool finder** (multithreaded, linearly scalable, written in C) to assign several customers to one bus and create routes with several stops, 5+ passengers with 10+ stops are feasible with finder based on [dynamic programming](https://en.wikipedia.org/wiki/Dynamic_programming) principles. This module is available also in Rust, Java and C#.
-* **route extender** to assign customers to matching routes (including non-perfect matching)  
+* **route extender** to assign customers to matching routes, including non-perfect matching
 
 ## Other Kabina subprojects:
 The idea behind Kabina is to provide an enabler (a software skeleton, testing framework and RestAPI proposal) for a minibus service that can assign 10+ passengers to one cab (minibus), thus reducing among others the cost of the driver per passenger. Such extended minibus service would allow for the shift to sustainable transport, it might be cost-competitive with the public transport while providing better service quality including shorter travel time.
 The following accompanying components have been developed:
 
-* Kapir: Rest API responsible for receiving requests, share statuses and store them in a database
-* Kapi: Rest API client simulator, which emulates real users and helps test the dispatcher
-* Kabina: mobile application for minibus customers 
-* Kab: mobile application for minibus drivers
-* Kavla: mobile application for presenting current routes on stops 
-* Kaboot: alternative dispatcher with RestAPI and clients written in Java
+* [Kapir](https://gitlab.com/kabina/kapir): Rest API responsible for receiving requests, share statuses and store them in a database
+* [Kapi](https://gitlab.com/kabina/kapi): Rest API client simulator, which emulates real users and helps test the dispatcher
+* [Kabina](https://gitlab.com/kabina/kabina): mobile application for minibus customers 
+* [Kab](https://gitlab.com/kabina/kab): mobile application for minibus drivers
+* [Kavla](https://gitlab.com/kabina/kavla): mobile application for presenting current routes on stops 
+* [Kaboot](https://gitlab.com/kabina/kaboot): alternative dispatcher with RestAPI and clients written in Java
 
 There are still a few components missing that need to be added to make it a market-ready solution - billing among others. 
 
@@ -65,9 +65,9 @@ This will create example stop, cab and customer entities.
 | log_file  | log file location and name
 | use_ext_pool | if external pool finder (C library) should be used
 | thread_numb | how many threads should be used
-| pool4_size | max allowed size of demand for pools with 4 passengers (depends on hardware performance)
-| pool3_size | max allowed size of demand for pools with 3 passengers
-| pool2_size | max allowed size of demand for pools with 2 passengers
+| max_pool4_size | max allowed size of demand for pools with 4 passengers (depends on hardware performance)
+| max_pool3_size | max allowed size of demand for pools with 3 passengers
+| max_pool2_size | max allowed size of demand for pools with 2 passengers
 
 Scheduler can be started with `target/release/kern` or `cargo run --release`
 Though nothing will happen until cabs will report their availability and customers will submit their trip requests, both via RestAPI. 
