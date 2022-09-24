@@ -14,7 +14,6 @@ pub static mut CNFG: KernCfg = KernCfg {
     max_solver_size: 500, // count
     run_after: 15, // secs
     max_legs: 8,
-    extend_margin: 1.05,
     max_angle: 120.0,
     use_ext_pool: true,
     thread_numb: 4,
@@ -23,7 +22,6 @@ pub static mut CNFG: KernCfg = KernCfg {
     max_pool4_size: 120,
     max_pool3_size: 300,
     max_pool2_size: 600,
-    max_extender_size: 200
 };
 
 pub fn find_orders_by_status_and_time(client: &mut Client, status: OrderStatus, at_time: DateTime<Local>) -> Vec<Order> {
@@ -87,11 +85,12 @@ pub fn find_cab_by_status(client: &mut Client, status: CabStatus) -> Vec<Cab>{
     return ret;
 }
 
-pub fn find_legs_by_status(client: &mut Client, status: RouteStatus) -> Vec<Leg> {
+pub fn find_legs(client: &mut Client) -> Vec<Leg> {
     let mut ret: Vec<Leg> = Vec::new();
+    // find ASSIGNED or STARTED
     for row in client.query("SELECT id, from_stand, to_stand, place, distance, \
-        started, completed, route_id, status, reserve, passengers FROM leg WHERE status = $1 \
-        ORDER BY route_id ASC, place ASC", &[&(status as i32)]).unwrap() {
+        started, completed, route_id, status, reserve, passengers FROM leg WHERE status = 1 OR status = 5 \
+        ORDER BY route_id ASC, place ASC", &[]).unwrap() {
         ret.push(Leg {
             id: row.get(0),
             from: row.get(1),
@@ -188,18 +187,18 @@ pub fn update_place_and_reserve_in_legs_after(route_id: i64, place: i32, dist_di
         WHERE route_id={} AND place >= {};\n", dist_diff, route_id, place);
 }
 
-pub fn update_reserve_and_pass_in_legs_between(route_id: i64, place_from: i32, place_to: i32, loss_reserve: i32) -> String {
-    debug!("Updating reserves in route_id={} from place={} to place={}, order_loss_reserve={}", 
-                route_id, place_from, place_to, loss_reserve);
-    // TODO: probably we should increase passengers only to place_to -1
-    if loss_reserve < 0 {
-        return format!("\
-        UPDATE leg SET reserve=0, passengers=passengers+1 WHERE route_id={} AND place BETWEEN {} AND {};\n", route_id, place_from, place_to);
-    }
-    return format!("\
-        UPDATE leg SET reserve=LEAST(reserve, {}), passengers=passengers+1 \
-        WHERE route_id={} AND place BETWEEN {} AND {};\n", loss_reserve, route_id, place_from, place_to);
-}
+// pub fn update_reserve_and_pass_in_legs_between(route_id: i64, place_from: i32, place_to: i32, loss_reserve: i32) -> String {
+//     debug!("Updating reserves in route_id={} from place={} to place={}, order_loss_reserve={}", 
+//                 route_id, place_from, place_to, loss_reserve);
+//     // TODO: probably we should increase passengers only to place_to -1
+//     if loss_reserve < 0 {
+//         return format!("\
+//         UPDATE leg SET reserve=0, passengers=passengers+1 WHERE route_id={} AND place BETWEEN {} AND {};\n", route_id, place_from, place_to);
+//     }
+//     return format!("\
+//         UPDATE leg SET reserve=LEAST(reserve, {}), passengers=passengers+1 \
+//         WHERE route_id={} AND place BETWEEN {} AND {};\n", loss_reserve, route_id, place_from, place_to);
+// }
 
 pub fn update_reserve_in_legs_between(route_id: i64, place_from: i32, place_to: i32, loss_reserve: i32) -> String {
     debug!("Updating reserves in route_id={} from place={} to place={}, order_loss_reserve={}", 

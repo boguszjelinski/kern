@@ -97,15 +97,15 @@ pub enum OrderStatus {
 //    COMPLETED
 }
 
-#[derive(Copy,Clone)]
+//#[derive(Copy,Clone)]
 pub enum RouteStatus {
 //    PLANNED,   // proposed by Pool
     ASSIGNED = 1,  // not confirmed, initial status
-    ACCEPTED = 2,  // plan accepted by customer, waiting for the cab
+//    ACCEPTED = 2,  // plan accepted by customer, waiting for the cab
 //    REJECTED,  // proposal rejected by customer(s)
 //    ABANDONED, // cancelled after assignment but before 'PICKEDUP'
-//    STARTED,   // status needed by legs
-    COMPLETED = 6
+    STARTED = 5,   // status needed by legs
+//    COMPLETED = 6
 }
 /*
 impl RouteStatus {
@@ -160,7 +160,6 @@ pub struct KernCfg{
     pub max_solver_size: usize,
     pub run_after:u64,
     pub max_legs: i8,
-    pub extend_margin: f32,
     pub max_angle: f32,
     pub use_ext_pool: bool,
     pub thread_numb: i32,
@@ -169,5 +168,4 @@ pub struct KernCfg{
     pub max_pool4_size: i32,
     pub max_pool3_size: i32,
     pub max_pool2_size: i32,
-    pub max_extender_size: i32,
 }

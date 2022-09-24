@@ -65,7 +65,6 @@ fn main() -> Result<(), Error> {
             max_solver_size: cfg["max_solver_size"].parse().unwrap(),
             run_after:       cfg["run_after"].parse().unwrap(),
             max_legs:        cfg["max_legs"].parse().unwrap(),
-            extend_margin:   cfg["extend_margin"].parse::<f32>().unwrap(),
             max_angle:       cfg["max_angle"].parse::<f32>().unwrap(),
             use_ext_pool:    cfg["use_ext_pool"].parse::<bool>().unwrap(),
             thread_numb:     cfg["thread_numb"].parse().unwrap(),
@@ -74,7 +73,6 @@ fn main() -> Result<(), Error> {
             max_pool4_size:  cfg["max_pool4_size"].parse().unwrap(),
             max_pool3_size:  cfg["max_pool3_size"].parse().unwrap(),
             max_pool2_size:  cfg["max_pool2_size"].parse().unwrap(),
-            max_extender_size:  cfg["max_extender_size"].parse().unwrap(),
         };
     }
     setup_logger(cfg["log_file"].clone());
@@ -83,7 +81,6 @@ fn main() -> Result<(), Error> {
         info!("max_solver_size: {}", CNFG.max_solver_size);
         info!("run_after: {}", CNFG.run_after);
         info!("max_legs: {}", CNFG.max_legs);
-        info!("extend_margin: {}", CNFG.extend_margin);
         info!("max_angle: {}", CNFG.max_angle);
         info!("use_ext_pool: {}", CNFG.use_ext_pool);
         info!("thread_numb: {}", CNFG.thread_numb);
@@ -92,7 +89,6 @@ fn main() -> Result<(), Error> {
         info!("pool4_size: {}", CNFG.max_pool4_size);
         info!("pool3_size: {}", CNFG.max_pool3_size);
         info!("pool2_size: {}", CNFG.max_pool2_size);
-        info!("max_extender_size: {}", CNFG.max_extender_size);
     }
     // init DB
     let mut client = Client::connect(&db_conn_str, NoTls)?; // 192.168.10.176
@@ -259,58 +255,62 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
     // marking assigned orders to get rid of them; cabs are marked in find_pool 
     let numb = count_orders(pl, &demand);
     info!("Pool finder - number of assigned orders: {}", numb);
-    // shrinking vectors, getting rid of .id == -1 and (TODO) distant orders and cabs !!!!!!!!!!!!!!!
-    (*cabs, demand) = shrink(&cabs, demand);
-    stats::update_max_and_avg_stats(Stat::AvgSolverDemandSize, Stat::MaxSolverDemandSize, demand.len() as i64);
-    if cabs.len() == 0 {
-        info!("No cabs after pool finder");
-        pool_handle.join().expect("Pool SQL thread being joined has panicked");
-        return;
-    }
-    if demand.len() == 0 {
-        info!("No demand after pool finder");
-        pool_handle.join().expect("Pool SQL thread being joined has panicked");
-        return;
-    }
-    // LCM
-    let mut lcm_handle = thread::spawn(|| { });
-    unsafe {
-    if demand.len() > CNFG.max_solver_size && cabs.len() > CNFG.max_solver_size {
-        // too big to send to solver, it has to be cut by LCM
-        // first just kill the default thread
-        info!("LCM input: demand={}, supply={}", demand.len(), cabs.len());
-        let start_lcm = Instant::now();
-        lcm_handle.join().expect("LCM SQL thread being joined has panicked");
-        lcm_handle = lcm(host, &cabs, &demand, &mut max_route_id, &mut max_leg_id, 
-                std::cmp::min(demand.len(), cabs.len()) as i16 - CNFG.max_solver_size as i16);
-        update_max_and_avg_time(Stat::AvgLcmTime, Stat::MaxLcmTime, start_lcm);
-        incr_val(Stat::TotalLcmUsed);
-    }}
-    // SOLVER
-    let start_solver = Instant::now();
-    info!("Solver input - demand={}, supply={}", demand.len(), cabs.len());
-    let sol = munkres(&cabs, &demand);
-    let before_solver = max_route_id;
 
-    sql = repo::assign_cust_to_cab_munkres(sol, &cabs, &demand, &mut max_route_id, &mut max_leg_id);
-    
-    update_max_and_avg_time(Stat::AvgSolverTime, Stat::MaxSolverTime, start_solver);
-    write_sql_to_file(itr, &sql, "munkres");
-    if sql.len() > 0 {
-        match client.batch_execute(&sql) { // here SYNC execution
-            Ok(_) => {}
-            Err(err) => {
-                warn!("Solver SQL output failed to run {}, err: {}", sql, err);
+    // we don't want to run run solver each time, once a minute is fine, these are som trouble-making customers :)
+    if (itr % 4) == 0 {
+        // shrinking vectors, getting rid of .id == -1 and (TODO) distant orders and cabs !!!!!!!!!!!!!!!
+        (*cabs, demand) = shrink(&cabs, demand);
+        stats::update_max_and_avg_stats(Stat::AvgSolverDemandSize, Stat::MaxSolverDemandSize, demand.len() as i64);
+        if cabs.len() == 0 {
+            info!("No cabs after pool finder");
+            pool_handle.join().expect("Pool SQL thread being joined has panicked");
+            return;
+        }
+        if demand.len() == 0 {
+            info!("No demand after pool finder");
+            pool_handle.join().expect("Pool SQL thread being joined has panicked");
+            return;
+        }
+        // LCM
+        let mut lcm_handle = thread::spawn(|| { });
+        unsafe {
+        if demand.len() > CNFG.max_solver_size && cabs.len() > CNFG.max_solver_size {
+            // too big to send to solver, it has to be cut by LCM
+            // first just kill the default thread
+            info!("LCM input: demand={}, supply={}", demand.len(), cabs.len());
+            let start_lcm = Instant::now();
+            lcm_handle.join().expect("LCM SQL thread being joined has panicked");
+            lcm_handle = lcm(host, &cabs, &demand, &mut max_route_id, &mut max_leg_id, 
+                    std::cmp::min(demand.len(), cabs.len()) as i16 - CNFG.max_solver_size as i16);
+            update_max_and_avg_time(Stat::AvgLcmTime, Stat::MaxLcmTime, start_lcm);
+            incr_val(Stat::TotalLcmUsed);
+        }}
+        // SOLVER
+        let start_solver = Instant::now();
+        info!("Solver input - demand={}, supply={}", demand.len(), cabs.len());
+        let sol = munkres(&cabs, &demand);
+        let before_solver = max_route_id;
+
+        sql = repo::assign_cust_to_cab_munkres(sol, &cabs, &demand, &mut max_route_id, &mut max_leg_id);
+        
+        update_max_and_avg_time(Stat::AvgSolverTime, Stat::MaxSolverTime, start_solver);
+        write_sql_to_file(itr, &sql, "munkres");
+        if sql.len() > 0 {
+            match client.batch_execute(&sql) { // here SYNC execution
+                Ok(_) => {}
+                Err(err) => {
+                    warn!("Solver SQL output failed to run {}, err: {}", sql, err);
+                }
             }
         }
+        lcm_handle.join().expect("LCM SQL thread being joined has panicked");
+        info!("Dispatch completed, solver assigned: {}", max_route_id - before_solver);
     }
     // we have to join so that the next run of dispatcher gets updated orders
     let status_handle = get_handle(host.clone(), repo::save_status(), "stats".to_string());
     extender_handle.join().expect("Extender SQL thread being joined has panicked");
     pool_handle.join().expect("Pool SQL thread being joined has panicked");
-    lcm_handle.join().expect("LCM SQL thread being joined has panicked");
     status_handle.join().expect("Status SQL thread being joined has panicked");
-    info!("Dispatch completed, solver assigned: {}", max_route_id - before_solver);
 }
 
 // least/low cost method - shrinking the model so that it can be sent to solver

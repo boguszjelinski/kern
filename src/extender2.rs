@@ -1,13 +1,13 @@
-use std::io::Write;
+//use std::io::Write;
 use std::{thread, cmp};
 use log::{debug,info,warn};
 //use std::io::Write;
 use postgres::{Client, NoTls};
 use crate::model::{ Order, Stop, Leg, RouteStatus };
-use crate::repo::{CNFG,find_legs_by_status,assign_order_find_cab, update_place_and_reserve_in_legs_after,
+use crate::repo::{CNFG,find_legs,assign_order_find_cab, update_place_and_reserve_in_legs_after,
                   create_leg,update_leg_a_bit,update_leg_with_route_id,update_reserves_in_legs_before_and_including,
-                  update_reserve_in_legs_between, update_passengers, read_stops};
-use crate::distance::{DIST, init_distance};
+                  update_reserve_in_legs_between, update_passengers};
+use crate::distance::{DIST};
 use crate::pool::bearing_diff;
 use crate::stats::{add_avg_element, Stat};
 use crate::utils::get_elapsed;
@@ -22,14 +22,11 @@ struct LegIndicesWithDistance {
 
 pub fn find_matching_routes(_thr_numb: i32, itr: i32, host: &String, client: &mut Client, demand: &Vec<Order>, stops: &Vec<Stop>, 
                             max_leg_id: &mut i64) -> (Vec<Order>, thread::JoinHandle<()>) {
-
-    if demand.len() > unsafe { CNFG.max_extender_size } as usize {
-      return (demand.to_vec(), thread::spawn(|| { }));
-    }
+    //return (demand.to_vec(), thread::spawn(|| { }));
     if demand.len() == 0 {
         return (Vec::new(), thread::spawn(|| { }));
     }
-    let mut legs: Vec<Leg> = find_legs_by_status(client, RouteStatus::ASSIGNED);
+    let mut legs: Vec<Leg> = find_legs(client);
     if legs.len() == 0 {
         return (demand.to_vec(), thread::spawn(|| { }));
     }
@@ -61,12 +58,11 @@ fn extend_routes(itr: i32, demand: &Vec<Order>, stops: &Vec<Stop>, legs: &mut Ve
   return (ret, sql_bulk);
 }
 
-pub fn write_sql_to_file(itr: i32, sql: &String, label: &str) {
-  let file_name = format!("{}-{}.sql", label.to_string(), itr);
-  let msg = format!("SQL for {} failed", file_name);
-  let mut file = std::fs::File::create(&file_name).expect(&("Create ".to_string() + &msg));
-  file.write_all(sql.as_bytes()).expect(&("Write ".to_string() + &msg));
-  
+pub fn write_sql_to_file(_itr: i32, _sql: &String, _label: &str) {
+  // let file_name = format!("{}-{}.sql", label.to_string(), itr);
+  // let msg = format!("SQL for {} failed", file_name);
+  // let mut file = std::fs::File::create(&file_name).expect(&("Create ".to_string() + &msg));
+  // file.write_all(sql.as_bytes()).expect(&("Write ".to_string() + &msg));
 }
 
 // try to find a matching leg, if not found - return the starting index so that we could look for non-prefect matches
@@ -106,17 +102,30 @@ fn try_to_extend_route(demand: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>) -> Op
       // not from 0 as each leg we are looking for must have a non-completed predecessor
       // routes from the same stand which have NOT started will surely be seen by passengers,
       // they can get aboard
-      let leg: Leg = legs[i];
-      // we should get only not-completed legs, but ...
-      if leg.status == RouteStatus::COMPLETED as i32 || leg.id == -1 {// some bug in modify_leg / extends_legs_in_vec ?
-        i += 1;
-        continue; 
-      }
+      let mut leg: Leg = legs[i];
       // first find perfect match when new route to check
       if leg.route_id != legs[i-1].route_id {
-        initial_distance = 0; 
-        leg_count = -1;
+        initial_distance = leg.dist as i16; // we won't extend this first leg but we have to take the distance 
+        // with one exception - started legs can be quite advanced
+        if leg.status == RouteStatus::STARTED as i32 {
+          let minutes_passed: i32 = (get_elapsed(leg.started)/60) as i32;
+          initial_distance = (leg.dist - minutes_passed) as i16  + CNFG.stop_wait; // TODO: how it might be affected with 30km/h ?
+          if initial_distance < 0 {
+            initial_distance = 0;
+          }
+        }
+        leg_count = count_legs(leg.route_id, legs, i);
+        // 'i' is the first leg, that we are not interested in, but i+1 may be another route
+        if i + 1 < legs.len() {
+          if leg.route_id != legs[i + 1].route_id {
+            i += 1;
+            continue;
+          }
+        } else {
+          break;
+        }
         i = check_if_perfect_match_from(demand.from, legs[i].route_id, legs, i + 1); // this sets the index, we will check "direct hit" later on too
+        leg = legs[i];
         // +1 above as we cannot modify the first leg, a cab might not be able to read the changes before starting the leg
       } 
       else if DIST[leg.from as usize][demand.from as usize] as i32 > demand.wait // just a quick filter
@@ -126,36 +135,19 @@ fn try_to_extend_route(demand: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>) -> Op
         // TODO/TASK - demand.from == leg.to && legs[i+1].route_id != leg.route_id
         // possible extension beyond current legs
       }
-      if leg_count == -1 { // just to count once for a route, TODO: a hashmap before we go thru all orders?
-        leg_count = count_legs(leg.route_id, legs);
-      }
       let not_too_long: bool = leg_count <= CNFG.max_legs;
       
-      let mut distance_diff = DIST[leg.from as usize][demand.from as usize] + CNFG.stop_wait +
+      let distance_diff = DIST[leg.from as usize][demand.from as usize] + CNFG.stop_wait +
                                     DIST[demand.from as usize][leg.to as usize] - leg.dist as i16;
-      // -1 might be just INTEGER rounding error, to exceed reserve by more than 1 is not acceptable, max wait or max loss would not be met for other customers
-// DEBUGGING 
-if DIST[leg.from as usize][demand.from as usize] == 0 || DIST[demand.from as usize][leg.to as usize] == 0 {
-        warn!("----------------------------------- ZERO -----------------------------------");
-}
-      if (leg.reserve - distance_diff as i32) < -1 {
-        i += 1;
-        continue;
-      }
-
       if demand.from != leg.to // == means direct hit in the next leg/iteration, leg.from; here we miss one possibility, where leg is the last leg in that route
-          // previous leg is from the same route
-          && legs[i - 1].route_id == leg.route_id // still in the same route
           // the previous leg cannot be completed TASK!! in the future consider other statuses here
           // we want the previous leg to be active
           // to give some time for both parties to get the assignment
-          && legs[i - 1].status != RouteStatus::COMPLETED as i32
-          // check MAXLOSS
+          && leg.status == RouteStatus::ASSIGNED as i32
+          && leg.reserve > 1 && leg.reserve > distance_diff as i32 // 1 as a stop itself takes 1
           && ((demand.from == leg.from && demand.wait >= initial_distance as i32)// direct hit and maxwait check
               || (not_too_long
                 && demand.wait >= (initial_distance + DIST[leg.from as usize][demand.from as usize]) as i32 // MAXWAIT
-                //&& leg.reserve >= distance_diff as i32 // new path - old path length; integers so it can even be negative :) we will check it
-                //&& ((distance_diff + CNFG.stop_wait) as f32) < (leg.dist as f32) * CNFG.extend_margin
                 && bearing_diff(stops[leg.from as usize].bearing, stops[demand.from as usize].bearing) < CNFG.max_angle
                 && bearing_diff(stops[demand.from as usize].bearing, stops[leg.to as usize].bearing) < CNFG.max_angle
                 ) // 5% TASK - global config, wait at stop?
@@ -164,6 +156,7 @@ if DIST[leg.from as usize][demand.from as usize] == 0 || DIST[demand.from as usi
         // OK, so we found the first 'pickup' leg, either direct hit or can be extended
         let mut to_found: bool = false;
         let mut distance_in_pool: i16 = 0;
+        let mut distance_diff2: i16;
         // we have found "from", now let's find "to"
         let mut k = check_if_perfect_match_to(demand.to, legs, i); // "to might be in the same leg as "from", we have to start from 'i'
         while k < legs.len() {
@@ -180,22 +173,16 @@ if DIST[leg.from as usize][demand.from as usize] == 0 || DIST[demand.from as usi
             break;
           }
           if k == i { // we extend the same leg as in "from phase" 
-            distance_diff = DIST[legs[k].from as usize][demand.from as usize] + CNFG.stop_wait + 
+            distance_diff2 = DIST[legs[k].from as usize][demand.from as usize] + CNFG.stop_wait + 
                             DIST[demand.from as usize][demand.to as usize] + CNFG.stop_wait +
                             DIST[demand.to as usize][legs[k].to as usize] - legs[k].dist as i16;
           } else {
-            distance_diff = DIST[legs[k].from as usize][demand.to as usize] + CNFG.stop_wait +
+            distance_diff2 = DIST[legs[k].from as usize][demand.to as usize] + CNFG.stop_wait +
                              DIST[demand.to as usize][legs[k].to as usize] - legs[k].dist as i16;
           }
-          if (legs[k].reserve - distance_diff as i32) < -1 {
-            k += 1;
-            continue;
-          }
-          if not_too_long
-              && legs[k].reserve >= distance_diff as i32
-              // && ((distance_diff + CNFG.stop_wait) as f32) < (legs[k].dist as f32) * CNFG.extend_margin
-              && bearing_diff(stops[legs[k].from as usize].bearing, stops[demand.to as usize].bearing) < CNFG.max_angle
-              && bearing_diff(stops[demand.to as usize].bearing, stops[legs[k].to as usize].bearing) < CNFG.max_angle {
+          if legs[k].reserve > 1 && legs[k].reserve > distance_diff2 as i32
+             && bearing_diff(stops[legs[k].from as usize].bearing, stops[demand.to as usize].bearing) < CNFG.max_angle
+             && bearing_diff(stops[demand.to as usize].bearing, stops[legs[k].to as usize].bearing) < CNFG.max_angle {
             // passenger is dropped before "getToStand", but the whole distance is counted above
             distance_in_pool -= DIST[demand.to as usize][legs[k].to as usize];
             to_found = true;
@@ -204,10 +191,11 @@ if DIST[leg.from as usize][demand.from as usize] == 0 || DIST[demand.from as usi
           k += 1;
         }
         if to_found 
-            //&& demand.wait as i16 >= initial_distance     why check this, it has been checked above 
             // TASK: maybe distance*maxloss is a performance bug,
             // distanceWithLoss should be stored in DB and used
             && (1.0 + demand.loss as f32 / 100.0) * demand.dist as f32 >= distance_in_pool as f32 {
+            // debug!("RESERVE DEBUG1 i={}, k={}, ord_id={}, leg_id={}, leg_distance={}, reserve={}, distance_diff={}, initial_distance={},", 
+            //         i,k, demand.id, leg.id, leg.dist, leg.reserve, distance_diff, initial_distance);
             feasible.push(LegIndicesWithDistance{
                 idx_from: i as i32, 
                 idx_to: k as i32, 
@@ -217,7 +205,7 @@ if DIST[leg.from as usize][demand.from as usize] == 0 || DIST[demand.from as usi
         }
         i = k;
       }
-      if leg.status == RouteStatus::ASSIGNED as i32 || leg.status == RouteStatus::ACCEPTED as i32 {
+      if leg.status == RouteStatus::ASSIGNED as i32 { // do not add time for STARTED
         initial_distance += leg.dist as i16 + CNFG.stop_wait;
       }
       i += 1;
@@ -232,6 +220,7 @@ if DIST[leg.from as usize][demand.from as usize] == 0 || DIST[demand.from as usi
     // a) the version with least extension 
     // b) the least sum of prolonged trips of other orders
     feasible.sort_by_key(|e| e.dist.clone());
+    // debug!("RESERVE DEBUG2 i={}, k={}, ord_id={}", feasible[0].idx_from, feasible[0].idx_to, demand.id);
     return Some(feasible[0]); 
   }
 }
@@ -507,15 +496,6 @@ fn update_reserve_between(from_leg_idx: i32, leg_idx: i32, legs: &mut Vec<Leg>, 
   }
 }
 
-fn update_reserve_and_pass_between(from_leg_idx: i32, leg_idx: i32, legs: &mut Vec<Leg>, loss_reserve: i32) {
-  for i in from_leg_idx as usize .. leg_idx as usize +1 { // +1 = including leg_idx
-    legs[i].reserve = cmp::min( legs[i].reserve, loss_reserve);
-  }
-  for i in from_leg_idx as usize .. leg_idx as usize {
-    legs[i].passengers += 1;
-  }
-}
-
 fn sum_distances(legs: &Vec<Leg>, leg_idx: i32) -> i32 {
   let mut sum: i32 = 0;
   for i in (0..leg_idx as usize + 1).rev() {
@@ -527,14 +507,16 @@ fn sum_distances(legs: &Vec<Leg>, leg_idx: i32) -> i32 {
   return sum;
 }
 
-fn count_legs(id: i64, legs: &Vec<Leg>) -> i8 {
+fn count_legs(id: i64, legs: &Vec<Leg>, start: usize) -> i8 {
     let mut count: i8 = 0;
-    for l in legs.iter() {
-        if l.route_id == id {
-            count += 1;
-        } else {
-          break;
-        }
+    let mut i = start;
+    while i < legs.len() {
+      if legs[i].route_id == id {
+          count += 1;
+      } else {
+        break;
+      }
+      i += 1;
     }
     return count;
 }
@@ -562,6 +544,8 @@ pub fn get_handle(host: String, sql: String, label: String)  -> thread::JoinHand
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::distance::init_distance;
+  use crate::repo::read_stops;
 
   fn get_test_legs() -> Vec<Leg> {
     return vec![
@@ -584,7 +568,7 @@ mod tests {
 
   #[test]
   fn test_add() {
-      assert_eq!(count_legs(123, &get_test_legs()), 3);
+      assert_eq!(count_legs(123, &get_test_legs(), 0), 3);
   }
 
   #[test]
@@ -666,12 +650,6 @@ mod tests {
   #[test]
   fn test_try_to_extend_route_when_nonperfect_match() {
     let order1= Order{ id: 1, from: 0, to: 1,
-      wait: 10,loss: 50,dist: 2,shared: true,in_pool: false,received: None,started: None,completed: None,at_time: None,eta: 0,
-    };
-    let order2= Order{ id: 2, from: 1, to: 2,
-      wait: 10,loss: 50,dist: 2,shared: true,in_pool: false,received: None,started: None,completed: None,at_time: None,eta: 0,
-    };
-    let order3= Order{ id: 3, from: 1, to: 3,
       wait: 10,loss: 50,dist: 2,shared: true,in_pool: false,received: None,started: None,completed: None,at_time: None,eta: 0,
     };
     let stops: Vec<Stop> = get_stops();
@@ -758,16 +736,40 @@ mod tests {
     init_distance(&stops);
 
     let mut legs: Vec<Leg> = vec![
-      Leg{ id: 133, route_id: 29, from: 3025, to: 3023, place: 0, dist: 6, reserve:1, started: None, completed: None, status: 0, passengers:1},
-      Leg{ id: 134, route_id: 29, from: 3023, to: 3762, place: 1, dist: 3, reserve:1, started: None, completed: None, status: 0, passengers:0},
-      Leg{ id: 135, route_id: 29, from: 3762, to: 4165, place: 2, dist: 2, reserve:1, started: None, completed: None, status: 0, passengers:1},
-      Leg{ id: 136, route_id: 29, from: 3023, to: 3762, place: 3, dist: 10,reserve:1, started: None, completed: None, status: 0, passengers:2},
+      Leg{ id: 133, route_id: 29, from: 3025, to: 3023, place: 0, dist: 6, reserve:1, started: None, completed: None, status: 1, passengers:1},
+      Leg{ id: 134, route_id: 29, from: 3023, to: 3762, place: 1, dist: 3, reserve:1, started: None, completed: None, status: 1, passengers:0},
+      Leg{ id: 135, route_id: 29, from: 3762, to: 4165, place: 2, dist: 2, reserve:1, started: None, completed: None, status: 1, passengers:1},
+      Leg{ id: 136, route_id: 29, from: 3023, to: 3762, place: 3, dist: 10,reserve:1, started: None, completed: None, status: 1, passengers:2},
     ];
     let order1= Order{ id: 0, from: 4066, to: 4063,
       wait: 15,loss: 70, dist: 6, shared: true,in_pool: false,received: None,started: None,completed: None,at_time: None,eta: 0,
     };
     let demand: Vec<Order> = vec![order1];
     let ret = extend_routes(0, &demand, &stops, &mut legs, &mut 926);
+    assert_eq!(ret.0.len(), 1); // order does not fit the route
+  }
+
+  #[test]
+  fn test_try_to_extend_route_debugging_a_real_bug2() {
+    let db_conn = "postgresql://kabina:kaboot@192.168.10.176:5432/kabina";
+    let mut client = Client::connect(&db_conn, NoTls).unwrap();
+    let stops = read_stops(&mut client);
+    init_distance(&stops);
+
+    let mut legs: Vec<Leg> = vec![
+      Leg{ id: 133, route_id: 28, from: 1, to: 2, place: 0, dist: 4, reserve:0, started: None, completed: None, status: 1, passengers:1}, 
+      // the first leg was completed
+      //Leg{ id: 133, route_id: 29, from: 1239, to: 1238, place: 0, dist: 4, reserve:0, started: None, completed: None, status: 0, passengers:1},
+      Leg{ id: 134, route_id: 29, from: 1238, to:  432, place: 1, dist: 5, reserve:0, started: None, completed: None, status: 5, passengers:0},
+      Leg{ id: 135, route_id: 29, from: 432,  to: 4672, place: 2, dist: 3, reserve:0, started: None, completed: None, status: 1, passengers:1},
+      Leg{ id: 136, route_id: 29, from: 4672, to: 4673, place: 3, dist: 7,reserve:0, started: None, completed: None, status: 1, passengers:2},
+      Leg{ id: 137, route_id: 29, from: 4673, to:  429, place: 4, dist: 6,reserve:6, started: None, completed: None, status: 1, passengers:1},
+    ];
+    let order1= Order{ id: 0, from: 280, to: 282,
+      wait: 15,loss: 70, dist: 1, shared: true,in_pool: false,received: None,started: None,completed: None,at_time: None,eta: 0,
+    };
+    let demand: Vec<Order> = vec![order1];
+    let ret = extend_routes(0, &demand, &stops, &mut legs, &mut 5405);
     assert_eq!(ret.0.len(), 1); // order does not fit the route
   }
 
@@ -859,14 +861,6 @@ mod tests {
     decrease_reserve_before(1, &mut legs, 0);
     assert_eq!(legs[0].reserve, 0);
     assert_eq!(legs[2].reserve, 3);
-  }
-
-  #[test]
-  fn test_decrease_reserve_between() {
-    let mut legs = get_test_legs();
-    assert_eq!(legs[1].reserve, 2);
-    update_reserve_and_pass_between(0, 1, &mut legs, 0);
-    assert_eq!(legs[1].reserve, 0);
   }
 
   #[test]
