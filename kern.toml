@@ -1,8 +1,7 @@
 db_conn = "postgresql://kabina:kaboot@192.168.10.176:5432/kabina"
 run_after = 15
 max_assign_time = 3
-max_legs = 8
-extend_margin = 1.4
+max_legs = 10
 max_angle = 120.0
 cab_speed = 60
 stop_wait = 1
@@ -13,4 +12,3 @@ max_pool4_size = 120
 max_pool3_size = 300
 max_pool2_size = 600
 max_solver_size = 500
-max_extender_size = 400
