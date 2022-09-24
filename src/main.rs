@@ -718,6 +718,7 @@ mod tests {
   }
 
   #[test]
+  #[ignore] 
   #[serial]
   fn test_find_extern_pool() {
     let mut orders: Vec<Order> = test_orders();

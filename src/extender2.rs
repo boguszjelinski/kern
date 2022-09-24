@@ -549,9 +549,9 @@ mod tests {
 
   fn get_test_legs() -> Vec<Leg> {
     return vec![
-      Leg{ id: 0, route_id: 123, from: 0, to: 1, place: 0, dist: 1, reserve:1, started: None, completed: None, status: 0, passengers:1},
-      Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: 1, reserve:2, started: None, completed: None, status: 0, passengers:1},
-      Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: 1, reserve:3, started: None, completed: None, status: 0, passengers:1},
+      Leg{ id: 0, route_id: 123, from: 0, to: 1, place: 0, dist: 1, reserve:1, started: None, completed: None, status: 1, passengers:1},
+      Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: 1, reserve:2, started: None, completed: None, status: 1, passengers:1},
+      Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: 1, reserve:3, started: None, completed: None, status: 1, passengers:1},
     ];
   }
 
@@ -578,10 +578,11 @@ mod tests {
     let max_leg_id: &mut i64 = &mut 1;
     let sql = extend_legs_in_db_and_vec(&order, 0, 0, &mut get_test_legs(), 2, 1, 0,        max_leg_id, "label");
 
-    assert_eq!(sql, "UPDATE leg SET reserve=LEAST(reserve, 0), passengers=passengers+1 WHERE route_id=123 AND place BETWEEN 1 AND 0;\n\
-        UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-1) WHERE route_id=123 AND place >= 2;\n\
-        INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (1,2,1,2,0,1,0,123,1);\n\
-        UPDATE leg SET to_stand=2, distance=0, reserve=0 WHERE id=0;\n");
+    assert_eq!(sql, "UPDATE leg SET reserve=LEAST(reserve, 0) WHERE route_id=123 AND place BETWEEN 1 AND 0;\n\
+    UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-1) WHERE route_id=123 AND place >= 2;\n\
+    INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) \
+    VALUES (1,2,1,2,0,1,0,123,1);\n\
+    UPDATE leg SET to_stand=2, distance=0, reserve=0 WHERE id=0;\n");
   }
 
   #[test]
@@ -627,24 +628,30 @@ mod tests {
     let ret = extend_routes(0, &demand, &stops, &mut legs, &mut 0);
     assert_eq!(ret.0.len(), 0);
     assert_eq!(legs.len(), 3);
-    assert_eq!(ret.1, "UPDATE taxi_order AS o SET route_id=123, leg_id=1, cab_id=r.cab_id, status=1, eta=0 FROM route AS r WHERE r.id=123 AND o.id=0 AND o.status=0;\n");
+    assert_eq!(ret.1, "UPDATE taxi_order AS o SET route_id=123, leg_id=1, cab_id=r.cab_id, status=1, eta=0, in_pool=true \
+    FROM route AS r WHERE r.id=123 AND o.id=0 AND o.status=0;\n\
+    UPDATE leg SET passengers=passengers+1 WHERE route_id=123 AND place BETWEEN 1 AND 1;\n");
 
     let demand: Vec<Order> = vec![order2];
 
     let ret = extend_routes(0, &demand, &stops, &mut legs, &mut 0);
     assert_eq!(ret.0.len(), 0);
     assert_eq!(legs.len(), 3);
-    assert_eq!(ret.1, "UPDATE taxi_order AS o SET route_id=123, leg_id=1, cab_id=r.cab_id, status=1, eta=0 FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n");
+    assert_eq!(ret.1, "UPDATE taxi_order AS o SET route_id=123, leg_id=1, cab_id=r.cab_id, status=1, eta=0, in_pool=true \
+    FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n\
+    UPDATE leg SET passengers=passengers+1 WHERE route_id=123 AND place BETWEEN 1 AND 1;\n");
 
     let demand: Vec<Order> = vec![order1, order2];
 
     let ret = extend_routes(0, &demand, &stops, &mut legs, &mut 0);
     assert_eq!(ret.0.len(), 0);
     assert_eq!(legs.len(), 3);
-    assert_eq!(ret.1, "UPDATE taxi_order AS o SET route_id=123, leg_id=1, cab_id=r.cab_id, status=1, eta=0 \
-              FROM route AS r WHERE r.id=123 AND o.id=0 AND o.status=0;\n\
-              UPDATE taxi_order AS o SET route_id=123, leg_id=1, cab_id=r.cab_id, status=1, eta=0 \
-              FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n");
+    assert_eq!(ret.1, "UPDATE taxi_order AS o SET route_id=123, leg_id=1, cab_id=r.cab_id, status=1, eta=0, in_pool=true \
+    FROM route AS r WHERE r.id=123 AND o.id=0 AND o.status=0;\n\
+    UPDATE leg SET passengers=passengers+1 WHERE route_id=123 AND place BETWEEN 1 AND 1;\n\
+    UPDATE taxi_order AS o SET route_id=123, leg_id=1, cab_id=r.cab_id, status=1, eta=0, in_pool=true \
+    FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n\
+    UPDATE leg SET passengers=passengers+1 WHERE route_id=123 AND place BETWEEN 1 AND 1;\n");
   }
   
   #[test]
@@ -655,50 +662,59 @@ mod tests {
     let stops: Vec<Stop> = get_stops();
 
     let mut legs: Vec<Leg> = vec![
-      Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: 1, reserve:1, started: None, completed: None, status: 0, passengers:1},
-      Leg{ id: 1, route_id: 123, from: 2, to: 3, place: 1, dist: 1, reserve:3, started: None, completed: None, status: 0, passengers:1},
+      Leg{ id: 0, route_id: 123, from: 1, to: 0, place: 0, dist: 1, reserve:1, started: None, completed: None, status: 1, passengers:1},
+      Leg{ id: 1, route_id: 123, from: 0, to: 2, place: 1, dist: 1, reserve:1, started: None, completed: None, status: 1, passengers:1},
+      Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: 1, reserve:3, started: None, completed: None, status: 1, passengers:1},
     ];
     let demand: Vec<Order> = vec![order1];
     // route is 0->2->3
     // order is 0->1
-    assert_eq!(legs.len(), 2);
+    assert_eq!(legs.len(), 3);
     let ret = extend_routes(0, &demand, &stops, &mut legs, &mut 2);
-    assert_eq!(ret.0.len(), 0); // order fits the route
-    assert_eq!(legs.len(), 4); // one more leg
+    assert_eq!(ret.0.len(), 0); // order does not fit the route
+    assert_eq!(legs.len(), 5); // two more leg
     // route is 0->2->0->1->3  because 0->2 is not taken into account, the previous leg must be ASSIGNED
     // one passenger: 0->2->0, 1->3
     // two passengers: 0->1
-    assert_eq!(legs[1].to, 0);
-    assert_eq!(legs[2].from, 0);
-    assert_eq!(legs[2].to, 1);
-    assert_eq!(legs[3].from, 1);
+    assert_eq!(legs[1].to, 2);
+    assert_eq!(legs[2].from, 2);
+    assert_eq!(legs[2].to, 0);
+    assert_eq!(legs[3].from, 0);
+    assert_eq!(legs[4].from, 1);
+    assert_eq!(legs[4].to, 3);
     assert_eq!(legs[1].place, 1);
     assert_eq!(legs[2].place, 2);
     assert_eq!(legs[3].place, 3);
+    assert_eq!(legs[4].place, 4);
     assert_eq!(legs[0].passengers, 1);
     assert_eq!(legs[1].passengers, 1);
-    assert_eq!(legs[2].passengers, 2);
-    assert_eq!(legs[3].passengers, 1);
+    assert_eq!(legs[2].passengers, 1);
+    assert_eq!(legs[3].passengers, 2);
+    assert_eq!(legs[4].passengers, 1);
 
     assert_eq!(ret.1, 
-      "UPDATE leg SET reserve=LEAST(reserve, 6) WHERE route_id=123 AND place <= 1;\n\
-      UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-0) WHERE route_id=123 AND place >= 2;\n\
-      INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (2,0,3,2,0,1,2,123,1);\n\
-      UPDATE leg SET to_stand=0, distance=0, reserve=2 WHERE id=1;\n\
-      UPDATE taxi_order AS o SET route_id=123, leg_id=2, cab_id=r.cab_id, status=1, eta=0 FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n\
-      UPDATE leg SET reserve=LEAST(reserve, 1) WHERE route_id=123 AND place BETWEEN 2 AND 2;\n\
-      UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-1) WHERE route_id=123 AND place >= 3;\n\
-      INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (3,1,3,3,0,1,0,123,1);\n\
+      "UPDATE leg SET reserve=LEAST(reserve, 4) WHERE route_id=123 AND place <= 2;\n\
+      UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-0) WHERE route_id=123 AND place >= 3;\n\
+      INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) \
+      VALUES (2,0,3,3,0,1,2,123,1);\n\
+      UPDATE leg SET to_stand=0, distance=0, reserve=2 WHERE id=2;\n\
+      UPDATE taxi_order AS o SET route_id=123, leg_id=2, cab_id=r.cab_id, status=1, eta=0, in_pool=true \
+      FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n\
+      UPDATE leg SET reserve=LEAST(reserve, 1) WHERE route_id=123 AND place BETWEEN 3 AND 3;\n\
+      UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-1) WHERE route_id=123 AND place >= 4;\n\
+      INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) \
+      VALUES (3,1,3,4,0,1,0,123,1);\n\
       UPDATE leg SET to_stand=1, distance=0, reserve=0 WHERE id=2;\n\
-      UPDATE leg SET passengers=passengers+1 WHERE route_id=123 AND place BETWEEN 2 AND 2;\n");
+      UPDATE leg SET passengers=passengers+1 WHERE route_id=123 AND place BETWEEN 3 AND 3;\n");
   }
 
   #[test]
   fn test_try_to_extend_route_when_nonperfect_match2() {
     let stops: Vec<Stop> = get_stops();
     let mut legs: Vec<Leg> = vec![
-      Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: 1, reserve:1, started: None, completed: None, status: 0, passengers:1},
-      Leg{ id: 1, route_id: 123, from: 2, to: 3, place: 1, dist: 1, reserve:3, started: None, completed: None, status: 0, passengers:1},
+      Leg{ id: 0, route_id: 123, from: 1, to: 0, place: 0, dist: 1, reserve:1, started: None, completed: None, status: 1, passengers:1},
+      Leg{ id: 1, route_id: 123, from: 0, to: 2, place: 1, dist: 1, reserve:1, started: None, completed: None, status: 1, passengers:1},
+      Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: 1, reserve:3, started: None, completed: None, status: 1, passengers:1},
     ];
     let order1= Order{ id: 1, from: 1, to: 3,
       wait: 10,loss: 50,dist: 2,shared: true,in_pool: false,received: None,started: None,completed: None,at_time: None,eta: 0,
@@ -706,26 +722,30 @@ mod tests {
     let demand: Vec<Order> = vec![order1];
     // route is 0->2->3
     // order is 1->3
-    assert_eq!(legs.len(), 2);
+    assert_eq!(legs.len(), 3);
     let ret = extend_routes(0, &demand, &stops, &mut legs, &mut 2);
     assert_eq!(ret.0.len(), 0); // order fits the route
-    assert_eq!(legs.len(), 3); // one more leg
-    assert_eq!(legs[1].to, 1);
-    assert_eq!(legs[2].from, 1);
-    assert_eq!(legs[2].to, 3);
+    assert_eq!(legs.len(), 4); // one more leg
+    assert_eq!(legs[1].to, 2);
+    assert_eq!(legs[2].from, 2);
+    assert_eq!(legs[2].to, 1);
+    assert_eq!(legs[3].from, 1);
+    assert_eq!(legs[2].to, 1);
     assert_eq!(legs[0].place, 0);
     assert_eq!(legs[1].place, 1);
     assert_eq!(legs[2].place, 2);
     assert_eq!(legs[0].passengers, 1);
     assert_eq!(legs[1].passengers, 1);
-    assert_eq!(legs[2].passengers, 2);
+    assert_eq!(legs[2].passengers, 1);
     assert_eq!(ret.1, 
-      "UPDATE leg SET reserve=LEAST(reserve, 6) WHERE route_id=123 AND place <= 1;\n\
-      UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-0) WHERE route_id=123 AND place >= 2;\n\
-      INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (2,1,3,2,0,1,2,123,1);\n\
-      UPDATE leg SET to_stand=1, distance=0, reserve=2 WHERE id=1;\n\
-      UPDATE taxi_order AS o SET route_id=123, leg_id=2, cab_id=r.cab_id, status=1, eta=0 FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n\
-      UPDATE leg SET passengers=passengers+1 WHERE route_id=123 AND place BETWEEN 2 AND 2;\n");
+      "UPDATE leg SET reserve=LEAST(reserve, 4) WHERE route_id=123 AND place <= 2;\n\
+      UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-0) WHERE route_id=123 AND place >= 3;\n\
+      INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) \
+      VALUES (2,1,3,3,0,1,2,123,1);\n\
+      UPDATE leg SET to_stand=1, distance=0, reserve=2 WHERE id=2;\n\
+      UPDATE taxi_order AS o SET route_id=123, leg_id=2, cab_id=r.cab_id, status=1, eta=0, in_pool=true \
+      FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n\
+      UPDATE leg SET passengers=passengers+1 WHERE route_id=123 AND place BETWEEN 3 AND 3;\n");
   }
 
   #[test]
@@ -777,8 +797,9 @@ mod tests {
   fn test_try_to_extend_route_when_nonperfect_match3() {
     let stops: Vec<Stop> = get_stops();
     let mut legs: Vec<Leg> = vec![
-      Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: 1, reserve:1, started: None, completed: None, status: 0, passengers:1},
-      Leg{ id: 1, route_id: 123, from: 2, to: 3, place: 1, dist: 1, reserve:3, started: None, completed: None, status: 0, passengers:1},
+      Leg{ id: 0, route_id: 123, from: 1, to: 0, place: 0, dist: 1, reserve:1, started: None, completed: None, status: 1, passengers:1},
+      Leg{ id: 1, route_id: 123, from: 0, to: 2, place: 1, dist: 1, reserve:1, started: None, completed: None, status: 1, passengers:1},
+      Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: 1, reserve:3, started: None, completed: None, status: 1, passengers:1},
     ];
     let order1= Order{ id: 1, from: 2, to: 1,
       wait: 10,loss: 50,dist: 2,shared: true,in_pool: false,received: None,started: None,completed: None,at_time: None,eta: 0,
@@ -786,25 +807,30 @@ mod tests {
     let demand: Vec<Order> = vec![order1];
     // route is 0->2->3
     // order is 2->1
-    assert_eq!(legs.len(), 2);
+    assert_eq!(legs.len(), 3);
     let ret = extend_routes(0, &demand, &stops, &mut legs, &mut 2);
     assert_eq!(ret.0.len(), 0); // order fits the route
-    assert_eq!(legs.len(), 3); // one more leg
-    assert_eq!(legs[1].to, 1);
-    assert_eq!(legs[2].from, 1);
-    assert_eq!(legs[2].to, 3);
+    assert_eq!(legs.len(), 4); // one more leg
+    assert_eq!(legs[1].to, 2);
+    assert_eq!(legs[2].from, 2);
+    assert_eq!(legs[2].to, 1);
+    assert_eq!(legs[3].from, 1);
+    assert_eq!(legs[3].to, 3);
     assert_eq!(legs[1].place, 1);
     assert_eq!(legs[2].place, 2);
     assert_eq!(legs[0].passengers, 1);
-    assert_eq!(legs[1].passengers, 2);
-    assert_eq!(legs[2].passengers, 1);
+    assert_eq!(legs[1].passengers, 1);
+    assert_eq!(legs[2].passengers, 2);
+    assert_eq!(legs[3].passengers, 1);
     assert_eq!(ret.1, 
-      "UPDATE taxi_order AS o SET route_id=123, leg_id=1, cab_id=r.cab_id, status=1, eta=0, in_pool=true FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n\
-      UPDATE leg SET reserve=LEAST(reserve, 1) WHERE route_id=123 AND place BETWEEN 1 AND 1;\n\
-      UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-1) WHERE route_id=123 AND place >= 2;\n\
-      INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (2,1,3,2,0,1,1,123,1);\n\
-      UPDATE leg SET to_stand=1, distance=0, reserve=1 WHERE id=1;\n\
-      UPDATE leg SET passengers=passengers+1 WHERE route_id=123 AND place BETWEEN 1 AND 1;\n");
+      "UPDATE taxi_order AS o SET route_id=123, leg_id=2, cab_id=r.cab_id, status=1, eta=0, in_pool=true \
+      FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n\
+      UPDATE leg SET reserve=LEAST(reserve, 1) WHERE route_id=123 AND place BETWEEN 2 AND 2;\n\
+      UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-1) WHERE route_id=123 AND place >= 3;\n\
+      INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) \
+      VALUES (2,1,3,3,0,1,1,123,1);\n\
+      UPDATE leg SET to_stand=1, distance=0, reserve=1 WHERE id=2;\n\
+      UPDATE leg SET passengers=passengers+1 WHERE route_id=123 AND place BETWEEN 2 AND 2;\n");
   }
 
   #[test]
@@ -828,9 +854,12 @@ mod tests {
     let out = modify_legs(&mut f, max_leg_id, &mut legs); 
     assert_eq!(out, "UPDATE leg SET reserve=LEAST(reserve, 8) WHERE route_id=123 AND place <= 0;\n\
     UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-0) WHERE route_id=123 AND place >= 1;\n\
-    INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (1,1,1,1,0,1,0,123,1);\n\
-    UPDATE leg SET to_stand=1, distance=0, reserve=0 WHERE id=0;\nUPDATE taxi_order AS o SET route_id=123, \
-    leg_id=1, cab_id=r.cab_id, status=1, eta=0 FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n");
+    INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) \
+    VALUES (1,1,1,1,0,1,0,123,1);\n\
+    UPDATE leg SET to_stand=1, distance=0, reserve=0 WHERE id=0;\n\
+    UPDATE taxi_order AS o SET route_id=123, leg_id=1, cab_id=r.cab_id, status=1, eta=0, in_pool=true \
+    FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n\
+    UPDATE leg SET passengers=passengers+1 WHERE route_id=123 AND place BETWEEN 1 AND 1;\n");
   }
 
   #[test]

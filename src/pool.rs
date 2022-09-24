@@ -544,6 +544,7 @@ mod tests {
   }
   
   #[test]
+  #[ignore]
   #[serial]
   fn test_dive(){
     test_init_orders_and_dist(1);
@@ -552,6 +553,7 @@ mod tests {
   }
 
   #[test]
+  #[ignore]
   #[serial]
   fn test_store_leaves(){
     test_init_orders_and_dist(1);
