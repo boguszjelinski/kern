@@ -144,7 +144,9 @@ delete from route;
 |102|	3130|	2179|	3|	2|	6|	2022-08-24 23:03:31|	2022-08-24 23:06:31|	0|	2|	7
 |14|	2179|	2701|	4|	1|	6|	2022-08-24 23:07:31|	2022-08-24 23:11:31|	0|	2|	8
 ## Current work in Kern
-* faster sigle threaded route extender (single thread has its pros)
+* faster sigle threaded route extender (single thread has its pros) - DONE 24.09.2022
+* assigning cabs while they are on a route's last leg.
+* an order serviced by two cabs (cab change) 
 
 ## Future work
 * take cabs on last leg into account
