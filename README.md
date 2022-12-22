@@ -11,7 +11,7 @@ The idea behind Kabina is to provide an enabler (a software skeleton, testing fr
 The following accompanying components have been developed:
 
 * [Kapir](https://gitlab.com/kabina/kapir): Rest API responsible for receiving requests, share statuses and store them in a database
-* [Kapi](https://gitlab.com/kabina/kapi): Rest API client simulator, which emulates real users and helps test the dispatcher
+* [Kapi](https://gitlab.com/kabina/kapi/client): Rest API client simulator, which emulates real users and helps test the dispatcher
 * [Kabina](https://gitlab.com/kabina/kabina): mobile application for minibus customers 
 * [Kab](https://gitlab.com/kabina/kab): mobile application for minibus drivers
 * [Kavla](https://gitlab.com/kabina/kavla): mobile application for presenting current routes on stops 
@@ -27,6 +27,7 @@ See here to find more: https://gitlab.com/kabina/kabina/-/blob/master/minibuses.
 * Rust compiler
 
 ## How to install and run
+See also [readme](RUNME.md) how to run all Kabina components in a simulation.
 
 1) Compile the pool finder (optional, see use_ext_pool below) and make the library available for Rust compiler, an example for Mac OS:
 ```
@@ -49,7 +50,7 @@ psql -U kabina -c "COPY stop(id, no, name, latitude, longitude, bearing) FROM 's
 ```
 This will create example stop, cab and customer entities. 
 
- 4) Edit config file <em>kern.toml</em>
+4) Edit config file <em>kern.toml</em>
 
 | Parameter | Purpose
 |----------|--------
@@ -64,7 +65,7 @@ This will create example stop, cab and customer entities.
 | log_file  | log file location and name
 | use_ext_pool | if external pool finder (C library) should be used
 | thread_numb | how many threads should be used
-| max_pool4_size | max allowed size of demand for pools with 4 passengers (depends on hardware performance)
+| max_pool4_size | max allowed size of demand for pools with 4 passengers (for tuning, depends on hardware performance)
 | max_pool3_size | max allowed size of demand for pools with 3 passengers
 | max_pool2_size | max allowed size of demand for pools with 2 passengers
 
