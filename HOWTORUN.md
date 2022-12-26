@@ -17,7 +17,7 @@ But you might also want to test visually, on-line, how a request is served. Four
 * Rust compiler
 * Go compiler (alternativelly a [Java client](https://gitlab.com/kabina/kaboot/-/tree/master/generators/src) exists but it is slow and resource-hungry)
 * Node.js (optional, React apps for single customer)
-* Python (optional, to watch KPIs and route quality check)
+* Python (optional, to watch KPIs and for route quality check; python-tk and psycopg2-binary needed)
 
 Java and C# implementations of dispatcher, RestAPI and clients exist but they are not maintained any longer. Java was a proof-of-concept, C# was used for benchmarking (not good either).
 
@@ -166,6 +166,10 @@ delete from taxi_order;
 delete from leg;
 delete from route;
 ```
+You would like to remove previous logs:
+1. Kern: `rm log/*`
+2. Kapir: `rm kapi.log`
+3. Kapi: `rm client/*.log`
 
 ## Copyright notice
 

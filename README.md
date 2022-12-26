@@ -198,6 +198,42 @@ tuning of the core:
 from route left join taxi_order on (route.id = taxi_order.route_id) group by route.id)
 AS aa GROUP BY order_count`
 
+4. Average requested distance
+`select avg(distance) from taxi_order`
+
+5. Total wait (pick-up) time 
+  `select sum(started-received) from taxi_order where received is not null and started is not null`
+
+6. Total duration of all requests
+  `select sum(completed-started) from taxi_order where completed is not null and started is not null`
+
+7. Total distance driven
+  `select sum(completed-started) from leg where completed is not null and started is not null`
+
+8. Number of customers in pool
+  `select in_pool,count(*) from taxi_order group by in_pool`
+
+9. Number of customers in pool - distribution
+  `SELECT order_count, COUNT(*) AS route_count from (SELECT route.id, count(taxi_order.id) as order_count from route left join taxi_order on (route.id = taxi_order.route_id) group by route.id) AS aa GROUP BY order_count`
+
+10. Number of customers in legs - distribution
+  `select passengers,count(*) from leg group by passengers`
+
+11. Average pool size
+`SELECT sum(order_count*route_count)/sum(route_count) FROM (SELECT order_count, COUNT(*) AS route_count from
+(SELECT route.id, count(taxi_order.id) as order_count FROM route left join taxi_order on (route.id = taxi_order.route_id) group by route.id) AS aa GROUP BY order_count) as counts`
+12. Average passenger count in legs
+ `select sum(passengers*pass_count)/sum(pass_count) from 
+ (select passengers,count(*) as pass_count from leg group by passengers) as average`
+13. Total number of customers rejected
+  `select count(*) from taxi_order where status=3`
+
+14. Total number of customers with constraints violation (caused e.g. by RestAPI delays)
+  `grep -c too customers.log`
+
+15. Total cabs used
+  `select count(distinct(cab_id)) from taxi_order`
+
 ## Copyright notice
 
 Copyright 2022 Bogusz Jelinski
