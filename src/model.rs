@@ -162,6 +162,7 @@ pub struct KernCfg{
     pub max_legs: i8,
     pub max_angle: f32,
     pub use_ext_pool: bool,
+    pub use_extender: bool,
     pub thread_numb: i32,
     pub stop_wait: i16,
     pub cab_speed: i8,

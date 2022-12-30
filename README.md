@@ -64,6 +64,7 @@ This will create example stop, cab and customer entities.
 | stop_wait | how many minutes it takes at a stop
 | log_file  | log file location and name
 | use_ext_pool | if external pool finder (C library) should be used
+| use_extender | if route extender should be used (experimental)
 | thread_numb | how many threads should be used
 | max_pool4_size | max allowed size of demand for pools with 4 passengers (for tuning, depends on hardware performance)
 | max_pool3_size | max allowed size of demand for pools with 3 passengers

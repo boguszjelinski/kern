@@ -1,4 +1,4 @@
-db_conn = "postgresql://kabina:kaboot@192.168.10.176:5432/kabina"
+db_conn = "postgresql://kabina:kaboot@localhost:5432/kabina"
 run_after = 15
 max_assign_time = 3
 max_legs = 10
@@ -7,6 +7,7 @@ cab_speed = 60
 stop_wait = 1
 log_file = "log/kern.log"
 use_ext_pool = true
+use_extender = false
 thread_numb = 10
 max_pool4_size = 120
 max_pool3_size = 300

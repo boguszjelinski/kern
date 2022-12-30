@@ -5,7 +5,7 @@ use std::cmp;
 use std::time::SystemTime;
 use crate::model::{KernCfg,Order, OrderStatus, Stop, Cab, CabStatus, Leg, RouteStatus, Branch,MAXORDERSNUMB,MAXORDID};
 use crate::distance::DIST;
-use crate::stats::{STATS, Stat, add_avg_element};
+use crate::stats::{STATS, Stat, add_avg_element, update_val, count_average};
 use crate::utils::get_elapsed;
 
 // default config, overwritten by cfg file
@@ -16,6 +16,7 @@ pub static mut CNFG: KernCfg = KernCfg {
     max_legs: 8,
     max_angle: 120.0,
     use_ext_pool: true,
+    use_extender: false,
     thread_numb: 4,
     stop_wait: 1,
     cab_speed: 60,
@@ -480,6 +481,7 @@ pub fn assign_cust_to_cab_munkres(sol: Vec<i16>, cabs: &Vec<Cab>, demand: &Vec<O
 
 pub fn save_status() -> String {
     let mut sql: String = String::from("");
+    update_val(Stat::AvgOrderAssignTime, count_average(Stat::AvgOrderAssignTime));
     unsafe {
     for s in Stat::iterator() {
         sql += &format!("UPDATE stat SET int_val={} WHERE UPPER(name)=UPPER('{}');", STATS[*s as usize], s.to_string());
