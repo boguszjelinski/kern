@@ -67,6 +67,7 @@ fn main() -> Result<(), Error> {
             max_legs:        cfg["max_legs"].parse().unwrap(),
             max_angle:       cfg["max_angle"].parse::<f32>().unwrap(),
             use_ext_pool:    cfg["use_ext_pool"].parse::<bool>().unwrap(),
+            use_extender:    cfg["use_extender"].parse::<bool>().unwrap(),
             thread_numb:     cfg["thread_numb"].parse().unwrap(),
             stop_wait:       cfg["stop_wait"].parse().unwrap(),
             cab_speed:       cfg["cab_speed"].parse().unwrap(),
@@ -83,6 +84,7 @@ fn main() -> Result<(), Error> {
         info!("max_legs: {}", CNFG.max_legs);
         info!("max_angle: {}", CNFG.max_angle);
         info!("use_ext_pool: {}", CNFG.use_ext_pool);
+        info!("use_extender: {}", CNFG.use_extender);
         info!("thread_numb: {}", CNFG.thread_numb);
         info!("stop_wait: {}", CNFG.stop_wait);
         info!("cab_speed: {}", CNFG.cab_speed);
@@ -204,50 +206,55 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
 
     let mut max_route_id : i64 = repo::read_max(client, "route"); // +1, first free ID
     let mut max_leg_id : i64 = repo::read_max(client, "leg");
-    let len_before = orders.len();
-    // ROUTE EXTENDER
-    stats::update_max_and_avg_stats(Stat::AvgDemandSize, Stat::MaxDemandSize, len_before as i64);
-    let start_extender = Instant::now();
     let thread_num: i32;
     unsafe {
         thread_num = CNFG.thread_numb;
     }
-    // route extender
-    let ret = 
-            find_matching_routes(thread_num, itr, &host, client, orders, &stops, &mut max_leg_id);
-    update_max_and_avg_time(Stat::AvgExtenderTime, Stat::MaxExtenderTime, start_extender);
-    let mut demand = ret.0;
-    let len_after = demand.len();
-    let extender_handle: thread::JoinHandle<()> = ret.1;
-    if len_before != len_after {
-        info!("Route extender allocated {} requests", len_before - len_after);
+    let mut demand: Vec<Order>;
+    let len_before = orders.len();
+    let mut len_after: usize = orders.len();
+    let mut extender_handle: thread::JoinHandle<()> = thread::spawn(|| {});
+    stats::update_max_and_avg_stats(Stat::AvgDemandSize, Stat::MaxDemandSize, len_before as i64);
+
+    // ROUTE EXTENDER
+    if unsafe { CNFG.use_extender } {
+        let start_extender = Instant::now();
+        let ret = 
+                find_matching_routes(thread_num, itr, &host, client, orders, &stops, &mut max_leg_id);
+        update_max_and_avg_time(Stat::AvgExtenderTime, Stat::MaxExtenderTime, start_extender);
+        demand = ret.0;
+        extender_handle = ret.1;
+        len_after = demand.len();
+        if len_before != len_after {
+            info!("Route extender allocated {} requests", len_before - len_after);
+        } else {
+            info!("Extender has not helped");
+        }
+        if cabs.len() == 0 {
+            info!("No cabs");
+            extender_handle.join().expect("Extender SQL thread being joined has panicked");
+            return;
+        }
     } else {
-        info!("Extender has not helped");
+        demand = orders.to_vec();
     }
-
-    if cabs.len() == 0 {
-        info!("No cabs");
-        extender_handle.join().expect("Extender SQL thread being joined has panicked");
-        return;
-    }
-
     // pool finder
     let start_pool = Instant::now();
     stats::update_max_and_avg_stats(Stat::AvgPoolDemandSize, Stat::MaxPoolDemandSize, len_after as i64);
     let mut pl: Vec<Branch> = Vec::new();
     let mut sql: String = String::from("");
-    unsafe {
+    
     // 2 versions available - in C (external) and Rust
-    if CNFG.use_ext_pool {
-        (pl, sql) = find_extern_pool(&mut demand, cabs, stops, CNFG.thread_numb, &mut max_route_id, &mut max_leg_id);
+    if unsafe { CNFG.use_ext_pool } {
+        (pl, sql) = find_extern_pool(&mut demand, cabs, stops, unsafe { CNFG.thread_numb }, &mut max_route_id, &mut max_leg_id);
     } else {
         for p in (2..5).rev() { // 4,3,2
-            let mut ret = find_pool(p, CNFG.thread_numb as i16,
+            let mut ret = find_pool(p, unsafe { CNFG.thread_numb } as i16,
                     &mut demand, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
             pl.append(&mut ret.0);
             sql += &ret.1;
         }
-    }}
+    }
     write_sql_to_file(itr, &sql, "pool");
     let pool_handle = get_handle(host.clone(), sql, "pool".to_string());
     update_max_and_avg_time(Stat::AvgPoolTime, Stat::MaxPoolTime, start_pool);

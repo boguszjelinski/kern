@@ -35,8 +35,6 @@ pub enum Stat {
     MaxSolverDemandSize, // after pool
 
     AvgOrderAssignTime,
-    AvgOrderPickupTime, // updated in API
-    AvgOrderCompleteTime, // updated in API
 
     TotalLcmUsed, // do we need this
     TotalPickupDistance, // !! must be the last position cause it is used for sizing of an array :)
@@ -75,7 +73,7 @@ impl Stat {
     }
     */
     pub fn iterator() -> Iter<'static, Stat> {
-        static RET: [Stat; 25] = [
+        static RET: [Stat; 23] = [
             AvgExtenderTime,
             AvgPoolTime,
             AvgPool3Time, // not updated as it runs in C
@@ -101,8 +99,6 @@ impl Stat {
             MaxSolverDemandSize, // after pool
         
             AvgOrderAssignTime,
-            AvgOrderPickupTime, // updated in API
-            AvgOrderCompleteTime, // updated in API
         
             TotalLcmUsed, // do we need this
             TotalPickupDistance,
