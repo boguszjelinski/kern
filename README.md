@@ -27,7 +27,7 @@ See here to find more: https://gitlab.com/kabina/kabina/-/blob/master/minibuses.
 * Rust compiler
 
 ## How to install and run
-See also [readme](RUNME.md) how to run all Kabina components in a simulation.
+See also [readme](HOWTORUN.md) how to run all Kabina components in a simulation.
 
 1) Compile the pool finder (optional, see use_ext_pool below) and make the library available for Rust compiler, an example for Mac OS:
 ```
