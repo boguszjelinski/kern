@@ -88,7 +88,6 @@ pub fn find_cab_by_status(client: &mut Client, status: CabStatus) -> Vec<Cab>{
 
 pub fn find_legs(client: &mut Client) -> Vec<Leg> {
     let mut ret: Vec<Leg> = Vec::new();
-    // find ASSIGNED or STARTED
     for row in client.query("SELECT id, from_stand, to_stand, place, distance, \
         started, completed, route_id, status, reserve, passengers FROM leg WHERE status = 1 OR status = 5 \
         ORDER BY route_id ASC, place ASC", &[]).unwrap() {
@@ -161,7 +160,8 @@ pub fn create_leg(order_id: i64, from: i32, to: i32, place: i32, status: RouteSt
 }
 
 pub fn update_leg_a_bit(route_id: i64, leg_id: i64, to: i32, dist: i16, reserve: i32) -> String {
-    debug!("Updating existing route_id={}, leg_id={}, to={} reserve={}", route_id, leg_id, to, reserve);
+    debug!("Updating existing route_id={}, leg_id={}, to={}, distance={}, reserve={}", 
+                route_id, leg_id, to, dist, reserve);
     return format!("\
         UPDATE leg SET to_stand={}, distance={}, reserve={} WHERE id={};\n", to, dist, reserve, leg_id);
 }
