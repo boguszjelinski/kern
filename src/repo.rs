@@ -23,6 +23,7 @@ pub static mut CNFG: KernCfg = KernCfg {
     max_pool4_size: 120,
     max_pool3_size: 300,
     max_pool2_size: 600,
+    solver_interval: 4,
 };
 
 pub fn find_orders_by_status_and_time(client: &mut Client, status: OrderStatus, at_time: DateTime<Local>) -> Vec<Order> {
@@ -222,7 +223,7 @@ pub fn update_passengers(route_id: i64, idx_from: usize, idx_to: usize, legs: &m
     }
     return format!("\
         UPDATE leg SET passengers=passengers+1 \
-        WHERE route_id={} AND place BETWEEN {} AND {};\n", route_id, legs[idx_from].place, legs[idx_from].place);
+        WHERE route_id={} AND place BETWEEN {} AND {};\n", route_id, legs[idx_from].place, legs[idx_to].place);
 }
 
 pub fn update_reserves_in_legs_before_and_including(route_id: i64, place: i32, wait_diff: i32) -> String {
