@@ -74,6 +74,7 @@ fn main() -> Result<(), Error> {
             max_pool4_size:  cfg["max_pool4_size"].parse().unwrap(),
             max_pool3_size:  cfg["max_pool3_size"].parse().unwrap(),
             max_pool2_size:  cfg["max_pool2_size"].parse().unwrap(),
+            solver_interval: cfg["solver_interval"].parse().unwrap(),
         };
     }
     setup_logger(cfg["log_file"].clone());
@@ -91,11 +92,13 @@ fn main() -> Result<(), Error> {
         info!("pool4_size: {}", CNFG.max_pool4_size);
         info!("pool3_size: {}", CNFG.max_pool3_size);
         info!("pool2_size: {}", CNFG.max_pool2_size);
+        info!("solver_interval: {}", CNFG.solver_interval);
     }
     // init DB
     let mut client = Client::connect(&db_conn_str, NoTls)?; // 192.168.10.176
     let stops = repo::read_stops(&mut client);
     distance::init_distance(&stops);
+
     let mut itr: i32 = 0;
     unsafe {
         if CNFG.use_ext_pool {
@@ -193,6 +196,32 @@ extern "C" {
     fn initMem();
 }
 
+fn run_extender(_thr_numb: i32, itr: i32, host: &String, client: &mut Client, orders: &Vec<Order>, stops: &Vec<Stop>, 
+                max_leg_id: &mut i64, label: &str) -> Vec<Order> {
+    let demand: Vec<Order>;
+    let mut extender_handle: thread::JoinHandle<()> = thread::spawn(|| {});
+    let len_before = orders.len();
+    if unsafe { CNFG.use_extender } {
+        let start_extender = Instant::now();
+        let ret = 
+                find_matching_routes(_thr_numb, itr, &host, client, orders, &stops, max_leg_id);
+        update_max_and_avg_time(Stat::AvgExtenderTime, Stat::MaxExtenderTime, start_extender);
+        demand = ret.0;
+        extender_handle = ret.1;
+        let len_after = demand.len();
+        if len_before != len_after {
+            info!("{}: route extender allocated {} requests", label, len_before - len_after);
+        } else {
+            info!("{}: extender has not helped", label);
+        }
+    } else {
+        demand = orders.to_vec();
+    }
+    // "deadlock detected" - let's wait for completion
+    extender_handle.join().expect("Extender SQL thread being joined has panicked");
+    return demand;
+}
+
 // three steps:
 // 1) route extender
 // 2) pool finder
@@ -203,44 +232,23 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
         info!("No demand, no dispatch");
         return;
     }
-
     let mut max_route_id : i64 = repo::read_max(client, "route"); // +1, first free ID
     let mut max_leg_id : i64 = repo::read_max(client, "leg");
     let thread_num: i32;
     unsafe {
         thread_num = CNFG.thread_numb;
     }
-    let mut demand: Vec<Order>;
-    let len_before = orders.len();
-    let mut len_after: usize = orders.len();
-    let mut extender_handle: thread::JoinHandle<()> = thread::spawn(|| {});
-    stats::update_max_and_avg_stats(Stat::AvgDemandSize, Stat::MaxDemandSize, len_before as i64);
+    stats::update_max_and_avg_stats(Stat::AvgDemandSize, Stat::MaxDemandSize, orders.len() as i64);
 
-    // ROUTE EXTENDER
-    if unsafe { CNFG.use_extender } {
-        let start_extender = Instant::now();
-        let ret = 
-                find_matching_routes(thread_num, itr, &host, client, orders, &stops, &mut max_leg_id);
-        update_max_and_avg_time(Stat::AvgExtenderTime, Stat::MaxExtenderTime, start_extender);
-        demand = ret.0;
-        extender_handle = ret.1;
-        len_after = demand.len();
-        if len_before != len_after {
-            info!("Route extender allocated {} requests", len_before - len_after);
-        } else {
-            info!("Extender has not helped");
-        }
-        if cabs.len() == 0 {
-            info!("No cabs");
-            extender_handle.join().expect("Extender SQL thread being joined has panicked");
-            return;
-        }
-    } else {
-        demand = orders.to_vec();
+    let mut demand = run_extender(thread_num, itr, &host, client, orders, &stops, &mut max_leg_id, "FIRST");
+
+    // POOL FINDER
+    if cabs.len() == 0 {
+        info!("No cabs");
+        return;
     }
-    // pool finder
     let start_pool = Instant::now();
-    stats::update_max_and_avg_stats(Stat::AvgPoolDemandSize, Stat::MaxPoolDemandSize, len_after as i64);
+    stats::update_max_and_avg_stats(Stat::AvgPoolDemandSize, Stat::MaxPoolDemandSize, demand.len() as i64);
     let mut pl: Vec<Branch> = Vec::new();
     let mut sql: String = String::from("");
     
@@ -264,21 +272,19 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
     info!("Pool finder - number of assigned orders: {}", numb);
 
     // we don't want to run run solver each time, once a minute is fine, these are som trouble-making customers :)
-    if (itr % 4) == 0 {
+    if (itr % unsafe { CNFG.solver_interval }) == 0 {
         // shrinking vectors, getting rid of .id == -1 and (TODO) distant orders and cabs !!!!!!!!!!!!!!!
         (*cabs, demand) = shrink(&cabs, demand);
         stats::update_max_and_avg_stats(Stat::AvgSolverDemandSize, Stat::MaxSolverDemandSize, demand.len() as i64);
         if cabs.len() == 0 {
             info!("No cabs after pool finder");
-            pool_handle.join().expect("Pool SQL thread being joined has panicked");
             return;
         }
         if demand.len() == 0 {
             info!("No demand after pool finder");
-            pool_handle.join().expect("Pool SQL thread being joined has panicked");
             return;
         }
-        // LCM
+        // LCM presolver
         let mut lcm_handle = thread::spawn(|| { });
         unsafe {
         if demand.len() > CNFG.max_solver_size && cabs.len() > CNFG.max_solver_size {
@@ -314,9 +320,8 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
         info!("Dispatch completed, solver assigned: {}", max_route_id - before_solver);
     }
     // we have to join so that the next run of dispatcher gets updated orders
-    let status_handle = get_handle(host.clone(), repo::save_status(), "stats".to_string());
-    extender_handle.join().expect("Extender SQL thread being joined has panicked");
     pool_handle.join().expect("Pool SQL thread being joined has panicked");
+    let status_handle = get_handle(host.clone(), repo::save_status(), "stats".to_string());
     status_handle.join().expect("Status SQL thread being joined has panicked");
 }
 

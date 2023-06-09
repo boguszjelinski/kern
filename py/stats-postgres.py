@@ -9,7 +9,7 @@ def execSql(cursor, fil, sql, column):
     print('', file=fil, flush=True)
 
 try:
-    conn = psycopg2.connect("host=localhost dbname=kabina user=kabina password=kaboot") #192.168.10.176
+    conn = psycopg2.connect("host=localhost port=5432 dbname=kabina user=kabina password=kaboot") #192.168.10.176 6432
     cur = conn.cursor()
     file1 = open('kpis.txt', 'w')
     file2 = open('cab_status.txt', 'w')
