@@ -32,6 +32,7 @@ pub struct Order {
     pub completed: Option<SystemTime>,
     pub at_time: Option<SystemTime>,
     pub eta: i32, // proposed wait time
+    pub route_id: i64,
   //  cab: Cab,
   //  customer: Customer
 }
@@ -87,7 +88,7 @@ pub enum CabStatus {
 #[derive(Copy, Clone)]
 pub enum OrderStatus {
     RECEIVED = 0,  // sent by customer
-//    ASSIGNED,  // assigned to a cab, a proposal sent to customer with time-of-arrival
+    ASSIGNED = 1,  // assigned to a cab, a proposal sent to customer with time-of-arrival
 //    ACCEPTED,  // plan accepted by customer, waiting for the cab
 //    CANCELLED, // cancelled by customer before assignment
 //    REJECTED,  // proposal rejected by customer

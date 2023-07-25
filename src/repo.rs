@@ -28,9 +28,9 @@ pub static mut CNFG: KernCfg = KernCfg {
 
 pub fn find_orders_by_status_and_time(client: &mut Client, status: OrderStatus, at_time: DateTime<Local>) -> Vec<Order> {
     let mut ret : Vec<Order> = Vec::new();
-    let qry = "select id, from_stand, to_stand, max_wait, max_loss, distance, shared, in_pool, \
-               received, started, completed, at_time, eta from taxi_order o where o.status = $1 \
-               and (o.at_time is NULL or o.at_time < '".to_string() + &at_time.to_string() + &"')".to_string();
+    let qry = "SELECT id, from_stand, to_stand, max_wait, max_loss, distance, shared, in_pool, \
+               received, started, completed, at_time, eta, route_id FROM taxi_order o WHERE o.status = $1 \
+               and (o.at_time is NULL or o.at_time < '".to_string() + &at_time.to_string() + &"') ORDER by route_id".to_string();
     for row in client.query(&qry, &[&(status as i32)]).unwrap() {
         ret.push(Order {
             id: row.get(0),
@@ -45,11 +45,13 @@ pub fn find_orders_by_status_and_time(client: &mut Client, status: OrderStatus, 
             started: row.get::<usize,Option<SystemTime>>(9),
             completed: row.get::<usize,Option<SystemTime>>(10),
             at_time: row.get::<usize,Option<SystemTime>>(11),
-            eta: row.get(12)
+            eta: row.get(12),
+            route_id: if matches!(status, OrderStatus::RECEIVED) { -1 } else { row.get(13) }
         });
     }
     return ret;
 }
+
 
 pub fn read_stops(client: &mut Client) -> Vec<Stop> {
     let mut ret: Vec<Stop> = Vec::new();
@@ -112,6 +114,12 @@ pub fn find_legs(client: &mut Client) -> Vec<Leg> {
 pub fn assign_order_find_cab(order_id: i64, leg_id: i64, route_id: i64, eta: i32, in_pool: &str, called_by: &str) -> String {   
     debug!("Assigning order_id={} to route_id={}, leg_id={}, routine {}",
                                             order_id, route_id, leg_id, called_by);
+    if leg_id == -1 {
+        return format!("\
+        UPDATE taxi_order AS o SET route_id={}, cab_id=r.cab_id, status=1, eta={}, in_pool={} \
+        FROM route AS r WHERE r.id={} AND o.id={} AND o.status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
+        route_id, eta, in_pool, route_id, order_id);
+    }
     return format!("\
         UPDATE taxi_order AS o SET route_id={}, leg_id={}, cab_id=r.cab_id, status=1, eta={}, in_pool={} \
         FROM route AS r WHERE r.id={} AND o.id={} AND o.status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
@@ -165,6 +173,39 @@ pub fn update_leg_a_bit(route_id: i64, leg_id: i64, to: i32, dist: i16, reserve:
                 route_id, leg_id, to, dist, reserve);
     return format!("\
         UPDATE leg SET to_stand={}, distance={}, reserve={} WHERE id={};\n", to, dist, reserve, leg_id);
+}
+
+pub fn update_leg_a_bit2(route_id: i64, leg_id: i64, to: i32, dist: i16, reserve: i32, passengers: i8) -> String {
+    debug!("Updating existing route_id={}, leg_id={}, to={}, distance={}, reserve={}, passengers={}", 
+                route_id, leg_id, to, dist, reserve, passengers);
+    return format!("\
+        UPDATE leg SET to_stand={}, distance={}, reserve={}, passengers={} WHERE id={};\n", 
+        to, dist, reserve, passengers, leg_id);
+}
+
+pub fn update_place_in_legs_after(route_id: i64, place: i32) -> String {
+    debug!("Updating places in route_id={} starting with place={}", route_id, place);
+    return format!("UPDATE leg SET place=place+1 WHERE route_id={} AND place >= {};\n", route_id, place);
+}
+
+pub fn update_passengers_and_reserve_in_legs_between(route_id: i64, reserve: i32, place_from: i32, place_to: i32) -> String {
+    if place_from > place_to {
+        return "".to_string();
+    }
+    debug!("Updating passengers and reserve in route_id={}, reserve={} from place={} to place={}", 
+                    route_id, reserve, place_from, place_to);
+    return format!("\
+        UPDATE leg SET passengers=passengers+1, reserve=LEAST(reserve, {}) WHERE route_id={} AND place BETWEEN {} AND {};\n", 
+                    reserve, route_id, place_from, place_to);
+}
+
+pub fn update_reserve_after(route_id: i64, cost: i32, place_from: i32) -> String {
+    if cost < 0 {
+        return "".to_string();
+    }
+    debug!("Updating reserve in route_id={}, cost={} from place={}", route_id, cost, place_from);
+    return format!("\
+        UPDATE leg SET reserve=GREATEST(0, reserve-{}) WHERE route_id={} AND place >= {};\n", cost, route_id, place_from);
 }
 
 pub fn update_leg_with_route_id(route_id: i64, place: i32, to: i32, dist: i16, reserve: i32) -> String {
@@ -227,6 +268,9 @@ pub fn update_passengers(route_id: i64, idx_from: usize, idx_to: usize, legs: &m
 }
 
 pub fn update_reserves_in_legs_before_and_including(route_id: i64, place: i32, wait_diff: i32) -> String {
+    if place < 0 {
+        return "".to_string();
+    }
     debug!("Updating reserve in route_id={} starting with place={}, wait_diff={}", 
             route_id, place, wait_diff);
     return format!("\
@@ -250,6 +294,7 @@ pub fn assign_pool_to_cab(cab: Cab, orders: &[Order; MAXORDERSNUMB], pool: Branc
     return sql;
 }
 
+// !! KEX does not have 'reserve' here, creat_leg get ZERO as a reserve
 fn update_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16, reserve: i32,  max_route_id: &mut i64, max_leg_id: &mut i64) -> String {
     // 0: CabStatus.ASSIGNED TODO: hardcoded status
     let mut sql: String = String::from("UPDATE cab SET status=0 WHERE id=");
@@ -469,11 +514,10 @@ pub fn assign_cust_to_cab_munkres(sol: Vec<i16>, cabs: &Vec<Cab>, demand: &Vec<O
             // TODO/TASK we should communicate with the customer, if this is acceptable, more than WAIT TIME
             reserve = 0; 
         } 
-        sql += &update_cab_add_route(&cab, &order, &mut place, &mut eta, reserve, max_route_id, max_leg_id);
-        // now take MAX LOSS
-        let loss = unsafe { DIST[order.from as usize][order.to as usize] as f32
-					                * (100.0 + order.loss as f32) / 100.0 } as i32 ;
+        
+        let loss = unsafe { DIST[order.from as usize][order.to as usize] as f32 * (order.loss as f32) / 100.0 } as i32 ;
         if reserve > loss { reserve = loss; } 
+        sql += &update_cab_add_route(&cab, &order, &mut place, &mut eta, reserve, max_route_id, max_leg_id);
         sql += &assign_order_to_cab(order, cabs[cab_idx], place, eta, reserve, *max_route_id, max_leg_id, "assignCustToCabMunkres");
         *max_route_id += 1;
     }
@@ -503,13 +547,13 @@ mod tests {
         }
     }
     let o: Order = Order { id: 0, from: 0, to: stop_count as i32 - 1, wait: 10, loss: 90, dist: 7, shared: true, in_pool: true, 
-                            received: None, started: None, completed: None, at_time: None, eta: 10 };
+                            received: None, started: None, completed: None, at_time: None, eta: 10, route_id: -1 };
     let mut orders: [Order; MAXORDERSNUMB] = [o; MAXORDERSNUMB];
     for i in 0..order_count as usize {
         let to: i32 = stop_count as i32 -1 -i as i32;
         unsafe{
             orders[i] = Order { id: i as i64, from: i as i32, to: to, wait: 10, loss: 90, dist: DIST[i as usize][to as usize] as i32, 
-                            shared: true, in_pool: true, received: None, started: None, completed: None, at_time: None, eta: 10 };
+                            shared: true, in_pool: true, received: None, started: None, completed: None, at_time: None, eta: 10, route_id: -1 };
         }
     }
     return orders;

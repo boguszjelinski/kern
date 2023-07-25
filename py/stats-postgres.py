@@ -17,7 +17,7 @@ try:
     # column names
     execSql(cur, file1, 'select * from stat order by name', 0)
     
-    for t in range(0,90):
+    for t in range(0,120):
         execSql(cur, file1, 'select * from stat order by name', 1)
         execSql(cur, file2, 'select status, count(*) from cab group by status order by status', 0)
         execSql(cur, file2, 'select status, count(*) from cab group by status order by status', 1)
