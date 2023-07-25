@@ -16,7 +16,7 @@ static mut STOPS_LEN: usize = 0;
 
 static mut ORDERS: [Order; MAXORDERSNUMB] = [Order {
     id: 0, from: 0, to: 0, wait: 0,	loss: 0, dist: 0, shared: true, in_pool: true, 
-    received: None, started: None, completed: None, at_time: None, eta: -1 }; MAXORDERSNUMB];
+    received: None, started: None, completed: None, at_time: None, eta: -1, route_id: -1 }; MAXORDERSNUMB];
 static mut ORDERS_LEN: usize = 0;
 
 static mut CABS: [Cab; MAXCABSNUMB] = [Cab {id:0, location:0}; MAXCABSNUMB];
@@ -453,7 +453,7 @@ fn constraints_met(el: Branch, dist_cab: i32) -> bool {
 pub fn orders_to_array(vec: &Vec<Order>) -> [Order; MAXORDERSNUMB] {
   let mut arr : [Order; MAXORDERSNUMB] = [Order {
       id: 0, from: 0, to: 0, wait: 0,	loss: 0, dist: 0, shared: true,
-      in_pool: true, received: None, started: None, completed: None, at_time: None, eta: 0
+      in_pool: true, received: None, started: None, completed: None, at_time: None, eta: 0, route_id: -1
     }; MAXORDERSNUMB];
   for (i, v) in vec.iter().enumerate() { 
     arr[i] = *v; 
@@ -496,7 +496,7 @@ mod tests {
     unsafe {
       for i in 0..4 {     
         ORDERS[i] = Order{ id: i as i64, from: i as i32, to: 7-i as i32, wait: 15, loss: 70, dist: 7-2*i as i32, 
-          shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, eta: 1 };
+          shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 };
       }
       ORDERS_LEN = 4;
       for i in 0..7 { DIST[i][i+1] = dist; }    
@@ -691,7 +691,7 @@ mod tests {
   #[serial]
   fn test_orders_to_array() {
     let vec: Vec<Order> = vec![Order{ id: 1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
-          received: None,started: None,completed: None,at_time: None,eta: 0,
+          received: None,started: None,completed: None,at_time: None,eta: 0, route_id: -1
     }];
     let arr = orders_to_array(&vec);
     assert_eq!(arr.len(), MAXORDERSNUMB);
@@ -702,7 +702,7 @@ mod tests {
   #[serial]
   fn test_orders_to_transfer_array() {
     let vec: Vec<Order> = vec![Order{ id: 1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
-          received: None,started: None,completed: None,at_time: None,eta: 0,
+          received: None,started: None,completed: None,at_time: None,eta: 0, route_id: -1
     }];
     let arr = orders_to_transfer_array(&vec);
     assert_eq!(arr.len(), MAXORDERSNUMB);

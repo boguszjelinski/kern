@@ -4,7 +4,7 @@
 mod repo;
 mod model;
 mod distance;
-mod extender2;
+mod extender;
 mod pool;
 mod stats;
 mod utils;
@@ -13,7 +13,7 @@ use model::{KernCfg,Order,OrderStatus,OrderTransfer,Stop,Cab,CabStatus,Branch,MA
 use stats::{Stat,update_max_and_avg_time,update_max_and_avg_stats,incr_val};
 use pool::{orders_to_array,orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
 use repo::{CNFG, assign_pool_to_cab};
-use extender2::{find_matching_routes, write_sql_to_file, get_handle};
+use extender::{find_matching_routes, write_sql_to_file, get_handle};
 use utils::get_elapsed;
 use postgres::{Client, NoTls, Error};
 use chrono::{Local, Duration};
@@ -204,13 +204,13 @@ fn run_extender(_thr_numb: i32, itr: i32, host: &String, client: &mut Client, or
     if unsafe { CNFG.use_extender } {
         let start_extender = Instant::now();
         let ret = 
-                find_matching_routes(_thr_numb, itr, &host, client, orders, &stops, max_leg_id);
+                find_matching_routes(itr, _thr_numb, &host, client, orders, &stops, max_leg_id, unsafe { &DIST });
         update_max_and_avg_time(Stat::AvgExtenderTime, Stat::MaxExtenderTime, start_extender);
         demand = ret.0;
-        extender_handle = ret.1;
+        extender_handle = ret.2;
         let len_after = demand.len();
         if len_before != len_after {
-            info!("{}: route extender allocated {} requests", label, len_before - len_after);
+            info!("{}: route extender allocated {} requests, missed {} overlapping routes", label, len_before - len_after, ret.1);
         } else {
             info!("{}: extender has not helped", label);
         }
@@ -651,18 +651,18 @@ mod tests {
   fn test_orders_invalid() -> Vec<Order> {
     return vec![
         Order{ id: 1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
-            received: None,started: None,completed: None,at_time: None,eta: 0},
+            received: None,started: None,completed: None,at_time: None,eta: 0, route_id: -1},
         Order{ id: -1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
-            received: None,started: None,completed: None,at_time: None,eta: 0}
+            received: None,started: None,completed: None,at_time: None,eta: 0, route_id: -1}
     ];
   }
 
   fn test_orders() -> Vec<Order> {
     return vec![
         Order{ id: 0, from: 0, to: 1, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
-            received: None,started: None,completed: None,at_time: None,eta: 0},
+            received: None,started: None,completed: None,at_time: None,eta: 0, route_id: -1},
         Order{ id: 1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
-            received: None,started: None,completed: None,at_time: None,eta: 0}
+            received: None,started: None,completed: None,at_time: None,eta: 0, route_id: -1}
     ];
   }
 
