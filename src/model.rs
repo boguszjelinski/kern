@@ -67,7 +67,7 @@ pub struct Leg {
     pub reserve: i32, // to match constraints - wait, loss
     pub started: Option<SystemTime>,
     pub completed: Option<SystemTime>,
-    pub status: i32, // TODO: RouteStatus
+    pub status: RouteStatus,
     pub passengers: i32, // to meet cab's capacity
 }
 
@@ -98,7 +98,7 @@ pub enum OrderStatus {
 //    COMPLETED
 }
 
-//#[derive(Copy,Clone)]
+#[derive(Copy,Clone, Debug, PartialEq, Eq)]
 pub enum RouteStatus {
 //    PLANNED,   // proposed by Pool
     ASSIGNED = 1,  // not confirmed, initial status
@@ -108,22 +108,22 @@ pub enum RouteStatus {
     STARTED = 5,   // status needed by legs
 //    COMPLETED = 6
 }
-/*
+
 impl RouteStatus {
     fn from_u32(value: u32) -> RouteStatus {
         match value {
-            0 => RouteStatus::PLANNED,
+           // 0 => RouteStatus::PLANNED,
             1 => RouteStatus::ASSIGNED,
-            2 => RouteStatus::ACCEPTED,
-            3 => RouteStatus::REJECTED,
-            4 => RouteStatus::ABANDONED,
+           // 2 => RouteStatus::ACCEPTED,
+           // 3 => RouteStatus::REJECTED,
+           // 4 => RouteStatus::ABANDONED,
             5 => RouteStatus::STARTED,
-            6 => RouteStatus::COMPLETED,
+           // 6 => RouteStatus::COMPLETED,
             _ => panic!("Unknown value: {}", value),
         }
     }
 }
-*/
+
 
 #[derive(Clone)]
 pub struct Route {
@@ -156,13 +156,15 @@ impl Branch {
 }
 
 // config read from a file
+#[derive(Copy, Clone)]
 pub struct KernCfg{
 	pub max_assign_time: i64,
     pub max_solver_size: usize,
     pub run_after:u64,
     pub max_legs: i8,
     pub max_angle: f32,
-    pub use_ext_pool: bool,
+    pub use_pool: bool,
+    pub use_extern_pool: bool,
     pub use_extender: bool,
     pub thread_numb: i32,
     pub stop_wait: i16,

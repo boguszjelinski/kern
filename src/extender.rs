@@ -9,10 +9,10 @@ use crate::repo::{find_legs, assign_order_find_cab, create_leg, update_leg_a_bit
                   update_place_in_legs_after, update_passengers_and_reserve_in_legs_between, update_reserve_after,
                   find_orders_by_status_and_time};
 use crate::distance::DIST;
+use crate::repo::CNFG;
 use crate::utils::get_elapsed;
 
 pub const MAXCOST : i32 = 1000000;
-pub const MAX_LEG_COUNT: i8 = 8;
 pub const STOP_WAIT : i16 = 1;
 
 #[derive(Copy, Clone)]
@@ -38,15 +38,15 @@ pub fn bearing_diff(a: i32, b: i32 ) -> f32 {
 
 pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, client: &mut Client, demand: &Vec<Order>, stops: &Vec<Stop>, 
                             max_leg_id: &mut i64, dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) 
-                            -> (Vec<Order>, usize, thread::JoinHandle<()>) {
+                            -> (Vec<Order>, usize) {
     //return (demand.to_vec(), thread::spawn(|| { }));
     if demand.len() == 0 {
-        return (Vec::new(), 0, thread::spawn(|| { }));
+        return (Vec::new(), 0);
     }
     let mut legs: Vec<Leg> = find_legs(client); // TODO: legs that will soon start should not be taken into consideration !!!
     // as we will get customers not picked up ???
     if legs.len() == 0 {
-        return (demand.to_vec(), 0, thread::spawn(|| { }));
+        return (demand.to_vec(), 0);
     }
     let ass_orders: Vec<Order> = find_orders_by_status_and_time(client, OrderStatus::ASSIGNED, Local::now() - Duration::minutes(30));
     info!("Extender START, new orders count={} assigned orders={} legs count={}", demand.len(), ass_orders.len(), legs.len());
@@ -55,8 +55,39 @@ pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, client: &mu
 
     // EXECUTE SQL !!
     //write_sql_to_file(itr, &sql_bulk, "extender");
-    let handle = get_handle(host.clone(), sql_bulk, "extender".to_string());
-    return (ret, missed, handle);
+    //for s in split_sql(sql_bulk, 150) {
+    //  client.batch_execute(&s).unwrap();
+    //}
+    client.batch_execute(&sql_bulk).unwrap();
+    return (ret, missed);
+}
+
+pub fn split_sql(sql: String, size: usize) -> Vec<String> {
+  if sql.len() == 0 {
+      return vec![];
+  }
+  let list = sql.split(';').collect::<Vec<&str>>();
+  let mut ret: Vec<String> = vec![];
+  let mut temp: String = String::from("");
+  let mut i: usize = 0;
+  for l in list {
+      if l.len() == 0 || l.trim().is_empty() { // don't know why but it happened
+          continue;
+      }
+      temp += &(l.to_string() + ";");
+      if i == size - 1  {
+          info!("SQL chunk length: {}", temp.len());
+          ret.push(temp);
+          i = 0;
+          temp = String::from("");
+      } else {
+          i += 1;
+      } 
+  }
+  if temp.len() > 0 {
+      ret.push(temp);
+  }
+  return ret;
 }
 
 pub fn write_sql_to_file(itr: i32, sql: &String, label: &str) {
@@ -180,7 +211,7 @@ fn iterate(orders: Vec<Order>, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &H
 
 fn leg_is_short(val: Option<&i8>) -> bool {
   match val {
-    Some(x) => { *x <= MAX_LEG_COUNT },
+    Some(x) => { *x <= unsafe { CNFG.max_legs } },
     None => { true }
   }
 }
@@ -192,7 +223,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
   let mut ret: Option<LegIndicesWithDistance2> = None;
   let mut i: usize = 1; // index of pickup TODO: i=0 has to be considered one day
   let mut total_dist: i32;
-  if legs[i].status == 5 {
+  if legs[i].status == RouteStatus::STARTED {
     let mut on_the_way = get_elapsed(legs[0].started) as i32;
     if on_the_way == -1 { on_the_way = 0; }
     total_dist = cmp::max(0, legs[0].dist - on_the_way/60);
@@ -215,7 +246,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
         // i beyond the route, just to mark a leg in the next route
       }
       total_dist = 0;
-      if legs[i].status == 5 { // but we need such legs to avoid assigning legs that very soon will start (little chance to let know the driver)
+      if legs[i].status == RouteStatus::STARTED { // but we need such legs to avoid assigning legs that very soon will start (little chance to let know the driver)
         let mut on_the_way = get_elapsed(legs[i].started) as i32;
         if on_the_way == -1 { on_the_way = 0; }
         total_dist += cmp::max(0, legs[i].dist - on_the_way/60) + STOP_WAIT as i32;
@@ -223,13 +254,13 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
         continue; 
       }
       // if there is too many non-pickedup customers, uncomment the below, which mean do not assign a leg which is about to start soon
-      if legs[i].status == 0 {
+      if legs[i].status == RouteStatus::ASSIGNED {
         total_dist += legs[i].dist + STOP_WAIT as i32;
         i += 1;
         continue; 
       }
     }
-    if legs[i].status == 5 { // this should never happen, the same check is above when new route is found 
+    if legs[i].status == RouteStatus::STARTED { // this should never happen, the same check is above when new route is found 
       let mut on_the_way = get_elapsed(legs[i].started) as i32;
       if on_the_way == -1 { on_the_way = 0; }
       total_dist += cmp::max(0, legs[i].dist - on_the_way/60) + STOP_WAIT as i32;
@@ -684,9 +715,9 @@ use super::*;
 
   fn get_test_legs(dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> Vec<Leg> {
     return vec![
-      Leg{ id: 0, route_id: 123, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:1, started: None, completed: None, status: 1, passengers:1},
-      Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: dist[1][2] as i32, reserve:2, started: None, completed: None, status: 1, passengers:1},
-      Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: dist[2][3] as i32, reserve:3, started: None, completed: None, status: 1, passengers:1},
+      Leg{ id: 0, route_id: 123, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:1, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+      Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: dist[1][2] as i32, reserve:2, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+      Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: dist[2][3] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
     ];
   }
   /*
@@ -697,10 +728,10 @@ use super::*;
 
   fn get_test_legs2(dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> Vec<Leg> {
     return vec![
-      Leg{ id: 3, route_id: 124, from: 4, to: 5, place: 0, dist: dist[4][5] as i32, reserve:1, started: None, completed: None, status: 1, passengers:1},
-      Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: dist[0][2] as i32, reserve:3, started: None, completed: None, status: 1, passengers:1},
-      Leg{ id: 1, route_id: 123, from: 2, to: 4, place: 1, dist: dist[2][4] as i32, reserve:5, started: None, completed: None, status: 1, passengers:1},
-      Leg{ id: 2, route_id: 123, from: 4, to: 5, place: 2, dist: dist[4][5] as i32, reserve:6, started: None, completed: None, status: 1, passengers:1},
+      Leg{ id: 3, route_id: 124, from: 4, to: 5, place: 0, dist: dist[4][5] as i32, reserve:1, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+      Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: dist[0][2] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+      Leg{ id: 1, route_id: 123, from: 2, to: 4, place: 1, dist: dist[2][4] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+      Leg{ id: 2, route_id: 123, from: 4, to: 5, place: 2, dist: dist[4][5] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
     ];
   }
   /*
@@ -893,8 +924,8 @@ fn test_extend_legs_in_db_returns_sql_5_b() {
 
 fn get_test_legs4(dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> Vec<Leg> {
   return vec![
-    Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: dist[0][2] as i32, reserve:3, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 1, route_id: 123, from: 2, to: 5, place: 1, dist: dist[2][5] as i32, reserve:5, started: None, completed: None, status: 1, passengers:1},
+    Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: dist[0][2] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 1, route_id: 123, from: 2, to: 5, place: 1, dist: dist[2][5] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
   ];
 }
 
@@ -980,16 +1011,16 @@ fn test_extend_legs_in_db_returns_sql7() {
 // now two matching routes, one is better
 fn get_test_legs3(dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> Vec<Leg> {
   return vec![
-    Leg{ id: 100, route_id: 124, from: 4, to: 5, place: 0, dist: dist[4][5] as i32, reserve:1, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: dist[0][2] as i32, reserve:3, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 1, route_id: 123, from: 2, to: 4, place: 1, dist: dist[2][4] as i32, reserve:5, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 2, route_id: 123, from: 4, to: 5, place: 2, dist: dist[4][5] as i32, reserve:6, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 3, route_id: 125, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:3, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 4, route_id: 125, from: 1, to: 2, place: 1, dist: dist[1][2] as i32, reserve:5, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 5, route_id: 125, from: 2, to: 3, place: 2, dist: dist[2][3] as i32, reserve:6, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 6, route_id: 126, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:5, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 7, route_id: 126, from: 1, to: 4, place: 1, dist: dist[1][4] as i32, reserve:6, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 8, route_id: 126, from: 4, to: 5, place: 2, dist: dist[4][5] as i32, reserve:3, started: None, completed: None, status: 1, passengers:1},
+    Leg{ id: 100, route_id: 124, from: 4, to: 5, place: 0, dist: dist[4][5] as i32, reserve:1, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: dist[0][2] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 1, route_id: 123, from: 2, to: 4, place: 1, dist: dist[2][4] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 2, route_id: 123, from: 4, to: 5, place: 2, dist: dist[4][5] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 3, route_id: 125, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 4, route_id: 125, from: 1, to: 2, place: 1, dist: dist[1][2] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 5, route_id: 125, from: 2, to: 3, place: 2, dist: dist[2][3] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 6, route_id: 126, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 7, route_id: 126, from: 1, to: 4, place: 1, dist: dist[1][4] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 8, route_id: 126, from: 4, to: 5, place: 2, dist: dist[4][5] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
   ];
 }
 
@@ -1061,11 +1092,11 @@ fn test_extend_legs_two_identical_orders() {
 // testing wait time
 fn get_test_legs5(dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> Vec<Leg> {
   return vec![
-    Leg{ id: 0, route_id: 123, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:3, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: dist[1][2] as i32, reserve:5, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: dist[2][3] as i32, reserve:6, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 3, route_id: 123, from: 3, to: 4, place: 0, dist: dist[3][4] as i32, reserve:3, started: None, completed: None, status: 1, passengers:1},
-    Leg{ id: 4, route_id: 123, from: 4, to: 5, place: 1, dist: dist[4][5] as i32, reserve:5, started: None, completed: None, status: 1, passengers:1},
+    Leg{ id: 0, route_id: 123, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: dist[1][2] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: dist[2][3] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 3, route_id: 123, from: 3, to: 4, place: 0, dist: dist[3][4] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 4, route_id: 123, from: 4, to: 5, place: 1, dist: dist[4][5] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
   ];
 }
 

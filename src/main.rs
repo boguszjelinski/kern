@@ -13,7 +13,7 @@ use model::{KernCfg,Order,OrderStatus,OrderTransfer,Stop,Cab,CabStatus,Branch,MA
 use stats::{Stat,update_max_and_avg_time,update_max_and_avg_stats,incr_val};
 use pool::{orders_to_array,orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
 use repo::{CNFG, assign_pool_to_cab};
-use extender::{find_matching_routes, write_sql_to_file, get_handle};
+use extender::{find_matching_routes, write_sql_to_file, get_handle, split_sql};
 use utils::get_elapsed;
 use postgres::{Client, NoTls, Error};
 use chrono::{Local, Duration};
@@ -66,7 +66,8 @@ fn main() -> Result<(), Error> {
             run_after:       cfg["run_after"].parse().unwrap(),
             max_legs:        cfg["max_legs"].parse().unwrap(),
             max_angle:       cfg["max_angle"].parse::<f32>().unwrap(),
-            use_ext_pool:    cfg["use_ext_pool"].parse::<bool>().unwrap(),
+            use_pool:        cfg["use_pool"].parse::<bool>().unwrap(),
+            use_extern_pool: cfg["use_extern_pool"].parse::<bool>().unwrap(),
             use_extender:    cfg["use_extender"].parse::<bool>().unwrap(),
             thread_numb:     cfg["thread_numb"].parse().unwrap(),
             stop_wait:       cfg["stop_wait"].parse().unwrap(),
@@ -84,7 +85,8 @@ fn main() -> Result<(), Error> {
         info!("run_after: {}", CNFG.run_after);
         info!("max_legs: {}", CNFG.max_legs);
         info!("max_angle: {}", CNFG.max_angle);
-        info!("use_ext_pool: {}", CNFG.use_ext_pool);
+        info!("use_pool: {}", CNFG.use_pool);
+        info!("use_extern_pool: {}", CNFG.use_extern_pool);
         info!("use_extender: {}", CNFG.use_extender);
         info!("thread_numb: {}", CNFG.thread_numb);
         info!("stop_wait: {}", CNFG.stop_wait);
@@ -101,7 +103,7 @@ fn main() -> Result<(), Error> {
 
     let mut itr: i32 = 0;
     unsafe {
-        if CNFG.use_ext_pool {
+        if CNFG.use_extern_pool {
             initMem();
         }
     }
@@ -112,9 +114,10 @@ fn main() -> Result<(), Error> {
 
         // get newly requested trips and free cabs, reject expired orders (no luck this time)
         let tmp_model = prepare_data(&mut client);
+        let mut rest: usize = 0;
         match tmp_model {
             Some(mut x) => { 
-                dispatch(itr, &db_conn_str, &mut client, &mut x.0, &mut x.1, &stops);
+                rest = dispatch(itr, &db_conn_str, &mut client, &mut x.0, &mut x.1, &stops, unsafe { CNFG.clone() });
             },
             None => {
                 info!("Nothing to do");
@@ -124,13 +127,13 @@ fn main() -> Result<(), Error> {
         unsafe {
         // check if we should wait for new orders
         let mut wait: u64 = CNFG.run_after - start.elapsed().as_secs();
-        debug!("Sleeping in {} secs", wait);
-        if wait > 60 {
+        if rest > 0 || wait > 60 {
             // TODO: find the bug!
             warn!("Strange wait time: {}", wait);
             wait = 0;
         }
         if wait > 0 {
+            debug!("Sleeping in {} secs", wait);
             thread::sleep(std::time::Duration::from_secs(wait));
         }}
         itr += 1;
@@ -197,17 +200,17 @@ extern "C" {
 }
 
 fn run_extender(_thr_numb: i32, itr: i32, host: &String, client: &mut Client, orders: &Vec<Order>, stops: &Vec<Stop>, 
-                max_leg_id: &mut i64, label: &str) -> Vec<Order> {
+                max_leg_id: &mut i64, label: &str, cfg: &KernCfg) -> (Vec<Order>, usize) {
     let demand: Vec<Order>;
-    let mut extender_handle: thread::JoinHandle<()> = thread::spawn(|| {});
     let len_before = orders.len();
-    if unsafe { CNFG.use_extender } {
+    let mut rest: usize = 0;
+    if cfg.use_extender {
         let start_extender = Instant::now();
-        let ret = 
-                find_matching_routes(itr, _thr_numb, &host, client, orders, &stops, max_leg_id, unsafe { &DIST });
+        let ret 
+            = find_matching_routes(itr, _thr_numb, &host, client, orders, &stops, max_leg_id, unsafe { &DIST });
         update_max_and_avg_time(Stat::AvgExtenderTime, Stat::MaxExtenderTime, start_extender);
         demand = ret.0;
-        extender_handle = ret.2;
+        rest = ret.1;
         let len_after = demand.len();
         if len_before != len_after {
             info!("{}: route extender allocated {} requests, missed {} overlapping routes", label, len_before - len_after, ret.1);
@@ -217,9 +220,7 @@ fn run_extender(_thr_numb: i32, itr: i32, host: &String, client: &mut Client, or
     } else {
         demand = orders.to_vec();
     }
-    // "deadlock detected" - let's wait for completion
-    extender_handle.join().expect("Extender SQL thread being joined has panicked");
-    return demand;
+    return (demand, rest);
 }
 
 // three steps:
@@ -227,49 +228,62 @@ fn run_extender(_thr_numb: i32, itr: i32, host: &String, client: &mut Client, or
 // 2) pool finder
 // 3) solver (LCM in most scenarious won't be called)
 // SQL updates execute in background as async
-fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>) {
+fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>, cfg: KernCfg) -> usize {
     if orders.len() == 0 {
         info!("No demand, no dispatch");
-        return;
+        return 0;
     }
     let mut max_route_id : i64 = repo::read_max(client, "route"); // +1, first free ID
     let mut max_leg_id : i64 = repo::read_max(client, "leg");
-    let thread_num: i32;
-    unsafe {
-        thread_num = CNFG.thread_numb;
-    }
+    let thread_num: i32 = cfg.thread_numb;
+    
     stats::update_max_and_avg_stats(Stat::AvgDemandSize, Stat::MaxDemandSize, orders.len() as i64);
+    
+    // check if we want to run extender is done in run_extender
+    let (mut demand, mut rest) 
+        = run_extender(thread_num, itr, &host, client, orders, &stops, &mut max_leg_id, "FIRST", &cfg);
 
-    let mut demand = run_extender(thread_num, itr, &host, client, orders, &stops, &mut max_leg_id, "FIRST");
+    if rest > 0 { return rest; }
 
     // POOL FINDER
     if cabs.len() == 0 {
         info!("No cabs");
-        return;
+        return 0;
     }
-    let start_pool = Instant::now();
-    stats::update_max_and_avg_stats(Stat::AvgPoolDemandSize, Stat::MaxPoolDemandSize, demand.len() as i64);
-    let mut pl: Vec<Branch> = Vec::new();
-    let mut sql: String = String::from("");
-    
-    // 2 versions available - in C (external) and Rust
-    if unsafe { CNFG.use_ext_pool } {
-        (pl, sql) = find_extern_pool(&mut demand, cabs, stops, unsafe { CNFG.thread_numb }, &mut max_route_id, &mut max_leg_id);
-    } else {
-        for p in (2..5).rev() { // 4,3,2
-            let mut ret = find_pool(p, unsafe { CNFG.thread_numb } as i16,
-                    &mut demand, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
-            pl.append(&mut ret.0);
-            sql += &ret.1;
-        }
-    }
-    write_sql_to_file(itr, &sql, "pool");
-    let pool_handle = get_handle(host.clone(), sql, "pool".to_string());
-    update_max_and_avg_time(Stat::AvgPoolTime, Stat::MaxPoolTime, start_pool);
 
-    // marking assigned orders to get rid of them; cabs are marked in find_pool 
-    let numb = count_orders(pl, &demand);
-    info!("Pool finder - number of assigned orders: {}", numb);
+    if cfg.use_pool {
+        let start_pool = Instant::now();
+        stats::update_max_and_avg_stats(Stat::AvgPoolDemandSize, Stat::MaxPoolDemandSize, demand.len() as i64);
+        let mut pl: Vec<Branch> = Vec::new();
+        let mut sql: String = String::from("");
+        
+        // 2 versions available - in C (external) and Rust
+        if cfg.use_extern_pool {
+            (pl, sql) = find_extern_pool(&mut demand, cabs, stops, cfg.thread_numb, &mut max_route_id, &mut max_leg_id);
+        } else {
+            for p in (2..5).rev() { // 4,3,2
+                let mut ret = find_pool(p, unsafe { CNFG.thread_numb } as i16,
+                        &mut demand, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
+                pl.append(&mut ret.0);
+                sql += &ret.1;
+            }
+        }
+        update_max_and_avg_time(Stat::AvgPoolTime, Stat::MaxPoolTime, start_pool);
+        //write_sql_to_file(itr, &sql, "pool");
+        //for s in split_sql(sql, 150) {
+        //    client.batch_execute(&s).unwrap();
+        //}
+        client.batch_execute(&sql).unwrap();
+        // marking assigned orders to get rid of them; cabs are marked in find_pool 
+        let numb = count_orders(pl, &demand);
+        info!("Pool finder - number of assigned orders: {}", numb);
+
+        // let's try extender on the new routes if there still is demand
+        (*cabs, demand) = shrink(&cabs, demand);
+        (demand, rest) 
+            = run_extender(thread_num, itr, &host, client, &demand, &stops, &mut max_leg_id, "SECOND", &cfg);
+        if rest > 0 { return rest; } // let's run extender again
+    }
 
     // we don't want to run run solver each time, once a minute is fine, these are som trouble-making customers :)
     if (itr % unsafe { CNFG.solver_interval }) == 0 {
@@ -278,11 +292,11 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
         stats::update_max_and_avg_stats(Stat::AvgSolverDemandSize, Stat::MaxSolverDemandSize, demand.len() as i64);
         if cabs.len() == 0 {
             info!("No cabs after pool finder");
-            return;
+            return 0;
         }
         if demand.len() == 0 {
             info!("No demand after pool finder");
-            return;
+            return 0;
         }
         // LCM presolver
         let mut lcm_handle = thread::spawn(|| { });
@@ -304,10 +318,10 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
         let sol = munkres(&cabs, &demand);
         let before_solver = max_route_id;
 
-        sql = repo::assign_cust_to_cab_munkres(sol, &cabs, &demand, &mut max_route_id, &mut max_leg_id);
+        let sql = repo::assign_cust_to_cab_munkres(sol, &cabs, &demand, &mut max_route_id, &mut max_leg_id);
         
         update_max_and_avg_time(Stat::AvgSolverTime, Stat::MaxSolverTime, start_solver);
-        write_sql_to_file(itr, &sql, "munkres");
+        //write_sql_to_file(itr, &sql, "munkres");
         if sql.len() > 0 {
             match client.batch_execute(&sql) { // here SYNC execution
                 Ok(_) => {}
@@ -320,9 +334,10 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
         info!("Dispatch completed, solver assigned: {}", max_route_id - before_solver);
     }
     // we have to join so that the next run of dispatcher gets updated orders
-    pool_handle.join().expect("Pool SQL thread being joined has panicked");
+
     let status_handle = get_handle(host.clone(), repo::save_status(), "stats".to_string());
     status_handle.join().expect("Status SQL thread being joined has panicked");
+    return 0; // 0: all orders served
 }
 
 // least/low cost method - shrinking the model so that it can be sent to solver
