@@ -1,9 +1,12 @@
 # How to run a simulation
 In order to test the dispatcher you can run a simulation. You need at least three components:
 * [Kern](https://gitlab.com/kabina/kapir): dispatcher
-* [Kapir](https://gitlab.com/kabina/kapir): Rest API responsible for receiving requests, share statuses and store them in a database
-* [Kapi](https://gitlab.com/kabina/kapi/client): Rest API client simulator, which emulates real users in big volume (100k/h)
+* [Kim](https://gitlab.com/kabina/kim): client simulator, which emulates real users in big volume (100k/h) with direct insertion into database.
 The results will be saved in the database and logs.
+
+To test the technology stack more realistically you can simulate clients via RestAPI, without Kim:
+* [Kapir](https://gitlab.com/kabina/kapir): Rest API responsible for receiving requests, share statuses and store them in a database
+* [Kapi](https://gitlab.com/kabina/kapi/client): Rest API client simulator, which also emulates real users in big volume (100k/h)
 
 But you might also want to test visually, on-line, how a request is served. Four React applications will help you do it: 
 * [Kabina](https://gitlab.com/kabina/kabina): mobile application for customers 
@@ -15,17 +18,17 @@ But you might also want to test visually, on-line, how a request is served. Four
 * PostgreSQL
 * C compiler (optional, implementation of pool in Rust exists)
 * Rust compiler
-* Go compiler (alternativelly a [Java client](https://gitlab.com/kabina/kaboot/-/tree/master/generators/src) exists but it is slow and resource-hungry)
+* Go compiler (alternativelly a [Java client](https://gitlab.com/kabina/kaboot/-/tree/master/generators/src) exists, but it is slow and resource-hungry)
 * Node.js (optional, React apps for single customer)
 * Python (optional, to watch KPIs and for route quality check; python-tk and psycopg2-binary needed)
 
-Java and C# implementations of dispatcher, RestAPI and clients exist but they are not maintained any longer. Java was a proof-of-concept, C# was used for benchmarking (not good either).
+Java and C# implementations of these components (dispatcher, RestAPI and clients) exist, but they are not maintained any longer. Java was a proof-of-concept, C# was used for benchmarking (not good either).
 
 ## How to install and run
 
 ### Kern
 
-1) Compile the pool finder (optional, see use_ext_pool below) and make the library available for Rust compiler, an example for Mac OS:
+1) Compile the pool finder (optional, see use_extern_pool below) and make the library available for Rust compiler, an example for Mac OS:
    ```
    cd pool
    cc -c -Wno-implicit-function-declaration poold.c dynapool.c -w
@@ -56,6 +59,7 @@ This will create example stop, cab and customer entities.
   |----------|--------
   | db_conn | database connection string - user, password, address, port, schema
   | run_after | time difference in seconds between dispatcher executions
+  | solver_interval | how often solver is engaged, 4 means every fourth lap. The idea is to wait for more requests, maybe some of them will allow for a pool
   | max_assign_time | time in minutes after which orders expire
   | max_solver_size | if demand and supply exceed the value LCM will be called to shrink the model
   | max_legs | how many legs can a route have, used in route extender
@@ -63,15 +67,43 @@ This will create example stop, cab and customer entities.
   | cab_speed | average speed in km/h
   | stop_wait | how many minutes it takes at a stop
   | log_file  | log file location and name
-  | use_ext_pool | if external pool finder (C library) should be used
-  | use_extender | if route extender should be used (experimental)
+  | use_pool | if pool finder should be used
+  | use_extern_pool | if external pool finder (C library) should be used
+  | use_extender | if route extender should be used
   | thread_numb | how many threads should be used
   | max_pool4_size | max allowed size of demand for pools with 4 passengers (for tuning, depends on hardware performance)
   | max_pool3_size | max allowed size of demand for pools with 3 passengers
   | max_pool2_size | max allowed size of demand for pools with 2 passengers
 
 1) Scheduler can be started with `target/release/kern` or `cargo run --release`
-Though nothing will happen until cabs will report their availability and customers will submit their trip requests, both via RestAPI. 
+Though nothing will happen until cabs will report their availability and customers will submit their trip requests, e.g. with [Kim](https://gitlab.com/kabina/kim) or via RestAPI. 
+
+### Kim
+
+1) Make changes in *kim.toml*:
+   
+  | Parameter | Purpose
+  |----------|--------
+  | db_conn | database connection string - user, password, address, port, schema
+  | log_file | both buses and passengers will be logged here
+  | cab_speed | km/h, how fast does a bus drive between stops
+  | max_time | duration of request submission in minutes, simulation will take longer to complete
+  | check_interval | sleep duration between iterations, which submit requests and updates both buses and passengers
+  | max_cab | how many buses should be emulated. there must be rows in database for them
+  | max_stand | id of the last stop in the database
+  | stop_wait | how long should a bus wait at a stop, in seconds
+  | req_per_min | how many trips per minute should be requested
+  | max_wait_for_assign  | after how many minutes of waiting for assignment should a passenger cancel a request
+  |  max_delay | after what delay beyond max_wait (no bus has appeared to pick up the passenger) should a passenger cancel a request, in minutes
+  |  max_trip | max duration of a trip requested, in minutes
+  | max_detour | in percents, what extension of max_trip can a passenger accept in a pool (in exchange for a better price?)
+  | max_trip_actual | not used
+  | max_trip_delay | delay of the whole trip including detour that will cause a warning in log if exceeded, in minutes 
+ 
+1) Run
+   ```
+   cargo run --release
+   ```
 
 ### Kapir
 
@@ -189,7 +221,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 #
 Bogusz Jelinski    
-December 2022  
+December 2023
 Mo i Rana
 
 bogusz.jelinski (at) g m a i l

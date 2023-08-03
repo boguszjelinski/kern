@@ -4,14 +4,15 @@ This repository contains a subproject of Kabina - Kern minibus dispatcher, which
 Kern dispatcher consists of three main components:
 * **solver**, which allocates passengers to free cabs ([Hungarian](https://en.wikipedia.org/wiki/Hungarian_algorithm) and [Least Cost Method](https://www.educationlessons.co.in/notes/least-cost-method) are used)
 * **pool finder** (multithreaded, linearly scalable, written in C) to assign several customers to one bus and create routes with several stops, 5+ passengers with 10+ stops are feasible with finder based on [dynamic programming](https://en.wikipedia.org/wiki/Dynamic_programming) principles. This module is available also in Rust, Java and C#.
-* **route extender** to assign customers to matching routes, including non-perfect matching
+* **route extender** to assign customers to matching routes, including non-perfect matching (multithreaded)
 
 ## Other Kabina subprojects:
-The idea behind Kabina is to provide an enabler (a software skeleton, testing framework and RestAPI proposal) for a minibus service that can assign 10+ passengers to one cab (minibus), thus reducing among others the cost of the driver per passenger. Such extended minibus service would allow for the shift to sustainable transport, it might be cost-competitive with the public transport while providing better service quality including shorter travel time.
+The idea behind Kabina is to provide an enabler (a software skeleton, testing framework and RestAPI proposal) for a minibus service that can assign 15+ passengers to one cab (minibus) per hour, thus reducing the cost of the driver per passenger, among other benefits. Such extended minibus service would allow for the shift to sustainable transport, it might be cost-competitive with the public transport while providing better service quality including shorter travel time.
 The following accompanying components have been developed:
 
 * [Kapir](https://gitlab.com/kabina/kapir): Rest API responsible for receiving requests, share statuses and store them in a database
 * [Kapi](https://gitlab.com/kabina/kapi/client): Rest API client simulator, which emulates real users and helps test the dispatcher
+* [Kim](https://gitlab.com/kabina/kim): client simulator, which emulates real users and helps test the dispatcher, direct access to the database
 * [Kabina](https://gitlab.com/kabina/kabina): mobile application for minibus customers 
 * [Kab](https://gitlab.com/kabina/kab): mobile application for minibus drivers
 * [Kavla](https://gitlab.com/kabina/kavla): mobile application for presenting current routes on stops 
@@ -29,7 +30,7 @@ See here to find more: https://gitlab.com/kabina/kabina/-/blob/master/minibuses.
 ## How to install and run
 See also [readme](HOWTORUN.md) how to run all Kabina components in a simulation.
 
-1) Compile the pool finder (optional, see use_ext_pool below) and make the library available for Rust compiler, an example for Mac OS:
+1) Compile the pool finder (optional, see use_extern_pool below) and make the library available for Rust compiler, an example for Mac OS:
 ```
 cd pool
 cc -c -Wno-implicit-function-declaration poold.c dynapool.c -w
@@ -63,7 +64,8 @@ This will create example stop, cab and customer entities.
 | cab_speed | average speed in km/h
 | stop_wait | how many minutes it takes at a stop
 | log_file  | log file location and name
-| use_ext_pool | if external pool finder (C library) should be used
+| use_pool | if pool finder should be used
+| use_extern_pool | if external pool finder (C library) should be used
 | use_extender | if route extender should be used (experimental)
 | thread_numb | how many threads should be used
 | max_pool4_size | max allowed size of demand for pools with 4 passengers (for tuning, depends on hardware performance)

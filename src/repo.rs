@@ -15,7 +15,8 @@ pub static mut CNFG: KernCfg = KernCfg {
     run_after: 15, // secs
     max_legs: 8,
     max_angle: 120.0,
-    use_ext_pool: true,
+    use_pool: true,
+    use_extern_pool: true,
     use_extender: false,
     thread_numb: 4,
     stop_wait: 1,
@@ -103,12 +104,16 @@ pub fn find_legs(client: &mut Client) -> Vec<Leg> {
             started: row.get::<usize,Option<SystemTime>>(5),
             completed: row.get::<usize,Option<SystemTime>>(6),
             route_id: row.get(7), 
-            status: row.get(8),
+            status: get_route_status(row.get(8)),
             reserve: row.get(9),
             passengers: row.get(10),
         });
     }
     return ret;
+}
+
+pub fn get_route_status(idx: i32) -> RouteStatus {
+    return unsafe { ::std::mem::transmute(idx as i8) };
 }
 
 pub fn assign_order_find_cab(order_id: i64, leg_id: i64, route_id: i64, eta: i32, in_pool: &str, called_by: &str) -> String {   
@@ -144,18 +149,6 @@ pub fn assign_order_no_leg(order_id: i64, cab_id: i64, route_id: i64, eta: i16, 
         route_id, cab_id, eta, in_pool, order_id);
 }
 
-/*
-pub fn assign_order_find_leg_cab(order_id: i64, place: i32, route_id: i64, eta: i32, called_by: &str) -> String {   
-    debug!("Assigning order_id={} to route_id={}, leg_id=UNKNOWN, place={}, routine {}",
-                                            order_id, route_id, place, called_by);
-    return format!("\
-        UPDATE taxi_order AS o SET route_id={}, leg_id=l.id, cab_id=r.cab_id, status=1, eta={} \
-        FROM route AS r, leg AS l WHERE r.id={} AND l.route_id={} AND l.place={} \
-        AND o.id={} AND o.status=0;", // it might be cancelled in the meantime, we have to be sure. 
-        route_id, eta, route_id, route_id, place, order_id);
-}
-*/
-
 pub fn create_leg(order_id: i64, from: i32, to: i32, place: i32, status: RouteStatus, dist: i16, reserve: i32,
                   route_id: i64, max_leg_id: &mut i64, passengers: i8, called_by: &str) -> String {
     debug!("Adding leg to route: leg_id={}, route_id={}, order_id={}, from={}, to={}, place={}, distance={}, reserve={}, routine {}", 
@@ -166,13 +159,6 @@ pub fn create_leg(order_id: i64, from: i32, to: i32, place: i32, status: RouteSt
         ({},{},{},{},{},{},{},{},{});\n", *max_leg_id, from, to, place, dist, status as u8, cmp::max(reserve, 0), route_id, passengers);
     *max_leg_id += 1;
     return ret;
-}
-
-pub fn update_leg_a_bit(route_id: i64, leg_id: i64, to: i32, dist: i16, reserve: i32) -> String {
-    debug!("Updating existing route_id={}, leg_id={}, to={}, distance={}, reserve={}", 
-                route_id, leg_id, to, dist, reserve);
-    return format!("\
-        UPDATE leg SET to_stand={}, distance={}, reserve={} WHERE id={};\n", to, dist, reserve, leg_id);
 }
 
 pub fn update_leg_a_bit2(route_id: i64, leg_id: i64, to: i32, dist: i16, reserve: i32, passengers: i8) -> String {
@@ -206,65 +192,6 @@ pub fn update_reserve_after(route_id: i64, cost: i32, place_from: i32) -> String
     debug!("Updating reserve in route_id={}, cost={} from place={}", route_id, cost, place_from);
     return format!("\
         UPDATE leg SET reserve=GREATEST(0, reserve-{}) WHERE route_id={} AND place >= {};\n", cost, route_id, place_from);
-}
-
-pub fn update_leg_with_route_id(route_id: i64, place: i32, to: i32, dist: i16, reserve: i32) -> String {
-    // TODO: sjekk in log how many such cases
-    debug!("Updating existing leg with route_id={} place={} to={} reserve={}", route_id, place, to, reserve);
-    return format!("\
-        UPDATE leg SET to_stand={}, distance={}, reserve={} \
-        WHERE route_id={} AND place={};\n", to, dist, reserve, route_id, place);
-}
-
-pub fn update_place_and_reserve_in_legs_after(route_id: i64, place: i32, dist_diff: i32) -> String {
-    debug!("Updating places in route_id={} starting with place={}, dist_diff={}", 
-                route_id, place, dist_diff);
-    if dist_diff < 0 {
-        warn!("Negative distance diff in route_id={} starting with place={}, dist_diff={} (= extended route made a leg shorter!)", 
-                route_id, place, dist_diff);
-        return format!("\
-        UPDATE leg SET place=place+1 WHERE route_id={} AND place >= {};\n", route_id, place);
-    }
-    return format!("\
-        UPDATE leg SET place=place+1, reserve=GREATEST(0,reserve-{}) \
-        WHERE route_id={} AND place >= {};\n", dist_diff, route_id, place);
-}
-
-// pub fn update_reserve_and_pass_in_legs_between(route_id: i64, place_from: i32, place_to: i32, loss_reserve: i32) -> String {
-//     debug!("Updating reserves in route_id={} from place={} to place={}, order_loss_reserve={}", 
-//                 route_id, place_from, place_to, loss_reserve);
-//     // TODO: probably we should increase passengers only to place_to -1
-//     if loss_reserve < 0 {
-//         return format!("\
-//         UPDATE leg SET reserve=0, passengers=passengers+1 WHERE route_id={} AND place BETWEEN {} AND {};\n", route_id, place_from, place_to);
-//     }
-//     return format!("\
-//         UPDATE leg SET reserve=LEAST(reserve, {}), passengers=passengers+1 \
-//         WHERE route_id={} AND place BETWEEN {} AND {};\n", loss_reserve, route_id, place_from, place_to);
-// }
-
-pub fn update_reserve_in_legs_between(route_id: i64, place_from: i32, place_to: i32, loss_reserve: i32) -> String {
-    debug!("Updating reserves in route_id={} from place={} to place={}, order_loss_reserve={}", 
-                route_id, place_from, place_to, loss_reserve);
-    // TODO: probably we should increase passengers only to place_to -1
-    if loss_reserve < 0 {
-        return format!("\
-        UPDATE leg SET reserve=0 WHERE route_id={} AND place BETWEEN {} AND {};\n", route_id, place_from, place_to);
-    }
-    return format!("\
-        UPDATE leg SET reserve=LEAST(reserve, {}) \
-        WHERE route_id={} AND place BETWEEN {} AND {};\n", loss_reserve, route_id, place_from, place_to);
-}
-
-pub fn update_passengers(route_id: i64, idx_from: usize, idx_to: usize, legs: &mut Vec<Leg>) -> String {
-    debug!("Updating passengers in route_id={} from place={} to place={}", 
-                route_id, legs[idx_from].place, legs[idx_to].place);
-    for i in idx_from .. idx_to +1 { 
-        legs[i].passengers += 1;
-    }
-    return format!("\
-        UPDATE leg SET passengers=passengers+1 \
-        WHERE route_id={} AND place BETWEEN {} AND {};\n", route_id, legs[idx_from].place, legs[idx_to].place);
 }
 
 pub fn update_reserves_in_legs_before_and_including(route_id: i64, place: i32, wait_diff: i32) -> String {
@@ -433,35 +360,6 @@ fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Br
     }
     return sql;
 }
-
-// count individual reserve
-// just subtract the real distance from solo_distance * maxloss  
-// there are two cases
-// 1) we are checking an order which happens to have OUT in the last cell in ord_ids, we will not hit the first "if" in the loop 
-// 2) all others
-/*
-fn check_route_reserve(e: Branch, start: usize, orders: &[Order; MAXORDERSNUMB]) -> i16 {
-  let mut dist: i16 = 0;
-  let o: Order = orders[e.ord_ids[start] as usize];
-  for c in start .. (e.ord_numb - 1) as usize {
-    let order: Order = orders[e.ord_ids[c] as usize];
-    if e.ord_actions[c] == 'o' as i8 && o.id == order.id {
-        return (o.dist as f32 * (1.0 + o.loss as f32 / 100.0)) as i16 - dist;
-    }
-    let stand1: i32 = if e.ord_actions[c] == 'i' as i8 { order.from } else { order.to };
-    let stand2: i32 = if e.ord_actions[c + 1] == 'i' as i8
-                      { orders[e.ord_ids[c + 1] as usize].from } else { orders[e.ord_ids[c + 1] as usize ].to } ;
-    if stand1 != stand2 { // there is movement
-        unsafe { dist += DIST[stand1 as usize][stand2 as usize]; }
-    }
-    if c as i16 == e.ord_numb - 2 && o.id == orders[e.ord_ids[c+1] as usize].id { // last leg is always OUT
-        return (o.dist as f32 * (1.0 + o.loss as f32 / 100.0)) as i16 - dist;
-    }
-  }
-  warn!("check_route_reserve has not found OUT action for order_id={}, ", o.id);
-  return 0;
-}
-*/
 
 pub fn assign_order_to_cab_lcm(sol: Vec<(i16,i16)>, cabs: &Vec<Cab>, demand: &Vec<Order>, max_route_id: &mut i64, 
                               max_leg_id: &mut i64) -> String {
