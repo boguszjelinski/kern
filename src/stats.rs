@@ -12,8 +12,9 @@ pub static mut AVG_ELEMENTS: [Vec<i64>; Stat::TotalPickupDistance as usize + 1]
 pub enum Stat {
     AvgExtenderTime,
     AvgPoolTime,
-    AvgPool3Time, // not updated as it runs in C
-    AvgPool4Time, // not updated
+    AvgPool3Time,
+    AvgPool4Time,
+    AvgPool5Time,
     AvgLcmTime,
     AvgSolverTime,
     AvgShedulerTime,
@@ -22,6 +23,7 @@ pub enum Stat {
     MaxPoolTime,
     MaxPool3Time,
     MaxPool4Time,
+    MaxPool5Time,
     MaxLcmTime,
     MaxSolverTime,
     MaxShedulerTime,

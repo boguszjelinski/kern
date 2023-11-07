@@ -44,7 +44,8 @@ extern int cabsNumb;
 extern Branch *retNode;
 extern int retCount, retNumb; // number of branches returned to Rust
 
-inline short dist(int row, int col) {
+//inline - it causes linker problems while running 'cargo build'
+short dist(int row, int col) {
   return *(distance + (row * distNumb) + col);
 }
 
@@ -63,10 +64,14 @@ void storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inP
     ptr->ordActions[0] = action;
     // ? memcpy
     // make space for the new order - TODO: maybe we could have the last order at [0]? the other way round
-    for (int j = 0; j < ptr->ordNumb - 1; j++) { // further stage has one passenger less: -1
+    /*for (int j = 0; j < ptr->ordNumb - 1; j++) { // further stage has one passenger less: -1
       ptr->ordIDs[j + 1]      = b->ordIDs[j];
       ptr->ordActions[j + 1]  = b->ordActions[j];
-    }
+    }*/
+    size_t size = (ptr->ordNumb - 1) * sizeof(int);
+    memcpy(&ptr->ordIDs[1], &b->ordIDs[0], size);
+    memcpy(&ptr->ordActions[1], &b->ordActions[0], size);
+
     //sprintf (ptr->key, "%d%c%s", ordId, action, b->key);
     short from = action == 'i' ? demand[ordId].fromStand : demand[ordId].toStand;
     short to = b->ordActions[0] == 'i' ? demand[b->ordIDs[0]].fromStand : demand[b->ordIDs[0]].toStand;

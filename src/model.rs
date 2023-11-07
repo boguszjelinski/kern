@@ -5,7 +5,7 @@ pub const MAXORDERSNUMB: usize = 2000; // max not assigned
 pub const MAXCABSNUMB: usize = 18000;
 pub const MAXBRANCHNUMB: usize = 1000; // size of pool finder's response
 
-pub const MAXINPOOL : usize = 4;  // it might be 5 with limited demand
+pub const MAXINPOOL : usize = 5;
 pub const MAXORDID : usize = MAXINPOOL * 2;
 
 #[repr(C)]
@@ -169,6 +169,7 @@ pub struct KernCfg{
     pub thread_numb: i32,
     pub stop_wait: i16,
     pub cab_speed: i8,
+    pub max_pool5_size: i32,
     pub max_pool4_size: i32,
     pub max_pool3_size: i32,
     pub max_pool2_size: i32,
