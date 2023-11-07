@@ -490,7 +490,37 @@ pub fn stops_to_array(vec: &Vec<Stop>) -> [Stop; MAXSTOPSNUMB] {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::distance::init_distance;
   use serial_test::serial;
+  use std::time::Instant;
+  use std::time::SystemTime;
+
+  fn get_stops() -> Vec<Stop> {
+    let mut stops: Vec<Stop> = vec![];
+    let mut c: i64 = 0;
+    for i in 0..49 {
+      for j in 0..49 {
+        stops.push(
+          Stop{ id: c, bearing: 0, latitude: 49.0 + 0.025 * i as f64, longitude: 19.000 + 0.025 * j as f64}
+        );
+        c = c + 1;
+      }
+    }
+    return stops;
+  }
+
+  fn set_orders() {
+    unsafe {
+      for i in 0..10000 {     
+        let from: i32 = i % 2400;
+        let to: i32 = from + 1;
+        ORDERS[i as usize] = Order{ id: i as i64, from, to, wait: 15, loss: 70, dist: DIST[from as usize][to as usize] as i32, 
+          shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, 
+          eta: 1, route_id: -1 };
+      }
+      ORDERS_LEN = 10000;
+    }
+  }
 
   fn test_init_orders_and_dist(dist: i16) {
     unsafe {
@@ -508,22 +538,22 @@ mod tests {
 
   fn test_branches() -> Vec<Branch> {
     return vec![ 
-      Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 },
-      Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [5,6,7,8,8,7,6,5], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 },
-      Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,6,7,8,8,7,6,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 }];
+      Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,2,3,4,5,5,4,3,2,1], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 },
+      Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [5,6,7,8,9,9,8,7,6,5], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 },
+      Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,6,7,8,9,9,8,7,6,1], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 }];
   }
 
   fn test_leaves() -> Vec<Branch> {
     return vec![ 
-      Branch{ cost: 1, outs: 2, ord_numb: 2, ord_ids: [1,2,0,0,0,0,0,0], ord_actions: [111,111,0,0,0,0,0,0], cab: 0 },
-      Branch{ cost: 1, outs: 2, ord_numb: 2, ord_ids: [2,1,0,0,0,0,0,0], ord_actions: [111,111,0,0,0,0,0,0], cab: 0 },
-      Branch{ cost: 1, outs: 2, ord_numb: 2, ord_ids: [0,1,0,0,0,0,0,0], ord_actions: [111,111,0,0,0,0,0,0], cab: 0 }];
+      Branch{ cost: 1, outs: 2, ord_numb: 2, ord_ids: [1,2,0,0,0,0,0,0,0,0], ord_actions: [111,111,0,0,0,0,0,0,0,0], cab: 0 },
+      Branch{ cost: 1, outs: 2, ord_numb: 2, ord_ids: [2,1,0,0,0,0,0,0,0,0], ord_actions: [111,111,0,0,0,0,0,0,0,0], cab: 0 },
+      Branch{ cost: 1, outs: 2, ord_numb: 2, ord_ids: [0,1,0,0,0,0,0,0,0,0], ord_actions: [111,111,0,0,0,0,0,0,0,0], cab: 0 }];
   }
 
   #[test]
   #[serial]
   fn test_find_pool(){
-    test_init_orders_and_dist(1);
+    //test_init_orders_and_dist(1);
     let mut orders = unsafe { ORDERS.to_vec().drain(..ORDERS_LEN).collect() };
     let mut cabs = unsafe { CABS.to_vec().drain(..CABS_LEN).collect() };
     let stops = vec![ Stop{id:0,bearing:0, latitude: 0.0, longitude: 0.0 }];
@@ -532,6 +562,76 @@ mod tests {
     let ret = find_pool(4, 4, &mut orders, &mut cabs, 
             &stops, &mut max_route_id, &mut max_leg_id);
     assert_eq!(ret.0.len(), 1);
+  }
+
+  fn get_pool_stops() -> Vec<Stop> {
+    let mut stops: Vec<Stop> = vec![];
+    let mut c: i64 = 0;
+    for i in 0..49 {
+      for j in 0..49 {
+        stops.push(
+          Stop{ id: c, bearing: 0, latitude: 49.0 + 0.05 * i as f64, longitude: 19.000 + 0.05 * j as f64}
+        );
+        c = c + 1;
+      }
+    }
+    return stops;
+  }
+
+  fn get_pool_orders() -> Vec<Order> {
+    let mut ret: Vec<Order> = vec![];
+    for i in 0..50 {     
+        let from: i32 = i % 2400;
+        let to: i32 = from + 5;
+        let dista = unsafe { DIST[from as usize][to as usize] as i32 };
+        ret.push(Order{ id: i as i64, from, to, wait: 15, loss: 70, dist: dista, 
+                    shared: true, in_pool: false, received: Some(SystemTime::now()), started: None, completed: None, at_time: None, 
+                    eta: 1, route_id: -1 });
+    }
+    return ret;
+  }
+
+  fn get_pool_cabs() -> Vec<Cab> {
+    let mut ret: Vec<Cab> = vec![];
+    for i in 0..1000 {
+        ret.push(Cab{ id: i, location: (i % 2400) as i32});
+    }
+    return ret;
+  }
+
+
+  /* 
+      4 threads
+     RELEASE: 5.532196233s
+     DEV: 32.462779374s
+
+     [profile.test]
+      opt-level = 3
+      debug = false
+      debug-assertions = false
+      overflow-checks = false
+      lto = false
+      panic = 'unwind'
+      incremental = false
+      codegen-units = 16
+      rpath = false
+   */
+  #[test]
+  #[serial]
+  fn test_performance_find_pool(){
+    let stops = get_pool_stops();
+    init_distance(&stops);
+    let mut orders: Vec<Order> = get_pool_orders();
+    let mut cabs: Vec<Cab> = get_pool_cabs();
+    let mut max_route_id: i64 = 0;
+    let mut max_leg_id: i64 = 0;
+    let start = Instant::now();
+    let ret = find_pool(4, 4, &mut orders, &mut cabs, 
+                                                &stops, &mut max_route_id, &mut max_leg_id);
+    let elapsed = start.elapsed();
+    println!("Elapsed: {:?}", elapsed); 
+    assert_eq!(ret.0.len(), 12);
+    assert_eq!(ret.1.len(), 17406);
   }
 
   #[test]
@@ -553,12 +653,17 @@ mod tests {
   }
 
   #[test]
-  #[ignore]
   #[serial]
   fn test_store_leaves(){
-    test_init_orders_and_dist(1);
+    init_distance(&get_stops());
+    set_orders();
+    let slice = unsafe { &ORDERS[0 .. ORDERS_LEN] };
+    let start = Instant::now();
+    //let ret = store_leaves2(slice);
     let ret = store_leaves();
-    assert_eq!(ret.len(), 7);
+    let elapsed = start.elapsed();
+    println!("Elapsed: {:?}", elapsed); 
+    assert_eq!(ret.len(), 2118458);
   }
 
   #[test]
@@ -590,7 +695,7 @@ mod tests {
   #[serial]
   fn test_store_branch_if_not_found(){
     let arr = 
-      Branch{ cost: 1, outs: 4, ord_numb: 7, ord_ids: [1,2,3,3,2,1,0,0], ord_actions: [105,105,105,111,111,111,111,0], cab: 0 
+      Branch{ cost: 1, outs: 4, ord_numb: 7, ord_ids: [1,2,3,3,4,4,2,1,0,0], ord_actions: [105,105,105,105,111,111,111,111,111,0], cab: 0 
     };
     test_init_orders_and_dist(1);
     let mut ret: Vec<Branch> = Vec::new();
@@ -605,7 +710,7 @@ mod tests {
   #[serial]
   fn test_is_too_long() {
     test_init_orders_and_dist(1);
-    let b =  Branch{ cost: 1, outs: 1, ord_numb: 7, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+    let b =  Branch{ cost: 1, outs: 1, ord_numb: 7, ord_ids: [1,2,3,4,5,5,4,3,2,1], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
     let ret = is_too_long('i', 0, 1, &b);
     assert_eq!(ret, true);
   }
@@ -614,7 +719,7 @@ mod tests {
   #[serial]
   fn test_store_branch() {
     test_init_orders_and_dist(1);
-    let b =  Branch{ cost: 1, outs: 1, ord_numb: 1, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+    let b =  Branch{ cost: 1, outs: 1, ord_numb: 1, ord_ids: [1,2,3,4,5,5,4,3,2,1], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
     let ret = store_branch('i', 0, 0, &b, 4);
     assert_eq!(ret.cost, 3);
   }
@@ -673,8 +778,8 @@ mod tests {
   #[serial]
   fn test_constraints_met() {
     test_init_orders_and_dist(1);
-    let br = Branch{ cost: 1, outs: 4, ord_numb: 8, ord_ids: [0,1,2,3,3,2,1,0], 
-            ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+    let br = Branch{ cost: 1, outs: 4, ord_numb: 8, ord_ids: [0,1,2,3,4,4,3,2,1,0], 
+            ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
     assert_eq!(constraints_met(br, 1), true);
   }
 
@@ -682,8 +787,8 @@ mod tests {
   #[serial]
   fn test_constraints_not_met() {
     test_init_orders_and_dist(10);
-    let br = Branch{ cost: 1, outs: 4, ord_numb: 8, ord_ids: [0,1,2,3,3,2,1,0], 
-            ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+    let br = Branch{ cost: 1, outs: 4, ord_numb: 8, ord_ids: [0,1,2,3,4,4,3,2,1,0], 
+            ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
     assert_eq!(constraints_met(br, 1), false);
   }
 

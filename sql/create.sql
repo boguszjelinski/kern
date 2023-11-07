@@ -7,11 +7,11 @@ CREATE TABLE cab (
     location integer NOT NULL,
     name character varying(255),
     status integer NOT NULL,
-    sits integer NOT NULL
+    seats integer NOT NULL
 );
 ALTER TABLE cab OWNER TO kabina;
 ALTER TABLE ONLY cab ADD CONSTRAINT cab_pkey PRIMARY KEY (id);
-INSERT INTO cab (id, location, status, sits) SELECT *, 0,2,10 FROM generate_series(0, 10000);
+INSERT INTO cab (id, location, status, seats) SELECT *, 0,2,10 FROM generate_series(0, 10000);
 
 -- CUSTOMER
 DROP TABLE customer CASCADE;
@@ -65,6 +65,7 @@ INSERT INTO stat (name, int_val) VALUES
     ('AvgPoolTime', 0),
     ('AvgPool3Time', 0),
     ('AvgPool4Time', 0),
+    ('AvgPool5Time', 0),
     ('AvgLcmTime', 0),
     ('AvgSolverTime', 0),
     ('AvgShedulerTime', 0),
@@ -72,6 +73,7 @@ INSERT INTO stat (name, int_val) VALUES
     ('MaxPoolTime', 0),
     ('MaxPool3Time', 0),
     ('MaxPool4Time', 0),
+    ('MaxPool5Time', 0),
     ('MaxLcmTime', 0),
     ('MaxSolverTime', 0),
     ('MaxShedulerTime', 0),

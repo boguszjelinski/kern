@@ -710,7 +710,7 @@ pub fn get_handle(host: String, sql: String, label: String)  -> thread::JoinHand
 mod tests {
   use std::time::{SystemTime, Duration};
 
-use super::*;
+  use super::*;
   use crate::distance::init_distance;
 
   fn get_test_legs(dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> Vec<Leg> {

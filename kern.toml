@@ -11,6 +11,7 @@ use_pool = true
 use_extern_pool = true
 use_extender = true
 thread_numb = 10
+max_pool5_size = 50
 max_pool4_size = 120
 max_pool3_size = 440
 max_pool2_size = 800

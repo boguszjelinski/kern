@@ -21,6 +21,7 @@ pub static mut CNFG: KernCfg = KernCfg {
     thread_numb: 4,
     stop_wait: 1,
     cab_speed: 60,
+    max_pool5_size: 50,
     max_pool4_size: 120,
     max_pool3_size: 300,
     max_pool2_size: 600,
@@ -462,8 +463,8 @@ mod tests {
     br.cost = 1;
     br.outs = order_count;
     br.ord_numb = (order_count * 2) as i16;
-    br.ord_ids = [0,1,2,3,3,2,1,0];
-    br.ord_actions = ['i' as i8, 'i' as i8,'i' as i8,'i' as i8, 'o' as i8, 'o' as i8, 'o' as i8, 'o' as i8,];
+    br.ord_ids = [0,1,2,3,4,4,3,2,1,0];
+    br.ord_actions = ['i' as i8, 'i' as i8, 'i' as i8, 'i' as i8, 'i' as i8, 'o' as i8, 'o' as i8, 'o' as i8, 'o' as i8, 'o' as i8,];
     br.cab = 0;
     return br;
   }
