@@ -1,4 +1,4 @@
-db_conn = "postgresql://kabina:kaboot@localhost:5432/kabina"
+db_conn = "mysql://kabina:kaboot@localhost:3306/kabina"
 run_after = 15
 solver_interval = 4
 max_assign_time = 3

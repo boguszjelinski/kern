@@ -3,7 +3,9 @@ use std::io::Write;
 use std::{thread, cmp, vec};
 use chrono::{Local, Duration};
 use log::{info, warn};
-use postgres::{Client, NoTls};
+//use postgres::{Client, NoTls};
+use mysql::*;
+use mysql::prelude::*;
 use crate::model::{ Order, OrderStatus, Stop, Leg, RouteStatus, MAXSTOPSNUMB };
 use crate::repo::{find_legs, assign_order_find_cab, create_leg, update_leg_a_bit2, update_reserves_in_legs_before_and_including,
                   update_place_in_legs_after, update_passengers_and_reserve_in_legs_between, update_reserve_after,
@@ -36,19 +38,19 @@ pub fn bearing_diff(a: i32, b: i32 ) -> f32 {
   return r.abs();
 }
 
-pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, client: &mut Client, demand: &Vec<Order>, stops: &Vec<Stop>, 
+pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, conn: &mut PooledConn, demand: &Vec<Order>, stops: &Vec<Stop>, 
                             max_leg_id: &mut i64, dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) 
                             -> (Vec<Order>, usize) {
     //return (demand.to_vec(), thread::spawn(|| { }));
     if demand.len() == 0 {
         return (Vec::new(), 0);
     }
-    let mut legs: Vec<Leg> = find_legs(client); // TODO: legs that will soon start should not be taken into consideration !!!
+    let mut legs: Vec<Leg> = find_legs(conn); // TODO: legs that will soon start should not be taken into consideration !!!
     // as we will get customers not picked up ???
     if legs.len() == 0 {
         return (demand.to_vec(), 0);
     }
-    let ass_orders: Vec<Order> = find_orders_by_status_and_time(client, OrderStatus::ASSIGNED, Local::now() - Duration::minutes(30));
+    let ass_orders: Vec<Order> = find_orders_by_status_and_time(conn, OrderStatus::ASSIGNED, Local::now() - Duration::minutes(30));
     info!("Extender START, new orders count={} assigned orders={} legs count={}", demand.len(), ass_orders.len(), legs.len());
     let ass_orders_map = assigned_orders(&ass_orders);
     let (ret, missed, sql_bulk) = extend_routes(demand, &ass_orders_map, stops, &mut legs, max_leg_id, dist);
@@ -58,7 +60,7 @@ pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, client: &mu
     //for s in split_sql(sql_bulk, 150) {
     //  client.batch_execute(&s).unwrap();
     //}
-    client.batch_execute(&sql_bulk).unwrap();
+    conn.query_iter(&sql_bulk).unwrap();
     return (ret, missed);
 }
 
@@ -685,26 +687,35 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
   return sql.to_string();
 }
 
-pub fn get_handle(host: String, sql: String, label: String)  -> thread::JoinHandle<()> {
+pub fn get_handle(conn_str: String, sql: String, label: String)  -> thread::JoinHandle<()> {
   return thread::spawn(move || {
-      match Client::connect(&host, NoTls) {
-          Ok(mut c) => {
-              if sql.len() > 0 {
-                  match c.batch_execute(&sql) {
-                    Ok(_) => {}
-                    Err(err) => {
-                      panic!("Could not run SQL batch: {}, err:{}", &label, err);
-                    }
-                  }
+    if sql.len() > 0 {
+      let pool = Pool::new(conn_str.as_str());
+      match pool {
+        Ok(p) => {
+          let mut conn = p.get_conn();
+          match conn {
+            Ok(mut c) => {
+              let res = c.query_iter(sql);
+              match res {
+                Ok(_) => {}
+                Err(err) => {
+                  panic!("Could not run SQL batch: {}, err:{}", &label, err);
+                }
               }
+            }
+            Err(err) => {
+              panic!("Could not connect to MySQL: {}, err:{}", &label, err);
+            }
           }
-          Err(err) => {
-              panic!("Could not connect DB in: {}, err:{}", &label, err);
-          }
+        }
+        Err(err) => {
+          panic!("Could not get pool to MySQL: {}, err:{}", &label, err);
+        }
       }
+    }
   });
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1129,7 +1140,7 @@ fn test_wait_exceed_assigned_order_and_too_long_then_true() {
   init_distance(&get_stops());
   let o = Order { id: 1, from: 4, to: 5, wait: 5, loss:90, 
     dist:unsafe{DIST[4][5] as i32}, shared: true, in_pool: false, 
-    received: Some(SystemTime::now() - Duration::from_secs(3*60)), // ! three minutes are enough to exceed the wait time
+    received: Local::now().naive_local().checked_sub_signed(chrono::Duration::seconds(3*60)), // ! three minutes are enough to exceed the wait time
     started: None, completed: None, at_time: None, eta: 1, route_id: 123 };
   let ass_orders = vec![o];
   let ass_orders_map = assigned_orders(&ass_orders);  
@@ -1142,7 +1153,7 @@ fn test_wait_exceed_assigned_order_and_not_too_long_then_false() {
   init_distance(&get_stops());
   let o = Order { id: 1, from: 4, to: 10, wait: 10, loss:90, 
                   dist:unsafe{DIST[4][5] as i32}, shared: true, in_pool: false, 
-                  received: Some(SystemTime::now() - Duration::from_secs(60)), // one minute only
+                  received: Local::now().naive_local().checked_sub_signed(chrono::Duration::seconds(60)), // one minute only
                   started: None, completed: None, at_time: None, eta: 1, route_id: 123 };
   let ass_orders = vec![o];
   let ass_orders_map = assigned_orders(&ass_orders);  

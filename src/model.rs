@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use chrono::NaiveDateTime;
 
 pub const MAXSTOPSNUMB : usize = 5200;
 pub const MAXORDERSNUMB: usize = 2000; // max not assigned
@@ -27,10 +27,10 @@ pub struct Order {
 	pub dist: i32, // distance without pool
     pub shared: bool, // agreed to be in pool
     pub in_pool: bool, // actually in pool
-    pub received: Option<SystemTime>,
-    pub started: Option<SystemTime>,
-    pub completed: Option<SystemTime>,
-    pub at_time: Option<SystemTime>,
+    pub received: Option<NaiveDateTime>,
+    pub started: Option<NaiveDateTime>,
+    pub completed: Option<NaiveDateTime>,
+    pub at_time: Option<NaiveDateTime>,
     pub eta: i32, // proposed wait time
     pub route_id: i64,
   //  cab: Cab,
@@ -65,8 +65,8 @@ pub struct Leg {
     pub place: i32, // place in route
     pub dist: i32,
     pub reserve: i32, // to match constraints - wait, loss
-    pub started: Option<SystemTime>,
-    pub completed: Option<SystemTime>,
+    pub started: Option<NaiveDateTime>,
+    pub completed: Option<NaiveDateTime>,
     pub status: RouteStatus,
     pub passengers: i32, // to meet cab's capacity
 }
@@ -123,7 +123,6 @@ impl RouteStatus {
         }
     }
 }
-
 
 #[derive(Clone)]
 pub struct Route {
