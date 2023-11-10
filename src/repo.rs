@@ -1,8 +1,8 @@
 use log::{debug, warn};
-use postgres::Client;
+use mysql::*;
+use mysql::prelude::*;
 use chrono::{DateTime, Local};
 use std::cmp;
-use std::time::SystemTime;
 use crate::model::{KernCfg,Order, OrderStatus, Stop, Cab, CabStatus, Leg, RouteStatus, Branch,MAXORDERSNUMB,MAXORDID};
 use crate::distance::DIST;
 use crate::stats::{STATS, Stat, add_avg_element, update_val, count_average};
@@ -28,87 +28,103 @@ pub static mut CNFG: KernCfg = KernCfg {
     solver_interval: 4,
 };
 
-pub fn find_orders_by_status_and_time(client: &mut Client, status: OrderStatus, at_time: DateTime<Local>) -> Vec<Order> {
+pub fn find_orders_by_status_and_time(conn: &mut PooledConn, status: OrderStatus, at_time: DateTime<Local>) -> Vec<Order> {
     let mut ret : Vec<Order> = Vec::new();
     let qry = "SELECT id, from_stand, to_stand, max_wait, max_loss, distance, shared, in_pool, \
-               received, started, completed, at_time, eta, route_id FROM taxi_order o WHERE o.status = $1 \
-               and (o.at_time is NULL or o.at_time < '".to_string() + &at_time.to_string() + &"') ORDER by route_id".to_string();
-    for row in client.query(&qry, &[&(status as i32)]).unwrap() {
-        ret.push(Order {
-            id: row.get(0),
-            from: row.get(1),
-            to: row.get(2),
-            wait: row.get(3),
-            loss: row.get(4),
-            dist: row.get(5),
-            shared: row.get(6),
-            in_pool: row.get(7),
-            received: row.get::<usize,Option<SystemTime>>(8),
-            started: row.get::<usize,Option<SystemTime>>(9),
-            completed: row.get::<usize,Option<SystemTime>>(10),
-            at_time: row.get::<usize,Option<SystemTime>>(11),
-            eta: row.get(12),
-            route_id: if matches!(status, OrderStatus::RECEIVED) { -1 } else { row.get(13) }
-        });
+               received, started, completed, at_time, eta, route_id FROM taxi_order o WHERE o.status =".to_string() 
+               + &(status as u8).to_string() + 
+               &" and (o.at_time is NULL or o.at_time < '".to_string() + &at_time.to_string() + &"') ORDER by route_id".to_string();
+
+    let selected: Result<Vec<Row>> = conn.query(qry);
+    
+    match selected {
+        Ok(sel) => {
+            for r in sel {
+                ret.push(Order {
+                    id: r.get(0).unwrap(),
+                    from: r.get(1).unwrap(),
+                    to: r.get(2).unwrap(),
+                    wait: r.get(3).unwrap(),
+                    loss: r.get(4).unwrap(),
+                    dist: r.get(5).unwrap(),
+                    shared: r.get(6).unwrap(),
+                    in_pool: r.get(7).unwrap(),
+                    received: r.get(8),
+                    started: r.get(9),
+                    completed: r.get(10),
+                    at_time: r.get(11),
+                    eta: r.get(12).unwrap(),
+                    route_id: if matches!(status, OrderStatus::RECEIVED) { -1 } else { r.get(13).unwrap() }
+                    });
+            }
+        },
+        Err(error) => warn!("Problem reading row: {:?}", error),
     }
     return ret;
 }
 
 
-pub fn read_stops(client: &mut Client) -> Vec<Stop> {
-    let mut ret: Vec<Stop> = Vec::new();
-    for row in client.query("SELECT id, latitude, longitude, bearing FROM stop", &[]).unwrap() {
-        ret.push(Stop {
-            id: row.get(0),
-            latitude: row.get(1),
-            longitude: row.get(2),
-            bearing: row.get(3)
-        });
-    }
-    return ret;
+pub fn read_stops(conn: &mut PooledConn) -> Vec<Stop> {
+    return conn.query_map(
+        "SELECT id, latitude, longitude, bearing FROM stop",
+        |(id, latitude, longitude, bearing)| {
+            Stop { id, latitude, longitude, bearing }
+        },
+    ).unwrap();
 }
 
-pub fn read_max(client: &mut Client, table: &str) -> i64 {
-    for row in client.query(&("SELECT MAX(id) FROM ".to_string() + &table.to_string()), &[]).unwrap() {
-        let max: Option<i64> = row.get(0);
-        return match max {
-            Some(x) => { x + 1 }
-            None => 1
-        }
+pub fn read_max(conn: &mut PooledConn, table: &str) -> i64 {
+    let qry = "SELECT MAX(id) FROM ".to_string() + &table.to_string();
+    let selected: Result<Vec<Row>> = conn.query(qry);
+
+    match selected {
+        Ok(sel) => {
+            for r in sel {
+                let max: Option<i64> = r.get(0);
+                return match max {
+                    Some(x) => { x + 1 }
+                    None => 1
+                }
+            }
+        },
+        Err(error) => warn!("Problem reading row: {:?}", error),
     }
     return 1; // no row
 }
 
-pub fn find_cab_by_status(client: &mut Client, status: CabStatus) -> Vec<Cab>{
-    let mut ret: Vec<Cab> = Vec::new();
-    for row in client.query("SELECT id, location FROM cab WHERE status=$1", 
-                                &[&(status as i32)]).unwrap() {
-        ret.push(Cab {
-            id: row.get(0),
-            location: row.get(1)
-        });
-    }
-    return ret;
+pub fn find_cab_by_status(conn: &mut PooledConn, status: CabStatus) -> Vec<Cab>{
+    return conn.query_map(
+        "SELECT id, location FROM cab WHERE status=".to_string() + &(status as u8).to_string(),
+        |(id, location)| { Cab { id, location } },
+    ).unwrap();
 }
 
-pub fn find_legs(client: &mut Client) -> Vec<Leg> {
+pub fn find_legs(conn: &mut PooledConn) -> Vec<Leg> {
     let mut ret: Vec<Leg> = Vec::new();
-    for row in client.query("SELECT id, from_stand, to_stand, place, distance, \
-        started, completed, route_id, status, reserve, passengers FROM leg WHERE status = 1 OR status = 5 \
-        ORDER BY route_id ASC, place ASC", &[]).unwrap() {
-        ret.push(Leg {
-            id: row.get(0),
-            from: row.get(1),
-            to: row.get(2),
-            place: row.get(3),
-            dist: row.get(4),
-            started: row.get::<usize,Option<SystemTime>>(5),
-            completed: row.get::<usize,Option<SystemTime>>(6),
-            route_id: row.get(7), 
-            status: get_route_status(row.get(8)),
-            reserve: row.get(9),
-            passengers: row.get(10),
-        });
+    let qry = "SELECT id, from_stand, to_stand, place, distance, \
+                    started, completed, route_id, status, reserve, passengers FROM leg WHERE status = 1 OR status = 5 \
+                    ORDER BY route_id ASC, place ASC";
+    let selected: Result<Vec<Row>> = conn.query(qry);
+    
+    match selected {
+        Ok(sel) => {
+            for r in sel {
+                ret.push(Leg {
+                    id: r.get(0).unwrap(),
+                    from: r.get(1).unwrap(),
+                    to: r.get(2).unwrap(),
+                    place: r.get(3).unwrap(),
+                    dist: r.get(4).unwrap(),
+                    started: r.get(5),
+                    completed: r.get(6),
+                    route_id: r.get(7).unwrap(), 
+                    status: get_route_status(r.get(8).unwrap()),
+                    reserve: r.get(9).unwrap(),
+                    passengers: r.get(10).unwrap(),
+                });
+            }
+        },
+        Err(error) => warn!("Problem reading row: {:?}", error),
     }
     return ret;
 }
@@ -122,14 +138,14 @@ pub fn assign_order_find_cab(order_id: i64, leg_id: i64, route_id: i64, eta: i32
                                             order_id, route_id, leg_id, called_by);
     if leg_id == -1 {
         return format!("\
-        UPDATE taxi_order AS o SET route_id={}, cab_id=r.cab_id, status=1, eta={}, in_pool={} \
-        FROM route AS r WHERE r.id={} AND o.id={} AND o.status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
-        route_id, eta, in_pool, route_id, order_id);
+        UPDATE taxi_order SET route_id={}, cab_id=(SELECT cab_id FROM route where id={}), status=1, eta={}, in_pool={} \
+        WHERE id={} AND o.status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
+        route_id, route_id, eta, in_pool, order_id);
     }
     return format!("\
-        UPDATE taxi_order AS o SET route_id={}, leg_id={}, cab_id=r.cab_id, status=1, eta={}, in_pool={} \
-        FROM route AS r WHERE r.id={} AND o.id={} AND o.status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
-        route_id, leg_id, eta, in_pool, route_id, order_id);
+        UPDATE taxi_order SET route_id={}, leg_id={}, cab_id=(SELECT cab_id FROM route where id={}), status=1, eta={}, in_pool={} \
+        WHERE id={} AND o.status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
+        route_id, leg_id, route_id, eta, in_pool, order_id);
 }
 
 pub fn assign_order(order_id: i64, cab_id: i64, leg_id: i64, route_id: i64, eta: i16, in_pool: &str, called_by: &str) -> String {   

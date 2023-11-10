@@ -16,7 +16,8 @@ use pool::{orders_to_array,orders_to_transfer_array, cabs_to_array, stops_to_arr
 use repo::{CNFG, assign_pool_to_cab};
 use extender::{find_matching_routes, write_sql_to_file, get_handle, split_sql};
 use utils::get_elapsed;
-use postgres::{Client, NoTls, Error};
+use mysql::*;
+use mysql::prelude::*;
 use chrono::{Local, Duration};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -36,7 +37,7 @@ use log4rs::{
 
 const CFG_FILE_DEFAULT: &str = "kern.toml";
 
-fn main() -> Result<(), Error> {
+fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
     println!("cargo:rustc-link-lib=dynapool97");
     // reading Config
     let mut cfg_file: String = CFG_FILE_DEFAULT.to_string();
@@ -100,8 +101,12 @@ fn main() -> Result<(), Error> {
         info!("solver_interval: {}", CNFG.solver_interval);
     }
     // init DB
-    let mut client = Client::connect(&db_conn_str, NoTls)?; // 192.168.10.176
-    let stops = repo::read_stops(&mut client);
+    // 192.168.10.176
+    let url: &str = &db_conn_str;
+    let pool = Pool::new(url)?;
+    let mut conn = pool.get_conn()?;
+
+    let stops = repo::read_stops(&mut conn);
     distance::init_distance(&stops);
 
     let mut itr: i32 = 0;
@@ -116,11 +121,11 @@ fn main() -> Result<(), Error> {
         let start = Instant::now();
 
         // get newly requested trips and free cabs, reject expired orders (no luck this time)
-        let tmp_model = prepare_data(&mut client);
+        let tmp_model = prepare_data(&mut conn);
         let mut rest: usize = 0;
         match tmp_model {
             Some(mut x) => { 
-                rest = dispatch(itr, &db_conn_str, &mut client, &mut x.0, &mut x.1, &stops, unsafe { CNFG.clone() });
+                rest = dispatch(itr, &db_conn_str, &mut conn, &mut x.0, &mut x.1, &stops, unsafe { CNFG.clone() });
             },
             None => {
                 info!("Nothing to do");
@@ -200,7 +205,7 @@ extern "C" {
     fn initMem();
 }
 
-fn run_extender(_thr_numb: i32, itr: i32, host: &String, client: &mut Client, orders: &Vec<Order>, stops: &Vec<Stop>, 
+fn run_extender(_thr_numb: i32, itr: i32, host: &String, conn: &mut PooledConn, orders: &Vec<Order>, stops: &Vec<Stop>, 
                 max_leg_id: &mut i64, label: &str, cfg: &KernCfg) -> (Vec<Order>, usize) {
     let demand: Vec<Order>;
     let len_before = orders.len();
@@ -208,7 +213,7 @@ fn run_extender(_thr_numb: i32, itr: i32, host: &String, client: &mut Client, or
     if cfg.use_extender {
         let start_extender = Instant::now();
         let ret 
-            = find_matching_routes(itr, _thr_numb, &host, client, orders, &stops, max_leg_id, unsafe { &DIST });
+            = find_matching_routes(itr, _thr_numb, &host, conn, orders, &stops, max_leg_id, unsafe { &DIST });
         update_max_and_avg_time(Stat::AvgExtenderTime, Stat::MaxExtenderTime, start_extender);
         demand = ret.0;
         rest = ret.1;
@@ -229,20 +234,20 @@ fn run_extender(_thr_numb: i32, itr: i32, host: &String, client: &mut Client, or
 // 2) pool finder
 // 3) solver (LCM in most scenarious won't be called)
 // SQL updates execute in background as async
-fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>, cfg: KernCfg) -> usize {
+fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>, cfg: KernCfg) -> usize {
     if orders.len() == 0 {
         info!("No demand, no dispatch");
         return 0;
     }
-    let mut max_route_id : i64 = repo::read_max(client, "route"); // +1, first free ID
-    let mut max_leg_id : i64 = repo::read_max(client, "leg");
+    let mut max_route_id : i64 = repo::read_max(conn, "route"); // +1, first free ID
+    let mut max_leg_id : i64 = repo::read_max(conn, "leg");
     let thread_num: i32 = cfg.thread_numb;
     
     stats::update_max_and_avg_stats(Stat::AvgDemandSize, Stat::MaxDemandSize, orders.len() as i64);
     
     // check if we want to run extender is done in run_extender
     let (mut demand, mut rest) 
-        = run_extender(thread_num, itr, &host, client, orders, &stops, &mut max_leg_id, "FIRST", &cfg);
+        = run_extender(thread_num, itr, &host, conn, orders, &stops, &mut max_leg_id, "FIRST", &cfg);
 
     if rest > 0 { return rest; }
 
@@ -274,7 +279,8 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
         //for s in split_sql(sql, 150) {
         //    client.batch_execute(&s).unwrap();
         //}
-        client.batch_execute(&sql).unwrap();
+        conn.query_iter(sql).unwrap();
+        
         // marking assigned orders to get rid of them; cabs are marked in find_pool 
         let numb = count_orders(pl, &demand);
         info!("Pool finder - number of assigned orders: {}", numb);
@@ -282,7 +288,7 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
         // let's try extender on the new routes if there still is demand
         (*cabs, demand) = shrink(&cabs, demand);
         (demand, rest) 
-            = run_extender(thread_num, itr, &host, client, &demand, &stops, &mut max_leg_id, "SECOND", &cfg);
+            = run_extender(thread_num, itr, &host, conn, &demand, &stops, &mut max_leg_id, "SECOND", &cfg);
         if rest > 0 { return rest; } // let's run extender again
     }
 
@@ -324,10 +330,10 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
         update_max_and_avg_time(Stat::AvgSolverTime, Stat::MaxSolverTime, start_solver);
         //write_sql_to_file(itr, &sql, "munkres");
         if sql.len() > 0 {
-            match client.batch_execute(&sql) { // here SYNC execution
+            match conn.query_iter(sql) { // here SYNC execution
                 Ok(_) => {}
                 Err(err) => {
-                    warn!("Solver SQL output failed to run {}, err: {}", sql, err);
+                    warn!("Solver SQL output failed to run, err: {}", err);
                 }
             }
         }
@@ -538,21 +544,21 @@ fn wait_constraints_met(el: &Branch, dist_cab: i16, orders: &Vec<Order>) -> bool
 // 2) expire old orders
 // 3) some orders and cabs are too distant, although som cabs may end their last legs soon
 // TODO: cabs on last leg should be considered
-fn prepare_data(client: &mut Client) -> Option<(Vec<Order>, Vec<Cab>)> {
+fn prepare_data(conn: &mut PooledConn) -> Option<(Vec<Order>, Vec<Cab>)> {
     let mut orders = repo::find_orders_by_status_and_time(
-                client, OrderStatus::RECEIVED , Local::now() - Duration::minutes(5));
+                conn, OrderStatus::RECEIVED , Local::now() - Duration::minutes(5));
     if orders.len() == 0 {
         info!("No demand");
         return None;
     }
     info!("Orders, input: {}", orders.len());
     
-    orders = expire_orders(client, &orders);
+    orders = expire_orders(conn, &orders);
     if orders.len() == 0 {
         info!("No demand, expired");
         return None;
     }
-    let mut cabs = repo::find_cab_by_status(client, CabStatus::FREE);
+    let mut cabs = repo::find_cab_by_status(conn, CabStatus::FREE);
     if orders.len() == 0 || cabs.len() == 0 {
         warn!("No cabs available");
         return None;
@@ -572,7 +578,7 @@ fn prepare_data(client: &mut Client) -> Option<(Vec<Order>, Vec<Cab>)> {
 }
 
 // TODO: bulk update
-fn expire_orders(client: &mut Client, demand: & Vec<Order>) -> Vec<Order> {
+fn expire_orders(conn: &mut PooledConn, demand: & Vec<Order>) -> Vec<Order> {
     let mut ret: Vec<Order> = Vec::new();
     let mut ids: String = "".to_string();
     for o in demand.iter() {
@@ -591,13 +597,7 @@ fn expire_orders(client: &mut Client, demand: & Vec<Order>) -> Vec<Order> {
     }
     if ids.len() > 0 {
         let sql = ids[0..ids.len() - 1].to_string(); // remove last comma
-        match client.execute(
-            "UPDATE taxi_order SET status=6 WHERE id IN ($1);\n", &[&sql]) { //OrderStatus.REFUSED
-            Ok(_) => {}
-            Err(err) => {
-                warn!("Expire orders failed for {}, err: {}", sql, err);
-            }
-        }
+        conn.query_iter("UPDATE taxi_order SET status=6 WHERE id IN (".to_string() + &sql + ")").unwrap();
         debug!("{} refused, max assignment time exceeded", &ids);
     }
     return ret;
@@ -725,6 +725,7 @@ mod tests {
   }
 
   #[test]
+  #[serial]
   fn test_munkres() {
     let orders: Vec<Order> = test_orders_invalid();
     let cabs: Vec<Cab> = test_cabs_invalid();
@@ -793,7 +794,7 @@ mod tests {
         let to: i32 = from + 5;
         let dista = unsafe { DIST[from as usize][to as usize] as i32 };
         ret.push(Order{ id: i as i64, from, to, wait: 15, loss: 70, dist: dista, 
-                    shared: true, in_pool: false, received: Some(SystemTime::now()), started: None, completed: None, at_time: None, 
+                    shared: true, in_pool: false, received: Some(Local::now().naive_local()), started: None, completed: None, at_time: None, 
                     eta: 1, route_id: -1 });
     }
     return ret;
@@ -827,7 +828,7 @@ mod tests {
     assert_eq!(ret.1.len(), 17401); // TODO: Rust gives 17406
   }
 
-  #[test]
+  #[test]  
   #[serial]
   fn test_performance_find_extern_pool5() {
     let stops = get_stops(0.01);
