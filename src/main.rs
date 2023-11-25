@@ -219,7 +219,8 @@ fn run_extender(_thr_numb: i32, itr: i32, host: &String, conn: &mut PooledConn, 
         rest = ret.1;
         let len_after = demand.len();
         if len_before != len_after {
-            info!("{}: route extender allocated {} requests, missed {} overlapping routes", label, len_before - len_after, ret.1);
+            info!("{}: route extender allocated {} requests, missed {} overlapping routes, max_leg_id: {}", 
+                label, len_before - len_after, ret.1, max_leg_id);
         } else {
             info!("{}: extender has not helped", label);
         }
@@ -279,7 +280,14 @@ fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Ord
         //for s in split_sql(sql, 150) {
         //    client.batch_execute(&s).unwrap();
         //}
-        conn.query_iter(sql).unwrap();
+        if sql.len() > 0 {
+            match conn.query_iter(sql) {
+              Ok(_) => {} 
+              Err(err) => {
+                warn!("Pool SQL error: {}", err);
+              }
+            }
+        }
         
         // marking assigned orders to get rid of them; cabs are marked in find_pool 
         let numb = count_orders(pl, &demand);
@@ -546,7 +554,7 @@ fn wait_constraints_met(el: &Branch, dist_cab: i16, orders: &Vec<Order>) -> bool
 // TODO: cabs on last leg should be considered
 fn prepare_data(conn: &mut PooledConn) -> Option<(Vec<Order>, Vec<Cab>)> {
     let mut orders = repo::find_orders_by_status_and_time(
-                conn, OrderStatus::RECEIVED , Local::now() - Duration::minutes(5));
+                conn, OrderStatus::RECEIVED , (Local::now() - Duration::minutes(5)).naive_local());
     if orders.len() == 0 {
         info!("No demand");
         return None;

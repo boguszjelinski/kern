@@ -1,7 +1,7 @@
 use log::{debug, warn};
 use mysql::*;
 use mysql::prelude::*;
-use chrono::{DateTime, Local};
+use chrono::NaiveDateTime;
 use std::cmp;
 use crate::model::{KernCfg,Order, OrderStatus, Stop, Cab, CabStatus, Leg, RouteStatus, Branch,MAXORDERSNUMB,MAXORDID};
 use crate::distance::DIST;
@@ -28,12 +28,12 @@ pub static mut CNFG: KernCfg = KernCfg {
     solver_interval: 4,
 };
 
-pub fn find_orders_by_status_and_time(conn: &mut PooledConn, status: OrderStatus, at_time: DateTime<Local>) -> Vec<Order> {
+pub fn find_orders_by_status_and_time(conn: &mut PooledConn, status: OrderStatus, at_time: NaiveDateTime) -> Vec<Order> {
     let mut ret : Vec<Order> = Vec::new();
     let qry = "SELECT id, from_stand, to_stand, max_wait, max_loss, distance, shared, in_pool, \
-               received, started, completed, at_time, eta, route_id FROM taxi_order o WHERE o.status =".to_string() 
+               received, started, completed, at_time, eta, route_id FROM taxi_order WHERE status =".to_string() 
                + &(status as u8).to_string() + 
-               &" and (o.at_time is NULL or o.at_time < '".to_string() + &at_time.to_string() + &"') ORDER by route_id".to_string();
+               &" and (at_time is NULL or at_time < '".to_string() + &at_time.to_string() + &"') ORDER by route_id".to_string();
 
     let selected: Result<Vec<Row>> = conn.query(qry);
     
@@ -49,13 +49,13 @@ pub fn find_orders_by_status_and_time(conn: &mut PooledConn, status: OrderStatus
                     dist: r.get(5).unwrap(),
                     shared: r.get(6).unwrap(),
                     in_pool: r.get(7).unwrap(),
-                    received: r.get(8),
-                    started: r.get(9),
-                    completed: r.get(10),
-                    at_time: r.get(11),
+                    received: get_naivedate(&r, 8),
+                    started: get_naivedate(&r, 9),
+                    completed: get_naivedate(&r, 10),
+                    at_time: get_naivedate(&r, 11),
                     eta: r.get(12).unwrap(),
-                    route_id: if matches!(status, OrderStatus::RECEIVED) { -1 } else { r.get(13).unwrap() }
-                    });
+                    route_id: if matches!(status, OrderStatus::RECEIVED) { -1 } else { get_i64(&r, 13) }
+                });
             }
         },
         Err(error) => warn!("Problem reading row: {:?}", error),
@@ -80,11 +80,8 @@ pub fn read_max(conn: &mut PooledConn, table: &str) -> i64 {
     match selected {
         Ok(sel) => {
             for r in sel {
-                let max: Option<i64> = r.get(0);
-                return match max {
-                    Some(x) => { x + 1 }
-                    None => 1
-                }
+                let max: i64 = get_i64(&r, 0);
+                return if max != -1 { max + 1 } else { 1 };
             }
         },
         Err(error) => warn!("Problem reading row: {:?}", error),
@@ -115,8 +112,8 @@ pub fn find_legs(conn: &mut PooledConn) -> Vec<Leg> {
                     to: r.get(2).unwrap(),
                     place: r.get(3).unwrap(),
                     dist: r.get(4).unwrap(),
-                    started: r.get(5),
-                    completed: r.get(6),
+                    started: get_naivedate(&r, 5),
+                    completed: get_naivedate(&r, 6),
                     route_id: r.get(7).unwrap(), 
                     status: get_route_status(r.get(8).unwrap()),
                     reserve: r.get(9).unwrap(),
@@ -134,22 +131,22 @@ pub fn get_route_status(idx: i32) -> RouteStatus {
 }
 
 pub fn assign_order_find_cab(order_id: i64, leg_id: i64, route_id: i64, eta: i32, in_pool: &str, called_by: &str) -> String {   
-    debug!("Assigning order_id={} to route_id={}, leg_id={}, routine {}",
+    debug!("Assigning order_id={} to route_id={}, leg_id={}, module: {}",
                                             order_id, route_id, leg_id, called_by);
     if leg_id == -1 {
         return format!("\
         UPDATE taxi_order SET route_id={}, cab_id=(SELECT cab_id FROM route where id={}), status=1, eta={}, in_pool={} \
-        WHERE id={} AND o.status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
+        WHERE id={} AND status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
         route_id, route_id, eta, in_pool, order_id);
     }
     return format!("\
         UPDATE taxi_order SET route_id={}, leg_id={}, cab_id=(SELECT cab_id FROM route where id={}), status=1, eta={}, in_pool={} \
-        WHERE id={} AND o.status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
+        WHERE id={} AND status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
         route_id, leg_id, route_id, eta, in_pool, order_id);
 }
 
 pub fn assign_order(order_id: i64, cab_id: i64, leg_id: i64, route_id: i64, eta: i16, in_pool: &str, called_by: &str) -> String {   
-    debug!("Assigning order_id={} to cab_id={}, route_id={}, leg_id={}, routine {}",
+    debug!("Assigning order_id={} to cab_id={}, route_id={}, leg_id={}, module: {}",
                                             order_id, cab_id, route_id, leg_id, called_by);
     return format!("\
         UPDATE taxi_order SET route_id={}, leg_id={}, cab_id={}, status=1, eta={}, in_pool={} \
@@ -158,7 +155,7 @@ pub fn assign_order(order_id: i64, cab_id: i64, leg_id: i64, route_id: i64, eta:
 }
 
 pub fn assign_order_no_leg(order_id: i64, cab_id: i64, route_id: i64, eta: i16, in_pool: &str, called_by: &str) -> String {   
-    debug!("Assigning order_id={} to cab_id={}, route_id={}, NO LEG, routine {}",
+    debug!("Assigning order_id={} to cab_id={}, route_id={}, NO LEG, module: {}",
                                             order_id, cab_id, route_id, called_by);
     return format!("\
         UPDATE taxi_order SET route_id={}, cab_id={}, status=1, eta={}, in_pool={} \
@@ -168,7 +165,7 @@ pub fn assign_order_no_leg(order_id: i64, cab_id: i64, route_id: i64, eta: i16, 
 
 pub fn create_leg(order_id: i64, from: i32, to: i32, place: i32, status: RouteStatus, dist: i16, reserve: i32,
                   route_id: i64, max_leg_id: &mut i64, passengers: i8, called_by: &str) -> String {
-    debug!("Adding leg to route: leg_id={}, route_id={}, order_id={}, from={}, to={}, place={}, distance={}, reserve={}, routine {}", 
+    debug!("Adding leg to route: leg_id={}, route_id={}, order_id={}, from={}, to={}, place={}, distance={}, reserve={}, module: {}", 
                                 *max_leg_id, route_id, order_id, from, to, place, dist,
                                 cmp::max(reserve, 0), called_by);
     let ret = format!("\
@@ -447,6 +444,34 @@ pub fn save_status() -> String {
         sql += &format!("UPDATE stat SET int_val={} WHERE UPPER(name)=UPPER('{}');", STATS[*s as usize], s.to_string());
     }}
     return sql;
+}
+
+fn get_naivedate(row: &Row, index: usize) -> Option<NaiveDateTime> {
+    let val: Option<mysql::Value> = row.get(index);
+    return match val {
+        Some(x) => {
+            if x == Value::NULL {
+                None
+            } else {
+                row.get(index)
+            }
+        }
+        None => None
+    };
+}
+
+fn get_i64(row: &Row, index: usize) -> i64 {
+    let val: Option<mysql::Value> = row.get(index);
+    return match val {
+        Some(x) => {
+            if x == Value::NULL {
+                -1
+            } else {
+                row.get(index).unwrap()
+            }
+        }
+        None => -1
+    };
 }
 
 #[cfg(test)]
