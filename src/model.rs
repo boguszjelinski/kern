@@ -124,7 +124,6 @@ impl RouteStatus {
     }
 }
 
-
 #[derive(Clone)]
 pub struct Route {
 	pub id: i64,

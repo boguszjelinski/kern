@@ -34,6 +34,8 @@ use log4rs::{
     filter::threshold::ThresholdFilter,
 };
 
+use crate::repo::get_lock_tables;
+
 const CFG_FILE_DEFAULT: &str = "kern.toml";
 
 fn main() -> Result<(), Error> {
@@ -130,7 +132,7 @@ fn main() -> Result<(), Error> {
         unsafe {
         // check if we should wait for new orders
         let mut wait: u64 = CNFG.run_after - start.elapsed().as_secs();
-        if rest > 0 || wait > 60 {
+        if wait > 60 {
             // TODO: find the bug!
             warn!("Strange wait time: {}", wait);
             wait = 0;
@@ -243,9 +245,6 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
     // check if we want to run extender is done in run_extender
     let (mut demand, mut rest) 
         = run_extender(thread_num, itr, &host, client, orders, &stops, &mut max_leg_id, "FIRST", &cfg);
-
-    if rest > 0 { return rest; }
-
     // POOL FINDER
     if cabs.len() == 0 {
         info!("No cabs");
@@ -256,8 +255,7 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
         let start_pool = Instant::now();
         stats::update_max_and_avg_stats(Stat::AvgPoolDemandSize, Stat::MaxPoolDemandSize, demand.len() as i64);
         let mut pl: Vec<Branch> = Vec::new();
-        let mut sql: String = String::from("");
-        
+        let mut sql: String = get_lock_tables();
         // 2 versions available - in C (external) and Rust
         if cfg.use_extern_pool {
             (pl, sql) = find_external_pool(&mut demand, cabs, stops, cfg.thread_numb, &mut max_route_id, &mut max_leg_id);
@@ -274,6 +272,7 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
         //for s in split_sql(sql, 150) {
         //    client.batch_execute(&s).unwrap();
         //}
+        sql = sql + " END;";
         client.batch_execute(&sql).unwrap();
         // marking assigned orders to get rid of them; cabs are marked in find_pool 
         let numb = count_orders(pl, &demand);
@@ -283,7 +282,6 @@ fn dispatch(itr: i32, host: &String, client: &mut Client, orders: &mut Vec<Order
         (*cabs, demand) = shrink(&cabs, demand);
         (demand, rest) 
             = run_extender(thread_num, itr, &host, client, &demand, &stops, &mut max_leg_id, "SECOND", &cfg);
-        if rest > 0 { return rest; } // let's run extender again
     }
 
     // we don't want to run run solver each time, once a minute is fine, these are som trouble-making customers :)
