@@ -399,7 +399,7 @@ fn assign_order_to_cab(order: Order, cab: Cab, place: i32, eta: i16, reserve: i3
 
 pub fn assign_cust_to_cab_munkres(sol: Vec<i16>, cabs: &Vec<Cab>, demand: &Vec<Order>, max_route_id: &mut i64, 
                             max_leg_id: &mut i64) -> String {
-    let mut sql: String = String::from("");
+    let mut sql: String = get_lock_tables();
     for (cab_idx, ord_idx) in sol.iter().enumerate() {
         if *ord_idx == -1 {
             continue; // cab not assigned
@@ -420,6 +420,7 @@ pub fn assign_cust_to_cab_munkres(sol: Vec<i16>, cabs: &Vec<Cab>, demand: &Vec<O
         sql += &assign_order_to_cab(order, cabs[cab_idx], place, eta, reserve, *max_route_id, max_leg_id, "assignCustToCabMunkres");
         *max_route_id += 1;
     }
+    sql = sql + " END;";
     return sql;
 }
 
@@ -431,6 +432,14 @@ pub fn save_status() -> String {
         sql += &format!("UPDATE stat SET int_val={} WHERE UPPER(name)=UPPER('{}');", STATS[*s as usize], s.to_string());
     }}
     return sql;
+}
+
+pub fn get_lock_tables() -> String {
+    return String::from("begin;\
+        LOCK TABLE taxi_order IN EXCLUSIVE MODE;\
+        LOCK TABLE cab IN EXCLUSIVE MODE;\
+        LOCK TABLE leg IN EXCLUSIVE MODE;\
+        LOCK TABLE route IN EXCLUSIVE MODE;");
 }
 
 #[cfg(test)]
