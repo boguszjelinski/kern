@@ -135,7 +135,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
         unsafe {
         // check if we should wait for new orders
         let mut wait: u64 = CNFG.run_after - start.elapsed().as_secs();
-        if rest > 0 || wait > 60 {
+        if wait > 60 {
             // TODO: find the bug!
             warn!("Strange wait time: {}", wait);
             wait = 0;
@@ -249,8 +249,9 @@ fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Ord
     // check if we want to run extender is done in run_extender
     let (mut demand, mut rest) 
         = run_extender(thread_num, itr, &host, conn, orders, &stops, &mut max_leg_id, "FIRST", &cfg);
-
-    if rest > 0 { return rest; }
+    if rest > 0 && itr % unsafe { CNFG.solver_interval } != 0 {
+        return rest;
+    }
 
     // POOL FINDER
     if cabs.len() == 0 {
@@ -297,7 +298,9 @@ fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Ord
         (*cabs, demand) = shrink(&cabs, demand);
         (demand, rest) 
             = run_extender(thread_num, itr, &host, conn, &demand, &stops, &mut max_leg_id, "SECOND", &cfg);
-        if rest > 0 { return rest; } // let's run extender again
+        if rest > 0 && itr % unsafe { CNFG.solver_interval } != 0 {
+            return rest;
+        }
     }
 
     // we don't want to run run solver each time, once a minute is fine, these are som trouble-making customers :)
