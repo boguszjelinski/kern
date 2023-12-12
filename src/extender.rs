@@ -187,11 +187,11 @@ fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>
   let mut assigned_orders: Vec<i64> = Vec::new();
   let mut missed_orders: Vec<Order> = Vec::new();
   let mut extended_routes: Vec<i64> = Vec::new(); // IDs of extended routes so that we do not extend twice - some will be sent to the next iteration
-  let mut missed_matches: usize = 0;
+  let mut missed_matches: Vec<i64> = Vec::new();
 
   for ind in indices {
     if extended_routes.contains(&ind.route_id) {
-      missed_matches += 1;
+      missed_matches.push(ind.order.id);
       continue;
     }
     assigned_orders.push(ind.order.id);
@@ -199,12 +199,12 @@ fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>
     sql += &get_sql(&ind, max_leg_id, &legs, dist);
   }
   for o in orders {
-    if assigned_orders.contains(&o.id) {
+    if assigned_orders.contains(&o.id) || missed_matches.contains(&o.id) { // don't send missed matches to pool or solver
       continue;
     }
     missed_orders.push(*o);
   }
-  return (missed_orders, missed_matches, sql);
+  return (missed_orders, missed_matches.len(), sql);
 }
 
 fn iterate(orders: Vec<Order>, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &HashMap<i64, i8>, assigned_orders: &HashMap<i64, Vec<Order>>) 
@@ -344,7 +344,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
   if min_cost == MAXCOST {
     return None;
   }
-  info!("Extension proposal, order_id={}, route_id={}, cost={}", order.id, ret.unwrap().route_id, ret.unwrap().dist);
+  //info!("Extension proposal, order_id={}, route_id={}, cost={}", order.id, ret.unwrap().route_id, ret.unwrap().dist);
   return ret;
 }
 
@@ -367,7 +367,7 @@ fn wait_exceeded(ord: &Order, i: usize, j:usize, wait: i32, add_cost: i32, add_c
 
   while idx < legs.len() {
     if legs[idx].route_id != route_id {
-      info!("{}", log);
+      //info!("{}", log); TODO check one day
       return false;
     }
     for o in &orders {
@@ -385,7 +385,7 @@ fn wait_exceeded(ord: &Order, i: usize, j:usize, wait: i32, add_cost: i32, add_c
     log += &format!("[dist after leg={}, dist={}], ", legs[idx].id, total_dist);
     idx += 1;
   }
-  info!("{}", log);
+  //info!("{}", log); TODO: check it!
   return false;
 }
 
