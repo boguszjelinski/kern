@@ -40,39 +40,47 @@ pub fn bearing_diff(a: i32, b: i32 ) -> f32 {
 
 pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, conn: &mut PooledConn, demand: &Vec<Order>, stops: &Vec<Stop>, 
                             max_leg_id: &mut i64, dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) 
-                            -> (Vec<Order>, usize) {
-    //return (demand.to_vec(), thread::spawn(|| { }));
+                            -> Vec<Order> {
     if demand.len() == 0 {
-        return (Vec::new(), 0);
+        return Vec::new();
     }
-    let mut legs: Vec<Leg> = find_legs(conn); // TODO: legs that will soon start should not be taken into consideration !!!
-    // as we will get customers not picked up ???
-    if legs.len() == 0 {
-        return (demand.to_vec(), 0);
-    }
-    let ass_orders: Vec<Order> = find_orders_by_status_and_time(conn, OrderStatus::ASSIGNED,
-       (Local::now() - Duration::minutes(30)).naive_local());
-    info!("Extender START, new orders count={} assigned orders={} legs count={}", demand.len(), ass_orders.len(), legs.len());
-    let ass_orders_map = assigned_orders(&ass_orders);
-    let (ret, missed, sql_bulk)
-      = extend_routes(demand, &ass_orders_map, stops, &mut legs, max_leg_id, dist);
+    let mut demand_cpy = demand.clone();
+    let mut ret: Vec<Order> = Vec::new();
+    loop {
+      let mut legs: Vec<Leg> = find_legs(conn); // TODO: legs that will soon start should not be taken into consideration !!!
+      // as we will get customers not picked up ???
+      if legs.len() == 0 {
+          return demand.to_vec();
+      }
+      let ass_orders: Vec<Order> = find_orders_by_status_and_time(conn, OrderStatus::ASSIGNED,
+         (Local::now() - Duration::minutes(30)).naive_local());
+      info!("Extender START, new orders count={} assigned orders={} legs count={}", demand.len(), ass_orders.len(), legs.len());
+      let ass_orders_map = assigned_orders(&ass_orders);
 
-    // EXECUTE SQL !!
-    //write_sql_to_file(itr, &sql_bulk, "extender");
-    //for s in split_sql(sql_bulk, 150) {
-    //  client.batch_execute(&s).unwrap();
-    //}
-    if sql_bulk.len() > 0 {
-      //debug!("{}", sql_bulk);
-      match conn.query_iter(&sql_bulk) {
-        Ok(_) => {} 
-        Err(err) => {
-          warn!("Extender SQL error: {}", err);
+      let (mut ret_part, missed, sql)
+        = extend_routes(&demand_cpy, &ass_orders_map, stops, &mut legs, max_leg_id, dist);
+        
+      // EXECUTE SQL !!
+      //write_sql_to_file(itr, &sql_bulk, "extender");
+      //for s in split_sql(sql_bulk, 150) {
+      //  client.batch_execute(&s).unwrap();
+      //}
+      if sql.len() > 0 {
+        //debug!("{}", sql_bulk);
+        match conn.query_iter(&sql) {
+          Ok(_) => {} 
+          Err(err) => {
+            warn!("Extender SQL error: {}", err);
+          }
         }
       }
+      ret.append(&mut ret_part);
+      if missed.len() == 0 { break; }
+      demand_cpy = missed;
     }
-    return (ret, missed);
+    return ret;
 }
+
 
 pub fn split_sql(sql: String, size: usize) -> Vec<String> {
   if sql.len() == 0 {
@@ -151,7 +159,7 @@ pub fn assigned_orders(assigned_orders: &Vec<Order>) -> HashMap<i64, Vec<Order>>
 }
 
 fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>, stops: &Vec<Stop>, legs: &mut Vec<Leg>, max_leg_id: &mut i64,
-                  dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> (Vec<Order>, usize, String) {
+                  dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> (Vec<Order>, Vec<Order>, String) {
   let mut t_numb = 10; // mut: there might be one more thread, rest of division
 	let leg_count: HashMap<i64, i8> = count_legs(legs);
   
@@ -185,9 +193,11 @@ fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>
   // get SQL
   let mut sql: String = String::from("");
   let mut assigned_orders: Vec<i64> = Vec::new();
+  let mut missed_orders_for_pool: Vec<Order> = Vec::new();
   let mut missed_orders: Vec<Order> = Vec::new();
   let mut extended_routes: Vec<i64> = Vec::new(); // IDs of extended routes so that we do not extend twice - some will be sent to the next iteration
   let mut missed_matches: Vec<i64> = Vec::new();
+  let mut missed_matches_no_dups: Vec<i64> = Vec::new();
 
   for ind in indices {
     if extended_routes.contains(&ind.route_id) {
@@ -199,12 +209,17 @@ fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>
     sql += &get_sql(&ind, max_leg_id, &legs, dist);
   }
   for o in orders {
-    if assigned_orders.contains(&o.id) || missed_matches.contains(&o.id) { // don't send missed matches to pool or solver
+    if assigned_orders.contains(&o.id) {
       continue;
     }
-    missed_orders.push(*o);
+    if missed_matches.contains(&o.id) && !missed_matches_no_dups.contains(&o.id) { // don't send missed matches to pool or solver
+      missed_orders.push(*o);
+      missed_matches_no_dups.push(o.id);
+      continue;
+    }
+    missed_orders_for_pool.push(*o);
   }
-  return (missed_orders, missed_matches.len(), sql);
+  return (missed_orders_for_pool, missed_orders, sql);
 }
 
 fn iterate(orders: Vec<Order>, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &HashMap<i64, i8>, assigned_orders: &HashMap<i64, Vec<Order>>) 

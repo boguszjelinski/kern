@@ -206,28 +206,23 @@ extern "C" {
 }
 
 fn run_extender(_thr_numb: i32, itr: i32, host: &String, conn: &mut PooledConn, orders: &Vec<Order>, stops: &Vec<Stop>, 
-                max_leg_id: &mut i64, label: &str, cfg: &KernCfg) -> (Vec<Order>, usize) {
-    let demand: Vec<Order>;
+                max_leg_id: &mut i64, label: &str, cfg: &KernCfg) -> Vec<Order> {
     let len_before = orders.len();
-    let mut rest: usize = 0;
     if cfg.use_extender {
         let start_extender = Instant::now();
-        let ret 
+        let demand 
             = find_matching_routes(itr, _thr_numb, &host, conn, orders, &stops, max_leg_id, unsafe { &DIST });
         update_max_and_avg_time(Stat::AvgExtenderTime, Stat::MaxExtenderTime, start_extender);
-        demand = ret.0;
-        rest = ret.1;
         let len_after = demand.len();
         if len_before != len_after {
-            info!("{}: route extender allocated {} requests, missed {} overlapping routes, max_leg_id: {}", 
-                label, len_before - len_after, ret.1, max_leg_id);
+            info!("{}: route extender allocated {} requests, max_leg_id: {}", label, len_before - len_after, max_leg_id);
         } else {
             info!("{}: extender has not helped", label);
         }
+        return demand;
     } else {
-        demand = orders.to_vec();
+        return orders.to_vec();
     }
-    return (demand, rest);
 }
 
 // three steps:
@@ -247,11 +242,8 @@ fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Ord
     stats::update_max_and_avg_stats(Stat::AvgDemandSize, Stat::MaxDemandSize, orders.len() as i64);
     
     // check if we want to run extender is done in run_extender
-    let (mut demand, mut rest) 
+    let mut demand
         = run_extender(thread_num, itr, &host, conn, orders, &stops, &mut max_leg_id, "FIRST", &cfg);
-    if rest > 0 && itr % unsafe { CNFG.solver_interval } != 0 {
-        return rest;
-    }
 
     // POOL FINDER
     if cabs.len() == 0 {
@@ -296,11 +288,8 @@ fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Ord
 
         // let's try extender on the new routes if there still is demand
         (*cabs, demand) = shrink(&cabs, demand);
-        (demand, rest) 
+        demand
             = run_extender(thread_num, itr, &host, conn, &demand, &stops, &mut max_leg_id, "SECOND", &cfg);
-        if rest > 0 && itr % unsafe { CNFG.solver_interval } != 0 {
-            return rest;
-        }
     }
 
     // we don't want to run run solver each time, once a minute is fine, these are som trouble-making customers :)
