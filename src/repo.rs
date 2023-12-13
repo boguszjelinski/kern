@@ -375,7 +375,7 @@ fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Br
     return sql;
 }
 
-pub fn assign_order_to_cab_lcm(sol: Vec<(i16,i16)>, cabs: &Vec<Cab>, demand: &Vec<Order>, max_route_id: &mut i64, 
+pub fn assign_order_to_cab_lcm(sol: Vec<(i16,i16)>, cabs: &mut Vec<Cab>, demand: &mut Vec<Order>, max_route_id: &mut i64, 
                               max_leg_id: &mut i64) -> String {
     let mut sql: String = String::from("");
     for (_, (cab_idx, ord_idx)) in sol.iter().enumerate() {
@@ -392,6 +392,8 @@ pub fn assign_order_to_cab_lcm(sol: Vec<(i16,i16)>, cabs: &Vec<Cab>, demand: &Ve
             * (100.0 + order.loss as f32) / 100.0 } as i32 ;
         if reserve > loss { reserve = loss; } 
         sql += &assign_order_to_cab(order, cab, place, eta, reserve, *max_route_id, max_leg_id, "assignCustToCabLCM");
+        cabs[*cab_idx as usize].id = -1; // munkres should not assign this cab
+        demand[*ord_idx as usize].id = -1;
         *max_route_id += 1;
     }
     return sql;
