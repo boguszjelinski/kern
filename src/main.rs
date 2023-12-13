@@ -325,10 +325,13 @@ fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Ord
             info!("LCM input: demand={}, supply={}", demand.len(), cabs.len());
             let start_lcm = Instant::now();
             lcm_handle.join().expect("LCM SQL thread being joined has panicked");
-            lcm_handle = lcm(host, &cabs, &demand, &mut max_route_id, &mut max_leg_id, 
-                    std::cmp::min(demand.len(), cabs.len()) as i16 - CNFG.max_solver_size as i16);
+            let cabs_len = cabs.len();
+            let ord_len = orders.len();
+            lcm_handle = lcm(host, &mut cabs, &mut demand, &mut max_route_id, &mut max_leg_id, 
+                    std::cmp::min(ord_len, cabs_len) as i16 - CNFG.max_solver_size as i16);
             update_max_and_avg_time(Stat::AvgLcmTime, Stat::MaxLcmTime, start_lcm);
             incr_val(Stat::TotalLcmUsed);
+            (*cabs, demand) = shrink(&cabs, demand);
         }}
         // SOLVER
         let start_solver = Instant::now();
@@ -359,7 +362,7 @@ fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Ord
 }
 
 // least/low cost method - shrinking the model so that it can be sent to solver
-fn lcm(host: &String, cabs: &Vec<Cab>, orders: &Vec<Order>, max_route_id: &mut i64, max_leg_id: &mut i64, how_many: i16) 
+fn lcm(host: &String, mut cabs: &mut Vec<Cab>, mut orders: &mut Vec<Order>, max_route_id: &mut i64, max_leg_id: &mut i64, how_many: i16) 
                                 -> thread::JoinHandle<()> {
     // let us start with a big cost - is there any smaller?
     let big_cost: i32 = 1000000;
@@ -399,7 +402,7 @@ fn lcm(host: &String, cabs: &Vec<Cab>, orders: &Vec<Order>, max_route_id: &mut i
         cabs_cpy[smin as usize].id = -1;
         orders_cpy[dmin as usize].id = -1;
     }
-    let sql = repo::assign_order_to_cab_lcm(pairs, &cabs, &orders, max_route_id, max_leg_id);
+    let sql = repo::assign_order_to_cab_lcm(pairs, &mut cabs, &mut orders, max_route_id, max_leg_id);
     return get_handle(host.clone(), sql, "LCM".to_string());
 }
 
