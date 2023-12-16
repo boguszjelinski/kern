@@ -581,7 +581,7 @@ fn prepare_data(conn: &mut PooledConn) -> Option<(Vec<Order>, Vec<Cab>)> {
 }
 
 // TODO: bulk update
-fn expire_orders(conn: &mut PooledConn, demand: & Vec<Order>) -> Vec<Order> {
+fn expire_orders(conn: &mut PooledConn, demand: &Vec<Order>) -> Vec<Order> {
     let mut ret: Vec<Order> = Vec::new();
     let mut ids: String = "".to_string();
     for o in demand.iter() {
