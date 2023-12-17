@@ -9,7 +9,7 @@ use std::thread;
 use log::debug;
 use crate::model::{Order,OrderTransfer,Stop,Cab,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB};
 use crate::distance::DIST;
-use crate::repo::{assign_pool_to_cab,CNFG};
+use crate::repo::{assign_pool_to_cab, CNFG};
 
 static mut STOPS : [Stop; MAXSTOPSNUMB] = [Stop {id: 0, latitude: 0.0, longitude: 0.0, bearing: 0}; MAXSTOPSNUMB];
 static mut STOPS_LEN: usize = 0;

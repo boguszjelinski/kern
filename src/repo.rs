@@ -15,6 +15,7 @@ pub static mut CNFG: KernCfg = KernCfg {
     run_after: 15, // secs
     max_legs: 8,
     max_angle: 120.0,
+    max_angle_dist: 3, 
     use_pool: true,
     use_extern_pool: true,
     use_extender: false,

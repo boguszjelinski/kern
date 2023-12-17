@@ -68,6 +68,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
             run_after:       cfg["run_after"].parse().unwrap(),
             max_legs:        cfg["max_legs"].parse().unwrap(),
             max_angle:       cfg["max_angle"].parse::<f32>().unwrap(),
+            max_angle_dist:  cfg["max_angle_dist"].parse().unwrap(),
             use_pool:        cfg["use_pool"].parse::<bool>().unwrap(),
             use_extern_pool: cfg["use_extern_pool"].parse::<bool>().unwrap(),
             use_extender:    cfg["use_extender"].parse::<bool>().unwrap(),
@@ -88,6 +89,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
         info!("run_after: {}", CNFG.run_after);
         info!("max_legs: {}", CNFG.max_legs);
         info!("max_angle: {}", CNFG.max_angle);
+        info!("max_angle_dist: {}", CNFG.max_angle_dist);
         info!("use_pool: {}", CNFG.use_pool);
         info!("use_extern_pool: {}", CNFG.use_extern_pool);
         info!("use_extender: {}", CNFG.use_extender);
