@@ -156,12 +156,13 @@ impl Branch {
 
 // config read from a file
 #[derive(Copy, Clone)]
-pub struct KernCfg{
+pub struct KernCfg {
 	pub max_assign_time: i64,
     pub max_solver_size: usize,
     pub run_after:u64,
     pub max_legs: i8,
     pub max_angle: f32,
+    pub max_angle_dist: i16,
     pub use_pool: bool,
     pub use_extern_pool: bool,
     pub use_extender: bool,
