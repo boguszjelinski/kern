@@ -5,6 +5,7 @@
 #define MAXTHREADMEM 15000000
 
 #define MAXANGLE 120.0
+#define MAXANGLEDIST 1
 #define STOP_WAIT 1 // minute, how long it takes at a bus stop
 
 #define true 1

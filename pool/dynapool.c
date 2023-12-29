@@ -136,7 +136,7 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
       if (!isTooLong(ordId, 'i', dist(demand[ordId].fromStand, nextStop) 
                                   + (demand[ordId].fromStand != nextStop ? STOP_WAIT : 0), ptr)
         // TASK? if the next stop is OUT of passenger 'c' - we might allow bigger angle
-        && bearingDiff(stops[demand[ordId].fromStand].bearing, stops[nextStop].bearing) < MAXANGLE
+        && (dist(demand[ordId].fromStand, nextStop) > MAXANGLEDIST || bearingDiff(stops[demand[ordId].fromStand].bearing, stops[nextStop].bearing) < MAXANGLE)
         ) 
         storeBranch(thread, 'i', lev, ordId, ptr, inPool);
     }
@@ -145,7 +145,7 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
         && ptr->outs < inPool // numb OUT must be numb IN
         && !isTooLong(ordId, 'o', dist(demand[ordId].toStand, nextStop)
                                 + (demand[ordId].toStand != nextStop ? STOP_WAIT : 0), ptr)
-        && bearingDiff(stops[demand[ordId].toStand].bearing, stops[nextStop].bearing) < MAXANGLE
+        && (dist(demand[ordId].toStand, nextStop) > MAXANGLEDIST || bearingDiff(stops[demand[ordId].toStand].bearing, stops[nextStop].bearing) < MAXANGLE)
         ) storeBranch(thread, 'o', lev, ordId, ptr, inPool);
 }
 
@@ -194,7 +194,7 @@ void storeLeaves(int lev) {
             if (c == d) {
               // 'bearing' checks if stops are in line, it promotes straight paths to avoid unlife solutions
               // !! we might not check bearing here as they are probably distant stops
-              if (bearingDiff(stops[demand[c].fromStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)  {
+              if (dist(demand[c].fromStand, demand[d].toStand) > MAXANGLEDIST || bearingDiff(stops[demand[c].fromStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)  {
                 // IN and OUT of the same passenger
                 addBranch(c, d, 'i', 'o', 1, lev);
               }
@@ -202,7 +202,7 @@ void storeLeaves(int lev) {
             // now <1out, 2out>
             else if (dist(demand[c].toStand, demand[d].toStand)
                         < dist(demand[d].fromStand, demand[d].toStand) * (100.0 + demand[d].maxLoss) / 100.0
-                    && bearingDiff(stops[demand[c].toStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE
+                    && (dist(demand[c].toStand, demand[d].toStand) > MAXANGLEDIST || bearingDiff(stops[demand[c].toStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)
             ) {
               // TASK - this calculation above should be replaced by a redundant value in taxi_order - distance * loss
               addBranch(c, d, 'o', 'o', 2, lev);

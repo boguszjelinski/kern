@@ -108,7 +108,10 @@ CREATE TABLE stop (
     PRIMARY KEY (id)
 );
 -- GRANT FILE on kabina.stop to kabina@'localhost'
---COPY stop(id, no, name, latitude, longitude, bearing) FROM 'stops-Budapest-import.csv' DELIMITER ',' CSV HEADER ENCODING 'UTF8';
+-- LOAD DATA LOCAL INFILE '/.../stops-Budapest-import.csv'
+-- INTO TABLE stop (id, no, name, latitude, longitude, bearing) FIELDS TERMINATED BY ',' LINES TERMINATED BY '\n'
+-- IGNORE 1 LINES;
+-- [Code: 3948, SQL State: 42000]  Loading local data is disabled; this must be enabled on both the client and server sides
 
 -- ORDER
 DROP TABLE taxi_order CASCADE;
