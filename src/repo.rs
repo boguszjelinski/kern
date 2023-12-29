@@ -436,7 +436,6 @@ pub fn assign_cust_to_cab_munkres(sol: Vec<i16>, cabs: &Vec<Cab>, demand: &Vec<O
         sql += &assign_order_to_cab(order, cabs[cab_idx], place, eta, reserve, *max_route_id, max_leg_id, "assignCustToCabMunkres");
         *max_route_id += 1;
     }
-    sql = sql + " END;";
     return sql;
 }
 
