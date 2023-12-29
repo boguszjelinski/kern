@@ -209,7 +209,7 @@ fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>
   }
 
   for o in orders {
-    if assigned_orders.contains(&o.id) || missed_matches.contains(&o.id) { // we don't want missed matches to be sent to pool or solver
+    if assigned_orders.contains(&o.id) {
       continue;
     }
     if missed_matches.contains(&o.id) && !missed_matches_no_dups.contains(&o.id) { // don't send missed matches to pool or solver
