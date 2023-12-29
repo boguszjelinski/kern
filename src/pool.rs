@@ -9,7 +9,7 @@ use std::thread;
 use log::debug;
 use crate::model::{Order,OrderTransfer,Stop,Cab,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB};
 use crate::distance::DIST;
-use crate::repo::{assign_pool_to_cab,CNFG};
+use crate::repo::{assign_pool_to_cab, CNFG};
 
 static mut STOPS : [Stop; MAXSTOPSNUMB] = [Stop {id: 0, latitude: 0.0, longitude: 0.0, bearing: 0}; MAXSTOPSNUMB];
 static mut STOPS_LEN: usize = 0;
@@ -491,7 +491,8 @@ pub fn stops_to_array(vec: &Vec<Stop>) -> [Stop; MAXSTOPSNUMB] {
 mod tests {
   use super::*;
   use crate::distance::init_distance;
-  use serial_test::serial;
+  use chrono::Local;
+use serial_test::serial;
   use std::time::Instant;
   use std::time::SystemTime;
 
@@ -585,7 +586,7 @@ mod tests {
         let to: i32 = from + 5;
         let dista = unsafe { DIST[from as usize][to as usize] as i32 };
         ret.push(Order{ id: i as i64, from, to, wait: 15, loss: 70, dist: dista, 
-                    shared: true, in_pool: false, received: Some(SystemTime::now()), started: None, completed: None, at_time: None, 
+                    shared: true, in_pool: false, received: Some(Local::now().naive_local()), started: None, completed: None, at_time: None, 
                     eta: 1, route_id: -1 });
     }
     return ret;

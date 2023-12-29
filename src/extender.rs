@@ -2,14 +2,15 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::{thread, cmp, vec};
 use chrono::{Local, Duration};
-use log::{info, warn};
-use postgres::{Client, NoTls};
+use log::{info, warn, debug};
+//use postgres::{Client, NoTls};
+use mysql::*;
+use mysql::prelude::*;
 use crate::model::{ Order, OrderStatus, Stop, Leg, RouteStatus, MAXSTOPSNUMB };
 use crate::repo::{find_legs, assign_order_find_cab, create_leg, update_leg_a_bit2, update_reserves_in_legs_before_and_including,
                   update_place_in_legs_after, update_passengers_and_reserve_in_legs_between, update_reserve_after,
-                  find_orders_by_status_and_time, get_lock_tables};
+                  find_orders_by_status_and_time, CNFG};
 use crate::distance::DIST;
-use crate::repo::CNFG;
 use crate::utils::get_elapsed;
 
 pub const MAXCOST : i32 = 1000000;
@@ -36,31 +37,49 @@ pub fn bearing_diff(a: i32, b: i32 ) -> f32 {
   return r.abs();
 }
 
-pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, client: &mut Client, demand: &Vec<Order>, stops: &Vec<Stop>, 
+pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, conn: &mut PooledConn, demand: &Vec<Order>, stops: &Vec<Stop>, 
                             max_leg_id: &mut i64, dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) 
-                            -> (Vec<Order>, usize) {
-    //return (demand.to_vec(), thread::spawn(|| { }));
+                            -> Vec<Order> {
     if demand.len() == 0 {
-        return (Vec::new(), 0);
+        return Vec::new();
     }
-    let mut legs: Vec<Leg> = find_legs(client); // TODO: legs that will soon start should not be taken into consideration !!!
-    // as we will get customers not picked up ???
-    if legs.len() == 0 {
-        return (demand.to_vec(), 0);
-    }
-    let ass_orders: Vec<Order> = find_orders_by_status_and_time(client, OrderStatus::ASSIGNED, Local::now() - Duration::minutes(30));
-    info!("Extender START, new orders count={} assigned orders={} legs count={}", demand.len(), ass_orders.len(), legs.len());
-    let ass_orders_map = assigned_orders(&ass_orders);
-    let (ret, missed, sql_bulk) = extend_routes(demand, &ass_orders_map, stops, &mut legs, max_leg_id, dist);
+    let mut demand_cpy = demand.clone();
+    let mut ret: Vec<Order> = Vec::new();
+    loop {
+      let mut legs: Vec<Leg> = find_legs(conn); // TODO: legs that will soon start should not be taken into consideration !!!
+      // as we will get customers not picked up ???
+      if legs.len() == 0 {
+          return demand.to_vec();
+      }
+      let ass_orders: Vec<Order> = find_orders_by_status_and_time(conn, OrderStatus::ASSIGNED,
+         (Local::now() - Duration::minutes(30)).naive_local());
+      info!("Extender START, new orders count={} assigned orders={} legs count={}", demand.len(), ass_orders.len(), legs.len());
+      let ass_orders_map = assigned_orders(&ass_orders);
 
-    // EXECUTE SQL !!
-    //write_sql_to_file(itr, &sql_bulk, "extender");
-    //for s in split_sql(sql_bulk, 150) {
-    //  client.batch_execute(&s).unwrap();
-    //}
-    client.batch_execute(&sql_bulk).unwrap();
-    return (ret, missed);
+      let (mut ret_part, missed, sql)
+        = extend_routes(&demand_cpy, &ass_orders_map, stops, &mut legs, max_leg_id, dist);
+        
+      // EXECUTE SQL !!
+      //write_sql_to_file(itr, &sql_bulk, "extender");
+      //for s in split_sql(sql_bulk, 150) {
+      //  client.batch_execute(&s).unwrap();
+      //}
+      if sql.len() > 0 {
+        //debug!("{}", sql_bulk);
+        match conn.query_iter(&sql) {
+          Ok(_) => {} 
+          Err(err) => {
+            warn!("Extender SQL error: {}", err);
+          }
+        }
+      }
+      ret.append(&mut ret_part);
+      if missed.len() == 0 { break; }
+      demand_cpy = missed;
+    }
+    return ret;
 }
+
 
 pub fn split_sql(sql: String, size: usize) -> Vec<String> {
   if sql.len() == 0 {
@@ -139,7 +158,7 @@ pub fn assigned_orders(assigned_orders: &Vec<Order>) -> HashMap<i64, Vec<Order>>
 }
 
 fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>, stops: &Vec<Stop>, legs: &mut Vec<Leg>, max_leg_id: &mut i64,
-                  dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> (Vec<Order>, usize, String) {
+                  dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> (Vec<Order>, Vec<Order>, String) {
   let mut t_numb = 10; // mut: there might be one more thread, rest of division
 	let leg_count: HashMap<i64, i8> = count_legs(legs);
   
@@ -171,11 +190,13 @@ fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>
   // sort - there might be extensions of the same route, we will choose the better one, the worse one will go to next iteration
   indices.sort_by_key(|e| e.dist.clone());
   // get SQL
-  let mut sql: String = get_lock_tables();
+  let mut sql: String = String::from("");
   let mut assigned_orders: Vec<i64> = Vec::new();
+  let mut missed_orders_for_pool: Vec<Order> = Vec::new();
   let mut missed_orders: Vec<Order> = Vec::new();
   let mut extended_routes: Vec<i64> = Vec::new(); // IDs of extended routes so that we do not extend twice - some will be sent to the next iteration
   let mut missed_matches: Vec<i64> = Vec::new();
+  let mut missed_matches_no_dups: Vec<i64> = Vec::new();
 
   for ind in indices {
     if extended_routes.contains(&ind.route_id) {
@@ -191,10 +212,14 @@ fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>
     if assigned_orders.contains(&o.id) || missed_matches.contains(&o.id) { // we don't want missed matches to be sent to pool or solver
       continue;
     }
-    missed_orders.push(*o);
+    if missed_matches.contains(&o.id) && !missed_matches_no_dups.contains(&o.id) { // don't send missed matches to pool or solver
+      missed_orders.push(*o);
+      missed_matches_no_dups.push(o.id);
+      continue;
+    }
+    missed_orders_for_pool.push(*o);
   }
-  sql = sql + " END;";
-  return (missed_orders, missed_matches.len(), sql);
+  return (missed_orders_for_pool, missed_orders, sql);
 }
 
 fn iterate(orders: Vec<Order>, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &HashMap<i64, i8>, assigned_orders: &HashMap<i64, Vec<Order>>) 
@@ -228,80 +253,90 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
   if legs[i].status == RouteStatus::STARTED {
     let mut on_the_way = get_elapsed(legs[0].started) as i32;
     if on_the_way == -1 { on_the_way = 0; }
-    total_dist = cmp::max(0, legs[0].dist - on_the_way/60);
+    total_dist = cmp::max(0, legs[0].dist - on_the_way/60) + STOP_WAIT as i32;
   } else {
-   total_dist = legs[0].dist; // distance from the begining of a route; well, only the remaining legs
+   total_dist = legs[0].dist + STOP_WAIT as i32; // distance from the begining of a route; well, only the remaining legs
   }
   let mut min_cost: i32 = MAXCOST; // added cost of the winner, we are starting with a looser
   let mut is_short = leg_is_short(leg_count.get(&legs[i].route_id));
+  let order_from = order.from as usize;
+  let max_angle = unsafe { CNFG.max_angle as f32 };
+  let max_angle_dist = unsafe { CNFG.max_angle_dist as i32 };
+  let mut wait_legs: i16 = 0; // each leg takes 15secs more, TODO: check why
 
   while i < legs.len() { // this is the pick-up loop
-    
-    if legs[i].route_id != legs[i-1].route_id { // new route -> check the previous one
-      is_short = leg_is_short(leg_count.get(&legs[i].route_id));
+    let leg = legs[i];
+    if leg.route_id != legs[i-1].route_id { // new route -> check the previous one
+      let prev_leg_to = legs[i-1].to as usize;
+      let dist1 = dist[prev_leg_to][order_from] as i32;
+      is_short = leg_is_short(leg_count.get(&leg.route_id));
       // check beyond route
-      if total_dist + (dist[legs[i-1].to as usize][order.from as usize] as i32) < order.wait
-         && (dist[legs[i-1].to as usize][order.from as usize] as i32) < min_cost { // well, we have to compare to something; there still might be a better plan with lesser wait time
-        min_cost = dist[legs[i-1].to as usize][order.from as usize] as i32;
-        ret = get_some(i, i, legs[i-1].route_id, dist[legs[i-1].to as usize][order.from as usize] as i32,
-                      total_dist + (dist[legs[i-1].to as usize][order.from as usize] as i32 ), order.dist, order);
+      if total_dist + dist1 + ((wait_legs as f32 * 0.5) as i32) < order.wait
+         && dist1 < min_cost
+         && (dist1 > max_angle_dist || bearing_diff(stops[prev_leg_to].bearing, stops[order_from].bearing) <  max_angle) { // well, we have to compare to something; there still might be a better plan with lesser wait time
+        min_cost = dist1;
+        ret = get_some(i, i, legs[i-1].route_id, dist1, total_dist + dist1+ ((wait_legs as f32 * 0.5) as i32), order.dist, order);
         // i beyond the route, just to mark a leg in the next route
       }
+      wait_legs = 0;
       total_dist = 0;
-      if legs[i].status == RouteStatus::STARTED { // but we need such legs to avoid assigning legs that very soon will start (little chance to let know the driver)
-        let mut on_the_way = get_elapsed(legs[i].started) as i32;
+      if leg.status == RouteStatus::STARTED { // but we need such legs to avoid assigning legs that very soon will start (little chance to let know the driver)
+        let mut on_the_way = get_elapsed(leg.started) as i32;
         if on_the_way == -1 { on_the_way = 0; }
-        total_dist += cmp::max(0, legs[i].dist - on_the_way/60) + STOP_WAIT as i32;
+        total_dist += cmp::max(0, leg.dist - on_the_way/60) + STOP_WAIT as i32;
+        wait_legs += 1;
         i += 1;
         continue; 
       }
       // if there is too many non-pickedup customers, uncomment the below, which mean do not assign a leg which is about to start soon
-      if legs[i].status == RouteStatus::ASSIGNED {
-        total_dist += legs[i].dist + STOP_WAIT as i32;
+      if leg.status == RouteStatus::ASSIGNED {
+        total_dist += leg.dist + STOP_WAIT as i32;
+        wait_legs += 1;
         i += 1;
         continue; 
       }
     }
-    if legs[i].status == RouteStatus::STARTED { // this should never happen, the same check is above when new route is found 
-      let mut on_the_way = get_elapsed(legs[i].started) as i32;
+    if leg.status == RouteStatus::STARTED { // this should never happen, the same check is above when new route is found 
+      let mut on_the_way = get_elapsed(leg.started) as i32;
       if on_the_way == -1 { on_the_way = 0; }
-      total_dist += cmp::max(0, legs[i].dist - on_the_way/60) + STOP_WAIT as i32;
+      total_dist += cmp::max(0, leg.dist - on_the_way/60) + STOP_WAIT as i32;
       i += 1;
       continue; 
     }
-    let mut add_cost: i32 = (dist[legs[i].from as usize][order.from as usize] + STOP_WAIT + dist[order.from as usize][legs[i].to as usize]) as i32
-                            - legs[i].dist;
-    if legs[i].to != order.from // direct hit in next leg
-      && (total_dist + (dist[legs[i].from as usize][order.from as usize]) as i32) <= order.wait 
-      && (legs[i].from == order.from // direct hit
+    let mut add_cost: i32 = (dist[leg.from as usize][order_from] + STOP_WAIT + dist[order_from][leg.to as usize]) as i32
+                            - leg.dist;
+    if leg.to != order.from // direct hit in next leg
+      && (total_dist + (dist[leg.from as usize][order_from]) as i32) + ((wait_legs as f32 * 0.5) as i32) <= order.wait 
+      && (leg.from == order.from // direct hit
             || (is_short // we don't want to extend long routes
                 && 
-                add_cost <= legs[i].reserve // or a non-perfect match
+                add_cost <= leg.reserve // or a non-perfect match
                 // TODO: !! BEARING CONTROLL
                 && add_cost < min_cost)) { // no use in checking a plan if we have a better one
-      // we have a pickup
-      // check drop-off now, 3 possibilities - in the same leg or in next ones, or direct hit at leg.to
+      // we have a pickup, check drop-off now, 
+      // 3 possibilities - in the same leg or in next ones, or direct hit at leg.to
       // firstly null cost if direct hit
-      if legs[i].from == order.from {
+      if leg.from == order.from {
         add_cost = 0;
       }
-      if legs[i].to == order.to { // direct hit for drop-off in the same leg, and no detour
-        if legs[i].from == order.from { // bingo, no point looking for any other route (TODO: check number of seats!)
-          //info!("Extension proposal, perfect match, order_id={}, route_id={}", order.id, legs[i].route_id);
-          return get_some( i, i, legs[i].route_id, 0, total_dist, order.dist, order);
+      if leg.to == order.to { // direct hit for drop-off in the same leg, and no detour
+        if leg.from == order.from { // bingo, no point looking for any other route (TODO: check number of seats!)
+          //info!("Extension proposal, perfect match, order_id={}, route_id={}", order.id, leg.route_id);
+          return get_some( i, i, leg.route_id, 0, total_dist + ((wait_legs as f32 * 0.5) as i32), order.dist, order);
           // 0: pickup and dropoff are direct hits, best solution TODO: there can be more such solution with shorter wait time!!
           // SAVE1 no leg at all, both are direct hits // check to-to & from-from
         } else if is_short {
           // SAVE2 // pickup was not a direct hit  // two legs affected   // from-from will fail, pickup is expanded
-          if !wait_exceeded(order, i, i, total_dist, add_cost, 0, legs, assigned_orders) {
+          if !wait_exceeded(order, i, i, total_dist, add_cost, 0, legs, assigned_orders)
+             && (dist[leg.from as usize][order_from] > max_angle_dist as i16 || bearing_diff(stops[leg.from as usize].bearing, stops[order_from].bearing) <  max_angle) {
             min_cost = add_cost;
-            ret = get_some(i, i, legs[i].route_id, add_cost, 
-                         total_dist + (dist[legs[i].from as usize][order.from as usize] as i32), order.dist, order);
+            ret = get_some(i, i, leg.route_id, add_cost, 
+                         total_dist + STOP_WAIT as i32 + (dist[leg.from as usize][order_from] as i32) + ((wait_legs as f32 * 0.5) as i32), order.dist, order);
           }
         }
       } else { // find in next legs
         match find_droppoff(order, legs, i, add_cost, min_cost, 
-              total_dist + (dist[legs[i].from as usize][order.from as usize] as i32), dist, is_short, assigned_orders) {
+              total_dist + (dist[leg.from as usize][order_from] as i32), dist, is_short, assigned_orders, stops) {
           Some(x) => { 
             min_cost = x.dist; 
             ret = Some(x); 
@@ -310,22 +345,27 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
         }
       }
     } 
-    total_dist += legs[i].dist + STOP_WAIT as i32;
-    if total_dist > order.wait { // nothing to look for here, find next route
+    total_dist += leg.dist + STOP_WAIT as i32;
+    wait_legs += 1;
+    if total_dist + ((wait_legs as f32 * 0.5) as i32) > order.wait { // nothing to look for here, find next route
       let mut i2 = i + 1;
-      while i2 < legs.len() && legs[i2].route_id == legs[i].route_id { i2 += 1; }
+      while i2 < legs.len() && legs[i2].route_id == leg.route_id { i2 += 1; }
       i = i2;
     } else {
       i += 1; 
     }
   }
   // beyond the last route
-  if total_dist + (dist[legs[i-1].to as usize][order.from as usize] as i32) < order.wait
-    && (dist[legs[i-1].to as usize][order.from as usize] as i32) < min_cost { // well, we have to compare to something; there still might be a better plan with lesser wait time
+  let last_dist = total_dist + STOP_WAIT as i32 + (dist[legs[i-1].to as usize][order_from] as i32) + ((wait_legs as f32 * 0.5) as i32);
+  if last_dist < order.wait
+    && (dist[legs[i-1].to as usize][order_from] as i32) < min_cost { // well, we have to compare to something; there still might be a better plan with lesser wait time
     // SAVE6
     //info!("Extension proposal, beyond route, order_id={}, route_id={}", order.id, legs[i-1].route_id);
-    return get_some( i, i, legs[i-1].route_id, dist[legs[i-1].to as usize][order.from as usize] as i32,
-                    total_dist, order.dist, order);
+    debug!("DEBUG6 find_route: order_id={}, , route_id={}, leg_id={}, leg_dist={}, leg_reserve={}, from={}, to={}, dist={},", 
+          order.id, legs[i-1].route_id, legs[i-1].id, legs[i-1].dist, legs[i-1].reserve, legs[i-1].to, order.from, 
+          dist[legs[i-1].to as usize][order_from]);
+    return get_some( i, i, legs[i-1].route_id, dist[legs[i-1].to as usize][order_from] as i32,
+                    last_dist, order.dist, order);
   }
   if min_cost == MAXCOST {
     return None;
@@ -353,7 +393,7 @@ fn wait_exceeded(ord: &Order, i: usize, j:usize, wait: i32, add_cost: i32, add_c
 
   while idx < legs.len() {
     if legs[idx].route_id != route_id {
-      //info!("{}", log);
+      //info!("{}", log); TODO check one day
       return false;
     }
     for o in &orders {
@@ -371,7 +411,7 @@ fn wait_exceeded(ord: &Order, i: usize, j:usize, wait: i32, add_cost: i32, add_c
     log += &format!("[dist after leg={}, dist={}], ", legs[idx].id, total_dist);
     idx += 1;
   }
-  //info!("{}", log); TODO - analyse these cases!
+  //info!("{}", log); TODO: check it!
   return false;
 }
 
@@ -389,13 +429,16 @@ fn get_some(from: usize, to: usize, route_id: i64, cost: i32, wait: i32, tour: i
 }
 
 fn find_droppoff(order: &Order, legs: &Vec<Leg>, i: usize, add_cost: i32, mincost: i32, wait: i32,
-                dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB], is_short: bool, assigned_orders: &HashMap<i64, Vec<Order>>) -> Option<LegIndicesWithDistance2> {
+                dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB], is_short: bool, assigned_orders: &HashMap<i64, Vec<Order>>, stops: &Vec<Stop>) -> Option<LegIndicesWithDistance2> {
   let mut ret: Option<LegIndicesWithDistance2> = None;
+  let max_angle = unsafe { CNFG.max_angle as f32 };
+  let max_angle_dist = unsafe { CNFG.max_angle_dist as i32 };
   let mut j: usize = i + 1;
   let mut min: i32 = mincost;
   let dist_with_loss: i32 = ((1.0 + order.loss as f32 / 100.0) * order.dist as f32).round() as i32;
-  let mut add2_cost = (dist[legs[i].from as usize][order.from as usize] + STOP_WAIT + dist[order.from as usize][order.to as usize] 
-                            + STOP_WAIT + dist[order.to as usize][legs[i].to as usize]) as i32 - legs[i].dist;
+  let order_to = order.to as usize;
+  let mut add2_cost = (dist[legs[i].from as usize][order.from as usize] + STOP_WAIT + dist[order.from as usize][order_to] 
+                            + STOP_WAIT + dist[order_to][legs[i].to as usize]) as i32 - legs[i].dist;
   // first check the same leg as pickup                        
   if is_short && 
       add2_cost <= legs[i].reserve && add_cost + add2_cost < min 
@@ -416,17 +459,25 @@ fn find_droppoff(order: &Order, legs: &Vec<Leg>, i: usize, add_cost: i32, mincos
   let mut tour: i32 = dist[order.from as usize][legs[i].to as usize] as i32; // it is valid even if direct hit
 
   while j < legs.len() && legs[j].route_id == legs[j-1].route_id {
-    add2_cost = (dist[legs[j].from as usize][order.to as usize] + STOP_WAIT + dist[order.to as usize][legs[j].to as usize]) as i32 - legs[j].dist;
-    if (((legs[j].to == order.to && tour + legs[j].dist <= dist_with_loss)) // direct hit, no extra cost
+    let leg = legs[j];
+    let leg_from = leg.from as usize;
+
+    add2_cost = (dist[leg_from][order_to] + STOP_WAIT + dist[order_to][leg.to as usize]) as i32 - leg.dist;
+    if (((leg.to == order.to && tour + leg.dist <= dist_with_loss)) // direct hit, no extra cost
         || (is_short
             && 
-            add2_cost < legs[j].reserve
-            && tour + (dist[legs[j].from as usize][order.to as usize] as i32) <= dist_with_loss
-            && add_cost + add2_cost < min))
+            add2_cost < leg.reserve
+            && tour + (dist[leg_from][order_to] as i32) <= dist_with_loss
+            && add_cost + add2_cost < min)
+            && (dist[leg_from][order_to] > max_angle_dist as i16 || bearing_diff(stops[leg_from].bearing, stops[order_to].bearing) <  max_angle) )
         && !wait_exceeded(order, i, j, wait, add_cost, add2_cost, legs, assigned_orders) {
       min = add_cost + add2_cost;
       ret = get_some( i, j, legs[i].route_id, add_cost + add2_cost, wait, 
-                      tour + (dist[legs[j].from as usize][order.to as usize] as i32), order);
+                      tour + (dist[leg_from][order_to] as i32), order);
+      debug!("DEBUG4 dropp-off: order_id={}, leg_id={}, leg_dist={}, leg_reserve={}, from={}, to={}, add2_cost={}, a={}, b={}, 1={}, 2={}, 3={}", 
+          order.id, leg.id, leg.dist, leg.reserve, leg.from, leg.to, add2_cost, 
+          dist[leg_from][order_to], dist[order_to][leg.to as usize],
+          leg.from, order.to, leg.to);
       // SAVE4
       //if legs[i].from == order.from { // pickup direct hit
       // two legs for drop-off
@@ -435,18 +486,21 @@ fn find_droppoff(order: &Order, legs: &Vec<Leg>, i: usize, add_cost: i32, mincos
       // four legs
       //}
     }
-    tour += legs[j].dist + STOP_WAIT as i32;
+    tour += leg.dist + STOP_WAIT as i32;
     if tour <= dist_with_loss { 
       return ret; // nothing to look after any more
     }
     j += 1;
   }
   // what if dropoff extends beyond the route?
-  if tour + (dist[legs[j-1].to as usize][order.to as usize] as i32) < dist_with_loss 
+  if //j > 1 && legs[j-2].route_id == legs[j-1].route_id 
+    tour + (dist[legs[j-1].to as usize][order_to] as i32) < dist_with_loss 
         && add_cost < min 
-        && !wait_exceeded(order, i, j, wait, add_cost, add2_cost, legs, assigned_orders) { // we don't ruin the current route so we just take the pickup cost, but you might think otherwise
+        && !wait_exceeded(order, i, j, wait, add_cost, add2_cost, legs, assigned_orders) 
+        && (dist[legs[j-1].to as usize][order_to] > max_angle_dist as i16 || bearing_diff(stops[legs[j-1].to as usize].bearing, stops[order_to].bearing) <  max_angle) { // we don't ruin the current route so we just take the pickup cost, but you might think otherwise
     ret = get_some(i, j, legs[i].route_id, add_cost, wait, 
-                  tour + (dist[legs[j-1].to as usize][order.to as usize] as i32), order);
+                  tour + (dist[legs[j-1].to as usize][order_to] as i32), order);
+    debug!("DEBUG dropp-off beyond: order_id={}, leg_id={}, to={}", order.id, legs[j-1].id, legs[j-1].to);             
     // SAVE5
     // !!! necessary check j>legs.len() || route_id != route_id, which means beyond route
     //if legs[i].from == order.from { // pickup direct hit
@@ -466,7 +520,7 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
   let mut sql: String = String::from("");
   sql += &assign_order_find_cab(f.order.id,
                         if f.idx_from >= legs.len() || f.route_id != legs[f.idx_from].route_id { -1 } else { legs[f.idx_from].id }, 
-                                f.route_id,0, "true", "expander");
+                                f.route_id, f.wait, "true", "expander");
   // extension totally BEYOND a route, including pickup
   if f.idx_from >= legs.len() // beyond the last route in the list, here we do not have route_id
      || f.route_id != legs[f.idx_from].route_id {  // beyond a route inside the list
@@ -540,7 +594,7 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
           &("route extender SAVE3".to_string()));
         // the extended leg should point at the new leg added above
         sql += &update_leg_a_bit2(leg_pick.route_id, leg_pick.id, f.order.to, 
-          f.order.dist as i16, cmp::min(resrv, len_diff), leg_pick.passengers as i8 +1); // MIN because reserve in 2 legs <= reserve in one leg; len_diff = reserv - (reserv - len_diff)
+                f.order.dist as i16, cmp::min(resrv, len_diff), leg_pick.passengers as i8 +1); // MIN because reserve in 2 legs <= reserve in one leg; len_diff = reserv - (reserv - len_diff)
       } else if legs[f.idx_to].to == f.order.to { // only drop-off matches
         // SAVE 3
         sql += &update_passengers_and_reserve_in_legs_between(leg_pick.route_id, resrv, leg_pick.place + 1, 100); // 100: all after +1
@@ -636,7 +690,7 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
         let res = cmp::max(0, cmp::min(res, leg_pick.reserve - res)); // sum of the two legs (reserve) cannot be bigger than the original leg 
         sql += &update_leg_a_bit2(leg_pick.route_id, leg_pick.id, f.order.from, 
                             dist[leg_pick.from as usize][f.order.from as usize],
-                            res, 
+                            res,
                             leg_pick.passengers as i8);
       }
       // DROP-OFF
@@ -705,31 +759,38 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
   return sql.to_string();
 }
 
-pub fn get_handle(host: String, sql: String, label: String)  -> thread::JoinHandle<()> {
+pub fn get_handle(conn_str: String, sql: String, label: String)  -> thread::JoinHandle<()> {
   return thread::spawn(move || {
-      match Client::connect(&host, NoTls) {
-          Ok(mut c) => {
-              if sql.len() > 0 {
-                  match c.batch_execute(&sql) {
-                    Ok(_) => {}
-                    Err(err) => {
-                      panic!("Could not run SQL batch: {}, err:{}", &label, err);
-                    }
-                  }
+    if sql.len() > 0 {
+      let pool = Pool::new(conn_str.as_str());
+      match pool {
+        Ok(p) => {
+          let mut conn = p.get_conn();
+          match conn {
+            Ok(mut c) => {
+              let res = c.query_iter(sql);
+              match res {
+                Ok(_) => {}
+                Err(err) => {
+                  panic!("Could not run SQL batch: {}, err:{}", &label, err);
+                }
               }
+            }
+            Err(err) => {
+              panic!("Could not connect to MySQL: {}, err:{}", &label, err);
+            }
           }
-          Err(err) => {
-              panic!("Could not connect DB in: {}, err:{}", &label, err);
-          }
+        }
+        Err(err) => {
+          panic!("Could not get pool to MySQL: {}, err:{}", &label, err);
+        }
       }
+    }
   });
 }
 
-
 #[cfg(test)]
 mod tests {
-  use std::time::{SystemTime, Duration};
-
   use super::*;
   use crate::distance::init_distance;
 
@@ -1149,7 +1210,7 @@ fn test_wait_exceed_assigned_order_and_too_long_then_true() {
   init_distance(&get_stops());
   let o = Order { id: 1, from: 4, to: 5, wait: 5, loss:90, 
     dist:unsafe{DIST[4][5] as i32}, shared: true, in_pool: false, 
-    received: Some(SystemTime::now() - Duration::from_secs(3*60)), // ! three minutes are enough to exceed the wait time
+    received: Local::now().naive_local().checked_sub_signed(chrono::Duration::seconds(3*60)), // ! three minutes are enough to exceed the wait time
     started: None, completed: None, at_time: None, eta: 1, route_id: 123 };
   let ass_orders = vec![o];
   let ass_orders_map = assigned_orders(&ass_orders);  
@@ -1162,7 +1223,7 @@ fn test_wait_exceed_assigned_order_and_not_too_long_then_false() {
   init_distance(&get_stops());
   let o = Order { id: 1, from: 4, to: 10, wait: 10, loss:90, 
                   dist:unsafe{DIST[4][5] as i32}, shared: true, in_pool: false, 
-                  received: Some(SystemTime::now() - Duration::from_secs(60)), // one minute only
+                  received: Local::now().naive_local().checked_sub_signed(chrono::Duration::seconds(60)), // one minute only
                   started: None, completed: None, at_time: None, eta: 1, route_id: 123 };
   let ass_orders = vec![o];
   let ass_orders_map = assigned_orders(&ass_orders);  

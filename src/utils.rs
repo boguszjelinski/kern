@@ -1,13 +1,25 @@
-use std::time::SystemTime;
+use chrono::{NaiveDateTime, Local};
 
-pub fn get_elapsed(val: Option<SystemTime>) -> i64 {
+pub fn get_elapsed(val: Option<NaiveDateTime>) -> i64 {
     match val {
         Some(x) => { 
-            match x.elapsed() {
-                Ok(elapsed) => elapsed.as_secs() as i64,
-                Err(_) => -1
-            }
+            let now = Local::now().naive_local();
+            return (now - x).num_seconds();
         }
         None => -1
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::NaiveDate;
+    use super::*;
+
+  #[test]
+  fn test_elapsed() {
+    let past = Some(NaiveDate::from_ymd(2018, 3, 26).and_hms(10, 02, 0));
+    let x = get_elapsed(past);
+    let sant = x > 0;
+    assert_eq!(sant, true);
+  }
 }
