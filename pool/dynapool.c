@@ -1,5 +1,5 @@
 /// Kabina minibus/taxi dispatcher
-/// Copyright (c) 2022 by Bogusz Jelinski bogusz.jelinski@gmail.com
+/// Copyright (c) 2024 by Bogusz Jelinski bogusz.jelinski@gmail.com
 /// 
 /// Pool finder submodule.
 /// A pool is a group of orders to be picked up by a cab in a prescribed sequence
@@ -295,10 +295,22 @@ void showBranch(int no, Branch *ptr) {
   printf("}\n");   
 }
 
+int countPassengers(Branch *ptr) {
+  int curr_count = 0;
+  int max_count = 0;
+  for (int i=0; i < ptr->ordNumb; i++) {
+    if (ptr->ordActions[i] == 'i') {
+      curr_count++;
+      if (curr_count > max_count) max_count = curr_count; // max_count++ would be the same; which one is faster?
+    } else curr_count --; // 'o'
+  }
+  return max_count;
+}
+
 /// there might be pools with same passengers (orders) but in different ... order (sequence of INs and OUTs) 
 /// the list will be sorted by total length of the pool, worse pools with same passengers will be removed
 /// cabs will be assigned with greedy method 
-void rmFinalDuplicates(int inPool) {
+void rmDuplicatesAndFindCab(int inPool) {
     int lev = 0;
     int cabIdx = -1;
     int from;
@@ -314,13 +326,16 @@ void rmFinalDuplicates(int inPool) {
       ptr = arr + i;
       if (ptr->cost == -1) continue; // not dropped earlier or (!) later below
       from = demand[ptr->ordIDs[0]].fromStand;
-      cabIdx = findNearestCab(from);
+      cabIdx = findNearestCab(from, countPassengers(ptr));
       if (cabIdx == -1) { // no more cabs
         // mark th rest of pools as dead
         // TASK: why? we won't use this information, node[0] will be garbage-collected
         printf("NO CAB\n");
         for (int j = i + 1; j < size; j++) arr[j].cost = -1;
         break;
+      } else if (cabIdx == -2) { // there is no cab for so many passengers
+        ptr->cost = -1;
+        continue;
       }
       distCab = dist(supply[cabIdx].location, from);
       if (distCab == 0 // constraints inside pool are checked while "diving" in recursion
@@ -374,17 +389,21 @@ boolean isFound(Branch *br1, Branch *br2, int size) {
     return false;
 }
 
-int findNearestCab(int from) {
+int findNearestCab(int from, int pass_count) {
     int dst = 10000; // big enough
     int nearest = -1;
+    int found_any = 0;
     for (int i = 0; i < cabsNumb; i++) {
       if (supply[i].id == -1) // allocated earlier to a pool
         continue;
-      if (dist(supply[i].location, from) < dst) {
+      found_any = 1;
+      if (dist(supply[i].location, from) < dst && supply[i].seats <= pass_count) {
         dst = dist(supply[i].location, from);
         nearest = i;
       }
     }
+    if (!found_any) return -1; // no cabs at all
+    else if (nearest == -1) return -2;  // there are some cabs available but none with so many seats
     return nearest;
 }
 
@@ -399,6 +418,6 @@ void findPool(int inPool, int numbThreads) {
     // debug, to identify needed memory
     for (int i = 0; i < inPool + inPool - 1; i++)
         printf("node[%d].size: %d\n", i, countNodeSize(i));
-    rmFinalDuplicates(inPool);
+    rmDuplicatesAndFindCab(inPool);
     printf("FINAL: inPool: %d, found pools: %d\n", inPool, countNodeSize(0));
 }

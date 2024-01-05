@@ -35,6 +35,7 @@ typedef struct Order Order;
 struct Cab {
     long id; // int
     int location; // short
+    int seats;
 };
 typedef struct Cab Cab;
 

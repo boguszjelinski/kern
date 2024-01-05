@@ -38,7 +38,7 @@ use log4rs::{
 const CFG_FILE_DEFAULT: &str = "kern.toml";
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
-    println!("cargo:rustc-link-lib=dynapool97");
+    println!("cargo:rustc-link-lib=dynapool98");
     // reading Config
     let mut cfg_file: String = CFG_FILE_DEFAULT.to_string();
 
@@ -185,7 +185,7 @@ fn setup_logger(file_path: String) {
     let _handle = log4rs::init_config(config);
 }
 
-#[link(name = "dynapool97")]
+#[link(name = "dynapool98")]
 extern "C" {
     fn dynapool(
 		numbThreads: i32,
@@ -690,15 +690,15 @@ mod tests {
 
   fn test_cabs() -> Vec<Cab> {
     return vec![
-        Cab{ id: 0, location: 2},
-        Cab{ id: 1, location: 3}
+        Cab{ id: 0, location: 2, seats: 10},
+        Cab{ id: 1, location: 3, seats: 10}
     ];
   }
 
   fn test_cabs_invalid() -> Vec<Cab> {
     return vec![
-        Cab{ id: 1, location: 0},
-        Cab{ id: -1, location: 1}
+        Cab{ id: 1, location: 0, seats: 10},
+        Cab{ id: -1, location: 1, seats: 10}
     ];
   }
 
@@ -805,7 +805,7 @@ mod tests {
   fn get_cabs() -> Vec<Cab> {
     let mut ret: Vec<Cab> = vec![];
     for i in 0..1000 {
-        ret.push(Cab{ id: i, location: (i % 2400) as i32});
+        ret.push(Cab{ id: i, location: (i % 2400) as i32, seats: 10});
     }
     return ret;
   }

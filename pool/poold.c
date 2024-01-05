@@ -1,3 +1,11 @@
+/// Kabina minibus/taxi dispatcher
+/// Copyright (c) 2022 by Bogusz Jelinski bogusz.jelinski@gmail.com
+/// 
+/// Pool finder submodule.
+/// A pool is a group of orders to be picked up by a cab in a prescribed sequence
+/// 'Branch' structure describes one such group (saved as route in the database)
+/// 
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

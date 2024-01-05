@@ -1,5 +1,5 @@
 /// Kabina minibus/taxi dispatcher
-/// Copyright (c) 2022 by Bogusz Jelinski bogusz.jelinski@gmail.com
+/// Copyright (c) 2024 by Bogusz Jelinski bogusz.jelinski@gmail.com
 /// 
 /// Pool finder submodule.
 /// A pool is a group of orders to be picked up by a cab in a prescribed sequence
@@ -19,14 +19,14 @@ static mut ORDERS: [Order; MAXORDERSNUMB] = [Order {
     received: None, started: None, completed: None, at_time: None, eta: -1, route_id: -1 }; MAXORDERSNUMB];
 static mut ORDERS_LEN: usize = 0;
 
-static mut CABS: [Cab; MAXCABSNUMB] = [Cab {id:0, location:0}; MAXCABSNUMB];
+static mut CABS: [Cab; MAXCABSNUMB] = [Cab {id:0, location:0, seats: 0}; MAXCABSNUMB];
 static mut CABS_LEN: usize = 0;
 
 pub const NODE_INIT_SIZE:usize = 3000000;
 pub const NODE_THREAD_INIT_SIZE:usize = 100000;
 
 /// Returns a list of pools sorted by total trip length (sorting helps filter out worse plans)
-/// in_pool: how many passengers (more than 4 would be possible, but you'd better try 2,3 or 4)
+/// in_pool: how many passengers
 /// threads: how many
 /// demand: orders (mutable: some marked as allocated)
 /// supply: cabs with their location; TODO: busy cabs on their last leg (mutable: some marked as allocated)
@@ -55,7 +55,7 @@ pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mu
 	let mut root = dive(0, in_pool, threads);
 
   // there might be pools with same passengers, with different length - sort and find the best ones
-  let ret = rm_final_duplicates(
+  let ret = rm_duplicates_assign_cab(
           in_pool as usize, &mut root, &mut max_route_id, max_leg_id, supply);
 
   // mark orders in pools as assigned so that next call to find_pool (with fewer 'in_pool') skips them
@@ -324,7 +324,7 @@ fn store_branch(action: char, lev: u8, ord_id: i32, b: &Branch, in_pool: u8) -> 
 /// max_leg_id:  primary key available (not used) for route legs
 /// 
 /// returns allocated branches (to regenerate demand and supplu for the solver) and SQL to execute
-fn rm_final_duplicates(in_pool: usize, arr: &mut Vec<Branch>, mut max_route_id: &mut i64, 
+fn rm_duplicates_assign_cab(in_pool: usize, arr: &mut Vec<Branch>, mut max_route_id: &mut i64, 
                        mut max_leg_id: &mut i64, cabs: &mut Vec<Cab>) -> (Vec<Branch>, String) {
 	let mut ret : Vec<Branch> = Vec::new();
   let mut sql: String = String::from("");
@@ -341,15 +341,18 @@ fn rm_final_duplicates(in_pool: usize, arr: &mut Vec<Branch>, mut max_route_id: 
         continue;
       }
       // find nearest cab to first pickup and check if WAIT and LOSS constraints met - allocate
-      let cab_idx = find_nearest_cab(arr[i].ord_ids[0]); // LCM
+      let cab_idx = find_nearest_cab(arr[i].ord_ids[0], count_passengers(arr[i])); // LCM
       if cab_idx == -1 { // no more cabs
         mark_pools_as_dead(arr, i);
         break;
+      } else if cab_idx == -2 { // there is no cab for so many passengers
+        arr[i].cost = -1;
+        continue;
       }
       
       let dist_cab = DIST[CABS[cab_idx as usize].location as usize]
                               [ORDERS[arr[i].ord_ids[0] as usize].from as usize];
-      if dist_cab == 0 // constraints inside pool are checked while "diving"
+      if dist_cab == 0 // constraints inside pool are checked while "diving", and cab does not add up anything if == 0
               || constraints_met(arr[i], (dist_cab + CNFG.stop_wait) as i32 ) {
         ret.push(arr[i]);
         // assign to a cab and remove all next pools with these passengers (index 'i')
@@ -363,6 +366,22 @@ fn rm_final_duplicates(in_pool: usize, arr: &mut Vec<Branch>, mut max_route_id: 
     }
   }
   return (ret, sql);
+}
+
+fn count_passengers(branch: Branch) -> i32 {
+  let mut curr_count: i32 = 0;
+  let mut max_count: i32 = 0;
+  for i in 0 .. branch.ord_numb as usize {
+    if branch.ord_actions[i] == 'i' as i8 {
+      curr_count += 1;
+      if curr_count > max_count {
+        max_count = curr_count; // max_count++ would be the same; which one is faster?
+      }
+    } else { // 'o'
+      curr_count -= 1;
+    }
+  }
+  return max_count;
 }
 
 /// create a route with legs, assign orders to the cab (and legs, which is not that important)
@@ -408,21 +427,28 @@ fn mark_pools_as_dead(arr: &mut Vec<Branch>, i: usize) {
 
 /// LCM - find the nearest cab for this order ('from' of the first order in pool)
 /// returns id of the cab
-fn find_nearest_cab(o_idx: i32) -> i32 {
+fn find_nearest_cab(o_idx: i32, pass_count: i32) -> i32 {
   unsafe{
     let o: Order = ORDERS[o_idx as usize];
     let mut dist = 10000; // big
     let mut nearest = -1 as i32;
+    let mut found_any = false;
     for i in 0 .. CABS_LEN {
       let c: Cab = CABS[i]; 
       if c.id == -1 { // allocated earlier to a pool
         continue;
       }
-      if DIST[c.location as usize][o.from as usize] < dist {
+      found_any = true;
+      if DIST[c.location as usize][o.from as usize] < dist && c.seats <= pass_count {
         dist = DIST[c.location as usize][o.from as usize];
         nearest = i as i32;
       }
     }
+    if !found_any { 
+      return -1; // no cabs at all
+    } else if nearest == -1 { // there are some cabs available but not with so many seats
+      return -2;
+    } 
     return nearest;
   }
 }
@@ -476,7 +502,7 @@ pub fn orders_to_transfer_array(vec: &Vec<Order>) -> [OrderTransfer; MAXORDERSNU
 }
 
 pub fn cabs_to_array(vec: &Vec<Cab>) -> [Cab; MAXCABSNUMB] {
-    let mut arr : [Cab; MAXCABSNUMB] = [Cab {id: 0, location: 0}; MAXCABSNUMB];
+    let mut arr : [Cab; MAXCABSNUMB] = [Cab {id: 0, location: 0, seats: 0}; MAXCABSNUMB];
     for (i,v) in vec.iter().enumerate() { arr[i] = *v; }
     return arr;
 }
@@ -532,8 +558,8 @@ use serial_test::serial;
       ORDERS_LEN = 4;
       for i in 0..7 { DIST[i][i+1] = dist; }    
       CABS_LEN =2;
-      CABS[0] = Cab{ id: 0, location: 0 };
-      CABS[1] = Cab{ id: 1, location: 1 };
+      CABS[0] = Cab{ id: 0, location: 0, seats: 10 };
+      CABS[1] = Cab{ id: 1, location: 1, seats: 10 };
     }
   }
 
@@ -595,7 +621,7 @@ use serial_test::serial;
   fn get_pool_cabs() -> Vec<Cab> {
     let mut ret: Vec<Cab> = vec![];
     for i in 0..1000 {
-        ret.push(Cab{ id: i, location: (i % 2400) as i32});
+        ret.push(Cab{ id: i, location: (i % 2400) as i32, seats: 10});
     }
     return ret;
   }
@@ -731,9 +757,9 @@ use serial_test::serial;
     let mut arr: Vec<Branch> = test_branches();
     let mut max_route_id: i64 = 0;
     let mut max_leg_id: i64 = 0;
-    let mut cabs: Vec<Cab> = vec![Cab{ id: 0, location: 0 },Cab{ id: 1, location: 1 }];
+    let mut cabs: Vec<Cab> = vec![Cab{ id: 0, location: 0, seats: 10 },Cab{ id: 1, location: 1, seats: 10 }];
     test_init_orders_and_dist(1);
-    let ret = rm_final_duplicates(4, &mut arr, &mut max_route_id, 
+    let ret = rm_duplicates_assign_cab(4, &mut arr, &mut max_route_id, 
                                                           &mut max_leg_id, &mut cabs);
     assert_eq!(ret.1, "UPDATE cab SET status=0 WHERE id=1;\nINSERT INTO route (id, status, cab_id) VALUES (0,1,1);\n\
     UPDATE cab SET status=0 WHERE id=0;\nINSERT INTO route (id, status, cab_id) VALUES (1,1,0);\n");
@@ -771,7 +797,7 @@ use serial_test::serial;
   #[serial]
   fn test_find_nearest_cab() {
     test_init_orders_and_dist(1);
-    assert_eq!(find_nearest_cab(0), 0);
+    assert_eq!(find_nearest_cab(0, 2), 0);
   }
 
   #[test]
@@ -818,7 +844,7 @@ use serial_test::serial;
   #[test]
   #[serial]
   fn test_cabs_to_array() {
-    let vec: Vec<Cab> = vec![Cab{id: 0, location: 0}];
+    let vec: Vec<Cab> = vec![Cab{id: 0, location: 0, seats: 0}];
     let arr = cabs_to_array(&vec);
     assert_eq!(arr.len(), MAXCABSNUMB);
     assert_eq!(arr[0].id, 0);

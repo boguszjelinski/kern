@@ -5,7 +5,7 @@ In order to test the dispatcher you can run a simulation. You need at least thre
 The results will be saved in the database and logs.
 
 To test the technology stack more realistically you can simulate clients via RestAPI, without Kim:
-* [Kapir](https://gitlab.com/kabina/kapir): Rest API responsible for receiving requests, share statuses and store them in a database
+* [Kapir](https://gitlab.com/kabina/kapir): Rest API responsible for receiving requests, share statuses and store them in a database. You need Kapir to run React clients.
 * [Kapi](https://gitlab.com/kabina/kapi/client): Rest API client simulator, which also emulates real users in big volume (100k/h)
 
 But you might also want to test visually, on-line, how a request is served. Four React applications will help you do it: 
@@ -15,10 +15,10 @@ But you might also want to test visually, on-line, how a request is served. Four
 * [Kanal](https://gitlab.com/kabina/kanal): some performance indicators of the dispatcher.
 
 ## Prerequisites:
-* PostgreSQL
+* MySQL or PostgreSQL (currently not maintained, a separate branch)
 * C compiler (optional, implementation of pool in Rust exists)
 * Rust compiler
-* Go compiler (alternativelly a [Java client](https://gitlab.com/kabina/kaboot/-/tree/master/generators/src) exists, but it is slow and resource-hungry)
+* Go compiler (alternatively a [Java client](https://gitlab.com/kabina/kaboot/-/tree/master/generators/src) exists, but it is slow and resource-hungry)
 * Node.js (optional, React apps for single customer)
 * Python (optional, to watch KPIs and for route quality check; python-tk and psycopg2-binary needed)
 
@@ -45,13 +45,17 @@ Java and C# implementations of these components (dispatcher, RestAPI and clients
    cargo build --release 
    ```
 4) Create DB schema
-We assume that DB schema and user have been created beforehand, here 'kabina':
+We assume that DB schema and user have been created beforehand, here 'kabina', a Postgres version:
    ```
    cd sql
    psql -U kabina kabina < create.sql
    psql -U kabina -c "COPY stop(id, no, name, latitude, longitude, bearing) FROM 'stops-Budapest-import.csv' DELIMITER ',' CSV HEADER ENCODING 'UTF8';"
    ```
 This will create example stop, cab and customer entities. 
+For MySQL run this:
+   ```
+   mysql -u kabina --password=kaboot --database=kabina < create-mysql.sql
+   ```
 
 5) Edit config file <em>kern.toml</em>
    
@@ -64,6 +68,7 @@ This will create example stop, cab and customer entities.
   | max_solver_size | if demand and supply exceed the value LCM will be called to shrink the model
   | max_legs | how many legs can a route have, used in route extender
   | max_angle | max angle between consecutive stops; used to promote streight routes 
+  | max_angle_dist | a max distance where 'max angle' constraint is applied 
   | cab_speed | average speed in km/h
   | stop_wait | how many minutes it takes at a stop
   | log_file  | log file location and name
@@ -71,12 +76,21 @@ This will create example stop, cab and customer entities.
   | use_extern_pool | if external pool finder (C library) should be used
   | use_extender | if route extender should be used
   | thread_numb | how many threads should be used
-  | max_pool4_size | max allowed size of demand for pools with 4 passengers (for tuning, depends on hardware performance)
+  | max_pool5_size | max allowed size of demand for pools with 5 passengers (for tuning, depends on hardware performance)
+  | max_pool4_size | max allowed size of demand for pools with 4 passengers
   | max_pool3_size | max allowed size of demand for pools with 3 passengers
   | max_pool2_size | max allowed size of demand for pools with 2 passengers
 
-1) Scheduler can be started with `target/release/kern` or `cargo run --release`
-Though nothing will happen until cabs will report their availability and customers will submit their trip requests, e.g. with [Kim](https://gitlab.com/kabina/kim) or via RestAPI. 
+Scheduler can be started with `target/release/kern` or `cargo run --release`
+Though nothing will happen until cabs will report their availability and customers will submit their trip 
+requests, e.g. with [Kim](https://gitlab.com/kabina/kim) or via RestAPI. 
+
+6) After a simulation ended (only taxi_orders with statuses 3 and 8, CANCELLED AND COMPLETED in the database) you can run some KPI calculations, based both on SQL and Kim log analysis:
+   ```
+   cd sql
+   ./kpis-mysql.sh
+   ```
+Adjust paths in the script to suit your project location.
 
 ### Kim
 
@@ -86,6 +100,7 @@ Though nothing will happen until cabs will report their availability and custome
   |----------|--------
   | db_conn | database connection string - user, password, address, port, schema
   | log_file | both buses and passengers will be logged here
+  | orders_file | a file with orders, just from & to, so that simulations are repeatable
   | cab_speed | km/h, how fast does a bus drive between stops
   | max_time | duration of request submission in minutes, simulation will take longer to complete
   | check_interval | sleep duration between iterations, which submit requests and updates both buses and passengers
@@ -94,8 +109,8 @@ Though nothing will happen until cabs will report their availability and custome
   | stop_wait | how long should a bus wait at a stop, in seconds
   | req_per_min | how many trips per minute should be requested
   | max_wait_for_assign  | after how many minutes of waiting for assignment should a passenger cancel a request
-  |  max_delay | after what delay beyond max_wait (no bus has appeared to pick up the passenger) should a passenger cancel a request, in minutes
-  |  max_trip | max duration of a trip requested, in minutes
+  | max_delay | after what delay beyond max_wait (no bus has appeared to pick up the passenger) should a passenger cancel a request, in minutes
+  | max_trip | max duration of a trip requested, in minutes
   | max_detour | in percents, what extension of max_trip can a passenger accept in a pool (in exchange for a better price?)
   | max_trip_actual | not used
   | max_trip_delay | delay of the whole trip including detour that will cause a warning in log if exceeded, in minutes 
@@ -103,6 +118,10 @@ Though nothing will happen until cabs will report their availability and custome
 1) Run
    ```
    cargo run --release
+   ```
+In order to generate a random "orders.txt" (see orders_file in config) you can run:
+   ```
+   target/release/kim gen
    ```
 
 ### Kapir
@@ -116,7 +135,7 @@ Though nothing will happen until cabs will report their availability and custome
 The *ulimit* command helps under heavy load, number has to be adjusted to needs. 
 
 ### Kapi client
-Kapi is alse a Rest API written in Go but we will need only the client
+Kapi is a complete Rest API written in Go but we will need only the client stored in this repository:
 1) cd client
 2) adjust the host of RestAPI server in util.go
    ```
@@ -176,7 +195,7 @@ python3 stats-postgres.py
 Three files will be dumped with kpis and statuses of cabs and customers. Verify 'host' value before you run it.
 
 ### Route check
-You can verify routes visually (no cycles? are they reasonable?) with another Python script. Check 'host' value in the file:
+You can verify routes visually (No cycles? Are they reasonable?) with another Python script. Check 'host' value in the file:
 ```
 python3 show-routes.py
 ``` 
@@ -189,6 +208,18 @@ pip3 install psycopg2-binary
 Use arrows down and up to navigate through routes:
 <img src="docs/img/route-check.jpg" alt="kavla" style="width:600px;"/>
 Red lines indicate headings of bus stops, they should not deviate much (see 'max_angle' in `kern.toml`).
+
+### Budapest map
+You can see stops, current orders and cabs on the map of Budapest, a route of your order too.
+Just run:  
+```
+python3 city.py
+```
+or for a specific taxi order submit the ID:
+```
+python3 city.py 12345
+```
+Two PNG files with the map and help have not been stored in GIT, just email me. 
 
 ## How to rerun
 One has to clean up some tables to run a simulation again:
@@ -206,7 +237,7 @@ You would like to remove previous logs:
 
 ## Copyright notice
 
-Copyright 2022 Bogusz Jelinski
+Copyright 2024 Bogusz Jelinski
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -221,7 +252,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 #
 Bogusz Jelinski    
-December 2023
+January 2024
 Mo i Rana
 
 bogusz.jelinski (at) g m a i l
