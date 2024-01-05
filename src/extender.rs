@@ -1,3 +1,10 @@
+/// Kabina minibus/taxi dispatcher
+/// Copyright (c) 2024 by Bogusz Jelinski bogusz.jelinski@gmail.com
+/// 
+/// Extender submodule, extends passenger pools.
+/// A pool is a group of orders to be picked up by a cab in a prescribed sequence
+/// 
+
 use std::collections::HashMap;
 use std::io::Write;
 use std::{thread, cmp, vec};
@@ -24,6 +31,7 @@ struct LegIndicesWithDistance2 {
   dist: i32,
   wait: i32,
   tour: i32,
+  sum_reserve: i32,
   order: Order
 }
 
@@ -78,35 +86,6 @@ pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, conn: &mut 
       demand_cpy = missed;
     }
     return ret;
-}
-
-
-pub fn split_sql(sql: String, size: usize) -> Vec<String> {
-  if sql.len() == 0 {
-      return vec![];
-  }
-  let list = sql.split(';').collect::<Vec<&str>>();
-  let mut ret: Vec<String> = vec![];
-  let mut temp: String = String::from("");
-  let mut i: usize = 0;
-  for l in list {
-      if l.len() == 0 || l.trim().is_empty() { // don't know why but it happened
-          continue;
-      }
-      temp += &(l.to_string() + ";");
-      if i == size - 1  {
-          info!("SQL chunk length: {}", temp.len());
-          ret.push(temp);
-          i = 0;
-          temp = String::from("");
-      } else {
-          i += 1;
-      } 
-  }
-  if temp.len() > 0 {
-      ret.push(temp);
-  }
-  return ret;
 }
 
 pub fn write_sql_to_file(itr: i32, sql: &String, label: &str) {
@@ -275,7 +254,8 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
          && dist1 < min_cost
          && (dist1 > max_angle_dist || bearing_diff(stops[prev_leg_to].bearing, stops[order_from].bearing) <  max_angle) { // well, we have to compare to something; there still might be a better plan with lesser wait time
         min_cost = dist1;
-        ret = get_some(i, i, legs[i-1].route_id, dist1, total_dist + dist1+ ((wait_legs as f32 * 0.5) as i32), order.dist, order);
+        ret = get_some(i, i, legs[i-1].route_id, dist1, total_dist + dist1+ ((wait_legs as f32 * 0.5) as i32), 
+                      order.dist, 0, order);
         // i beyond the route, just to mark a leg in the next route
       }
       wait_legs = 0;
@@ -306,6 +286,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
     let mut add_cost: i32 = (dist[leg.from as usize][order_from] + STOP_WAIT + dist[order_from][leg.to as usize]) as i32
                             - leg.dist;
     if leg.to != order.from // direct hit in next leg
+      && leg.passengers < leg.seats // 'seats' come from 'cab' table; < means at least one seat available, = would mean all occupied 
       && (total_dist + (dist[leg.from as usize][order_from]) as i32) + ((wait_legs as f32 * 0.5) as i32) <= order.wait 
       && (leg.from == order.from // direct hit
             || (is_short // we don't want to extend long routes
@@ -322,7 +303,8 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
       if leg.to == order.to { // direct hit for drop-off in the same leg, and no detour
         if leg.from == order.from { // bingo, no point looking for any other route (TODO: check number of seats!)
           //info!("Extension proposal, perfect match, order_id={}, route_id={}", order.id, leg.route_id);
-          return get_some( i, i, leg.route_id, 0, total_dist + ((wait_legs as f32 * 0.5) as i32), order.dist, order);
+          return get_some( i, i, leg.route_id, 0, total_dist + ((wait_legs as f32 * 0.5) as i32), 
+                          order.dist, 0, order);
           // 0: pickup and dropoff are direct hits, best solution TODO: there can be more such solution with shorter wait time!!
           // SAVE1 no leg at all, both are direct hits // check to-to & from-from
         } else if is_short {
@@ -331,7 +313,8 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
              && (dist[leg.from as usize][order_from] > max_angle_dist as i16 || bearing_diff(stops[leg.from as usize].bearing, stops[order_from].bearing) <  max_angle) {
             min_cost = add_cost;
             ret = get_some(i, i, leg.route_id, add_cost, 
-                         total_dist + STOP_WAIT as i32 + (dist[leg.from as usize][order_from] as i32) + ((wait_legs as f32 * 0.5) as i32), order.dist, order);
+                         total_dist + STOP_WAIT as i32 + (dist[leg.from as usize][order_from] as i32) + ((wait_legs as f32 * 0.5) as i32),
+                          order.dist, 0, order);
           }
         }
       } else { // find in next legs
@@ -365,7 +348,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
           order.id, legs[i-1].route_id, legs[i-1].id, legs[i-1].dist, legs[i-1].reserve, legs[i-1].to, order.from, 
           dist[legs[i-1].to as usize][order_from]);
     return get_some( i, i, legs[i-1].route_id, dist[legs[i-1].to as usize][order_from] as i32,
-                    last_dist, order.dist, order);
+                    last_dist, order.dist, 0, order);
   }
   if min_cost == MAXCOST {
     return None;
@@ -402,7 +385,7 @@ fn wait_exceeded(ord: &Order, i: usize, j:usize, wait: i32, add_cost: i32, add_c
         warn!("Assigned order but received is NULL");
         continue;
       }
-      if o.from == legs[idx].from && time_passed as i32 + total_dist >= o.wait - STOP_WAIT as i32 { // - STOP_WAIT due to some rounding errors - eg. while subtracting elapsed time
+      if o.from == legs[idx].from && time_passed as i32 + total_dist + ((idx as f32 * 0.5) as i32) >= o.wait - STOP_WAIT as i32 { // - STOP_WAIT due to some rounding errors - eg. while subtracting elapsed time
         return true;
       }
     }
@@ -416,14 +399,15 @@ fn wait_exceeded(ord: &Order, i: usize, j:usize, wait: i32, add_cost: i32, add_c
 }
 
 #[inline]
-fn get_some(from: usize, to: usize, route_id: i64, cost: i32, wait: i32, tour: i32, order: &Order) -> Option<LegIndicesWithDistance2> {
+fn get_some(from: usize, to: usize, route_id: i64, cost: i32, wait: i32, tour: i32, sum_reserve: i32, order: &Order) -> Option<LegIndicesWithDistance2> {
   return Some(LegIndicesWithDistance2{
     idx_from: from, 
     idx_to: to,  
-    route_id: route_id,
+    route_id,
     dist: cost,
-    wait: wait,
-    tour: tour,
+    wait,
+    tour,
+    sum_reserve,
     order: *order
   });
 }
@@ -445,7 +429,7 @@ fn find_droppoff(order: &Order, legs: &Vec<Leg>, i: usize, add_cost: i32, mincos
       && !wait_exceeded(order, i, i, wait, add_cost, add2_cost, legs, assigned_orders) { // still no detour loss
 
     min = add_cost + add2_cost;
-    ret = get_some(i, i, legs[i].route_id, add_cost + add2_cost, wait, order.dist, order);
+    ret = get_some(i, i, legs[i].route_id, add_cost + add2_cost, wait, order.dist, legs[i].reserve, order);
     // SAVE3 within the same expanded leg
     //if legs[i].from == order.from { // pickup direct hit
     // two legs for drop-off
@@ -457,23 +441,26 @@ fn find_droppoff(order: &Order, legs: &Vec<Leg>, i: usize, add_cost: i32, mincos
   }
   // but it might be a better plan in next legs of the route
   let mut tour: i32 = dist[order.from as usize][legs[i].to as usize] as i32; // it is valid even if direct hit
+  let mut sum_reserve: i32 = cmp::max(0, legs[i].reserve - add_cost);
 
   while j < legs.len() && legs[j].route_id == legs[j-1].route_id {
     let leg = legs[j];
     let leg_from = leg.from as usize;
-
+    if leg.passengers >= leg.seats { // a leg in between pickup and dropoff is unacceptable
+      return ret;
+    }
     add2_cost = (dist[leg_from][order_to] + STOP_WAIT + dist[order_to][leg.to as usize]) as i32 - leg.dist;
     if (((leg.to == order.to && tour + leg.dist <= dist_with_loss)) // direct hit, no extra cost
         || (is_short
             && 
             add2_cost < leg.reserve
-            && tour + (dist[leg_from][order_to] as i32) <= dist_with_loss
+            && tour + (dist[leg_from][order_to] as i32) + (((j-i) as f32 * 0.5) as i32) <= dist_with_loss // TODO: (j-i) is a misterious delay each leg, to be analysed, some delay in Kim?
             && add_cost + add2_cost < min)
             && (dist[leg_from][order_to] > max_angle_dist as i16 || bearing_diff(stops[leg_from].bearing, stops[order_to].bearing) <  max_angle) )
         && !wait_exceeded(order, i, j, wait, add_cost, add2_cost, legs, assigned_orders) {
       min = add_cost + add2_cost;
       ret = get_some( i, j, legs[i].route_id, add_cost + add2_cost, wait, 
-                      tour + (dist[leg_from][order_to] as i32), order);
+                      tour + (dist[leg_from][order_to] as i32), sum_reserve, order); // tour is later used to count reserve (reserve=dist*loss-tour), but beware, if not used in some other way!
       debug!("DEBUG4 dropp-off: order_id={}, leg_id={}, leg_dist={}, leg_reserve={}, from={}, to={}, add2_cost={}, a={}, b={}, 1={}, 2={}, 3={}", 
           order.id, leg.id, leg.dist, leg.reserve, leg.from, leg.to, add2_cost, 
           dist[leg_from][order_to], dist[order_to][leg.to as usize],
@@ -487,6 +474,7 @@ fn find_droppoff(order: &Order, legs: &Vec<Leg>, i: usize, add_cost: i32, mincos
       //}
     }
     tour += leg.dist + STOP_WAIT as i32;
+    sum_reserve += leg.reserve;
     if tour <= dist_with_loss { 
       return ret; // nothing to look after any more
     }
@@ -494,12 +482,12 @@ fn find_droppoff(order: &Order, legs: &Vec<Leg>, i: usize, add_cost: i32, mincos
   }
   // what if dropoff extends beyond the route?
   if //j > 1 && legs[j-2].route_id == legs[j-1].route_id 
-    tour + (dist[legs[j-1].to as usize][order_to] as i32) < dist_with_loss 
+    tour + (dist[legs[j-1].to as usize][order_to] as i32) + (((j-i) as f32 * 0.5) as i32) < dist_with_loss 
         && add_cost < min 
         && !wait_exceeded(order, i, j, wait, add_cost, add2_cost, legs, assigned_orders) 
         && (dist[legs[j-1].to as usize][order_to] > max_angle_dist as i16 || bearing_diff(stops[legs[j-1].to as usize].bearing, stops[order_to].bearing) <  max_angle) { // we don't ruin the current route so we just take the pickup cost, but you might think otherwise
     ret = get_some(i, j, legs[i].route_id, add_cost, wait, 
-                  tour + (dist[legs[j-1].to as usize][order_to] as i32), order);
+                  tour + (dist[legs[j-1].to as usize][order_to] as i32), sum_reserve, order);
     debug!("DEBUG dropp-off beyond: order_id={}, leg_id={}, to={}", order.id, legs[j-1].id, legs[j-1].to);             
     // SAVE5
     // !!! necessary check j>legs.len() || route_id != route_id, which means beyond route
@@ -638,7 +626,7 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
         // like in SAVE3B, here the reserve has to be split in 3 (!) legs
         let len_diff: i32 = (f.order.dist + dist[f.order.to as usize][leg_pick.to as usize] as i32 + STOP_WAIT as i32) - leg_pick.dist;
         let reserve_subtr = cmp::max(resrv, len_diff);
-        let reserve2 = cmp::min(leg_pick.reserve - reserve_subtr, f.order.wait - f.wait);
+        let reserve2 = cmp::min(leg_pick.reserve - reserve_subtr, f.order.wait - f.wait - f.sum_reserve);
 
         sql += &create_leg(f.order.id, 
           f.order.to,
@@ -646,7 +634,7 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
           leg_pick.place + 2,
           RouteStatus::ASSIGNED,
           dist[f.order.to as usize][leg_pick.to as usize],
-          reserve2,
+          cmp::min(resrv, f.sum_reserve), // reserve2
           leg_pick.route_id as i64, 
           max_leg_id,
           leg_pick.passengers as i8, 
@@ -699,13 +687,14 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
       if f.idx_to >= legs.len() // beyond the last route in the list, here we do not have route_id
           || f.route_id != legs[f.idx_to].route_id { // we know that there is no perfect match for 'to', it would be the last leg in a route
         prev_leg = legs[f.idx_to -1];
+        debug!("SAVE5: route_id: {}, detour_res: {}, sum_reserve: {}", f.route_id, detour_reserve, f.sum_reserve);
         sql += &create_leg(-1,  // ??
           prev_leg.to,
           f.order.to,
           prev_leg.place + place_incr, 
           RouteStatus::ASSIGNED,
           dist[prev_leg.to as usize][f.order.to as usize],
-          detour_reserve,
+          cmp::max(0, detour_reserve - f.sum_reserve), // reserve in all legs cannot be bigger than dist-tour 
           prev_leg.route_id as i64, 
           max_leg_id,
           1, 
@@ -721,7 +710,7 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
           // SAVE 4
           sql += &update_place_in_legs_after(leg_pick.route_id, leg.place + place_incr);
           let len_diff: i32 = (dist[leg.from as usize][f.order.to as usize] + STOP_WAIT + dist[f.order.to as usize][leg.to as usize]) as i32 - leg.dist;
-          let reserve1 = cmp::max(0, cmp::min(detour_reserve, leg.reserve - len_diff));
+          let reserve1 = cmp::max(0, cmp::min(detour_reserve, leg.reserve - len_diff - f.sum_reserve));
           sql += &create_leg(-1, 
             f.order.to,
             leg.to,
@@ -765,7 +754,7 @@ pub fn get_handle(conn_str: String, sql: String, label: String)  -> thread::Join
       let pool = Pool::new(conn_str.as_str());
       match pool {
         Ok(p) => {
-          let mut conn = p.get_conn();
+          let conn = p.get_conn();
           match conn {
             Ok(mut c) => {
               let res = c.query_iter(sql);
@@ -796,9 +785,9 @@ mod tests {
 
   fn get_test_legs(dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> Vec<Leg> {
     return vec![
-      Leg{ id: 0, route_id: 123, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:1, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-      Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: dist[1][2] as i32, reserve:2, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-      Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: dist[2][3] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+      Leg{ id: 0, route_id: 123, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:1, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+      Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: dist[1][2] as i32, reserve:2, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+      Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: dist[2][3] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
     ];
   }
   /*
@@ -809,10 +798,10 @@ mod tests {
 
   fn get_test_legs2(dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> Vec<Leg> {
     return vec![
-      Leg{ id: 3, route_id: 124, from: 4, to: 5, place: 0, dist: dist[4][5] as i32, reserve:1, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-      Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: dist[0][2] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-      Leg{ id: 1, route_id: 123, from: 2, to: 4, place: 1, dist: dist[2][4] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-      Leg{ id: 2, route_id: 123, from: 4, to: 5, place: 2, dist: dist[4][5] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+      Leg{ id: 3, route_id: 124, from: 4, to: 5, place: 0, dist: dist[4][5] as i32, reserve:1, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+      Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: dist[0][2] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+      Leg{ id: 1, route_id: 123, from: 2, to: 4, place: 1, dist: dist[2][4] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+      Leg{ id: 2, route_id: 123, from: 4, to: 5, place: 2, dist: dist[4][5] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
     ];
   }
   /*
@@ -876,7 +865,7 @@ mod tests {
     let orders = vec![Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, 
                                       dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, shared: true, in_pool: false, 
       received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 }];
-    let (_ret, missed, sql) = extend_routes(&orders, &HashMap::new(),  &get_stops(),
+    let (_ret, _, sql) = extend_routes(&orders, &HashMap::new(),  &get_stops(),
                                                        &mut get_test_legs(unsafe{&DIST}), &mut max_leg_id, unsafe { &DIST });
     assert_eq!(sql, expected_sql);
   }
@@ -887,7 +876,7 @@ mod tests {
     let orders = vec![Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, 
                                       dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, shared: true, in_pool: false, 
       received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 }];
-    let (_ret, missed, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
+    let (_ret, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
                                                          &mut get_test_legs2(unsafe{&DIST}), &mut max_leg_id, unsafe { &DIST });
     assert_eq!(sql, expected_sql);
   }
@@ -1005,8 +994,8 @@ fn test_extend_legs_in_db_returns_sql_5_b() {
 
 fn get_test_legs4(dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> Vec<Leg> {
   return vec![
-    Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: dist[0][2] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 1, route_id: 123, from: 2, to: 5, place: 1, dist: dist[2][5] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: dist[0][2] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 1, route_id: 123, from: 2, to: 5, place: 1, dist: dist[2][5] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
   ];
 }
 
@@ -1039,7 +1028,7 @@ fn test_extend_legs_sql4(from_stand: i32, to_stand: i32, expected_sql: &str) {
   let orders = vec![Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, 
                                     dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, shared: true, in_pool: false, 
     received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 }];
-  let (_ret, missed, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
+  let (_ret, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
                                                        &mut get_test_legs4(unsafe{&DIST}), &mut max_leg_id, unsafe { &DIST });
   assert_eq!(sql, expected_sql);
 }
@@ -1092,16 +1081,16 @@ fn test_extend_legs_in_db_returns_sql7() {
 // now two matching routes, one is better
 fn get_test_legs3(dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> Vec<Leg> {
   return vec![
-    Leg{ id: 100, route_id: 124, from: 4, to: 5, place: 0, dist: dist[4][5] as i32, reserve:1, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: dist[0][2] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 1, route_id: 123, from: 2, to: 4, place: 1, dist: dist[2][4] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 2, route_id: 123, from: 4, to: 5, place: 2, dist: dist[4][5] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 3, route_id: 125, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 4, route_id: 125, from: 1, to: 2, place: 1, dist: dist[1][2] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 5, route_id: 125, from: 2, to: 3, place: 2, dist: dist[2][3] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 6, route_id: 126, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 7, route_id: 126, from: 1, to: 4, place: 1, dist: dist[1][4] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 8, route_id: 126, from: 4, to: 5, place: 2, dist: dist[4][5] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 100, route_id: 124, from: 4, to: 5, place: 0, dist: dist[4][5] as i32, reserve:1, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 0, route_id: 123, from: 0, to: 2, place: 0, dist: dist[0][2] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 1, route_id: 123, from: 2, to: 4, place: 1, dist: dist[2][4] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 2, route_id: 123, from: 4, to: 5, place: 2, dist: dist[4][5] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 3, route_id: 125, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 4, route_id: 125, from: 1, to: 2, place: 1, dist: dist[1][2] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 5, route_id: 125, from: 2, to: 3, place: 2, dist: dist[2][3] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 6, route_id: 126, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 7, route_id: 126, from: 1, to: 4, place: 1, dist: dist[1][4] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 8, route_id: 126, from: 4, to: 5, place: 2, dist: dist[4][5] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
   ];
 }
 
@@ -1135,7 +1124,7 @@ fn test_extend_legs_no_match(from_stand: i32, to_stand: i32) {
   let orders = vec![Order { id: 1, from: from_stand, to: to_stand, wait: 1, loss:1, 
                                     dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, shared: true, in_pool: false, 
     received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 }];
-  let (ret, missed, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
+  let (ret, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
                                                        &mut get_test_legs2(unsafe{&DIST}), &mut max_leg_id, unsafe { &DIST });
   assert_eq!(sql, "");
   assert_eq!(ret.len(), 1);
@@ -1156,7 +1145,7 @@ fn test_extend_legs_identical_orders(from_stand: i32, to_stand: i32) {
             shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 },
     Order { id: 2, from: from_stand, to: to_stand, wait: 10, loss:90, dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32},
             shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 }];
-  let (ret, missed, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
+  let (ret, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
                                                        &mut get_test_legs2(unsafe{&DIST}), &mut max_leg_id, unsafe { &DIST });
   assert_eq!(sql, "UPDATE taxi_order AS o SET route_id=123, leg_id=0, cab_id=r.cab_id, status=1, eta=0, in_pool=true \
   FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n\
@@ -1173,11 +1162,11 @@ fn test_extend_legs_two_identical_orders() {
 // testing wait time
 fn get_test_legs5(dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> Vec<Leg> {
   return vec![
-    Leg{ id: 0, route_id: 123, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: dist[1][2] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: dist[2][3] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 3, route_id: 123, from: 3, to: 4, place: 0, dist: dist[3][4] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
-    Leg{ id: 4, route_id: 123, from: 4, to: 5, place: 1, dist: dist[4][5] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1},
+    Leg{ id: 0, route_id: 123, from: 0, to: 1, place: 0, dist: dist[0][1] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 1, route_id: 123, from: 1, to: 2, place: 1, dist: dist[1][2] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 2, route_id: 123, from: 2, to: 3, place: 2, dist: dist[2][3] as i32, reserve:6, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 3, route_id: 123, from: 3, to: 4, place: 0, dist: dist[3][4] as i32, reserve:3, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
+    Leg{ id: 4, route_id: 123, from: 4, to: 5, place: 1, dist: dist[4][5] as i32, reserve:5, started: None, completed: None, status: RouteStatus::ASSIGNED, passengers:1, seats: 10},
   ];
 }
 

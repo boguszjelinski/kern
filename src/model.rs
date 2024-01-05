@@ -53,7 +53,8 @@ pub struct OrderTransfer {
 #[derive(Copy, Clone)]
 pub struct Cab {
     pub id: i64,
-	pub location: i32 // last known location, current location if FREE
+	pub location: i32, // last known location, current location if FREE
+    pub seats: i32
 }
 
 #[derive(Copy, Clone)]
@@ -69,6 +70,7 @@ pub struct Leg {
     pub completed: Option<NaiveDateTime>,
     pub status: RouteStatus,
     pub passengers: i32, // to meet cab's capacity
+    pub seats: i32,
 }
 
 /*pub struct Customer {

@@ -15,19 +15,25 @@ select sum(TIMESTAMPDIFF(second, started, completed)) from leg where completed i
 select 'number of customers in pool' AS' ';
 select in_pool,count(*) from taxi_order group by in_pool;
 select 'number of customers in pool - distribution' AS' ';
-SELECT order_count, COUNT(*) AS route_count from (SELECT route.id, count(taxi_order.id) as order_count from route left join taxi_order on (route.id = taxi_order.route_id) group by route.id) AS aa GROUP BY order_count;
+select order_count, COUNT(*) AS route_count from (SELECT route.id, count(taxi_order.id) as order_count from route left join taxi_order on (route.id = taxi_order.route_id) group by route.id) AS aa GROUP BY order_count;
 select 'number of customers in legs - distribution' AS' ';
 select passengers,count(*) from leg group by passengers;
 select 'average pool size' AS' ';
-SELECT sum(order_count*route_count)/sum(route_count) FROM (SELECT order_count, COUNT(*) AS route_count from (SELECT route.id, count(taxi_order.id) as order_count from route left join taxi_order on (route.id = taxi_order.route_id) group by route.id) AS aa GROUP BY order_count) as counts;
+select sum(order_count*route_count)/sum(route_count) FROM (SELECT order_count, COUNT(*) AS route_count from (SELECT route.id, count(taxi_order.id) as order_count from route left join taxi_order on (route.id = taxi_order.route_id) group by route.id) AS aa GROUP BY order_count) as counts;
 select 'average passenger count in legs' AS' ';
 select sum(passengers*pass_count)/sum(pass_count) from (select passengers,count(*) as pass_count from leg group by passengers) as average;
 select 'average number of legs per route' AS' ';
 select (select count(*) from leg) / (select count(*) from route);
 select 'total number of customers rejected' AS' ';
 select count(*) from taxi_order where status=3;
+select 'number of request with exceeded detour' AS' ';
+select count(*) from taxi_order where distance*60*((100+max_loss)/100) < TIMESTAMPDIFF(second, started, completed) -60
 select 'avg detour: total duration / total requested distance (we measure distance with time)' AS' ';
 select ((((select sum(TIMESTAMPDIFF(second, started, completed)) from taxi_order where completed is not null and started is not null))/60) / (select sum(distance) from taxi_order where completed is not null and started is not null)) as avg_detour;
+select 'number of pickup legs without a passenger' AS' ';
+select count(l.id) from leg l where l.place=0 AND l.from_stand not in (select from_stand FROM taxi_order o, route r WHERE r.id=l.route_id AND o.route_id=l.route_id);
+select 'total distance of pickup legs without a passenger (in minutes)' AS' ';
+select sum(l.distance) from leg l where l.place=0 AND l.from_stand not in (select from_stand FROM taxi_order o, route r WHERE r.id=l.route_id AND o.route_id=l.route_id);
 select 'max scheduler time (seconds)' AS' ';
 select * from stat where name='MaxShedulerTime';
 select 'average scheduler time (seconds)' AS' ';

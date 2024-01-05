@@ -92,16 +92,17 @@ pub fn read_max(conn: &mut PooledConn, table: &str) -> i64 {
 
 pub fn find_cab_by_status(conn: &mut PooledConn, status: CabStatus) -> Vec<Cab>{
     return conn.query_map(
-        "SELECT id, location FROM cab WHERE status=".to_string() + &(status as u8).to_string(),
-        |(id, location)| { Cab { id, location } },
+        "SELECT id, location, seats FROM cab WHERE status=".to_string() + &(status as u8).to_string(),
+        |(id, location, seats)| { Cab { id, location, seats } },
     ).unwrap();
 }
 
 pub fn find_legs(conn: &mut PooledConn) -> Vec<Leg> {
     let mut ret: Vec<Leg> = Vec::new();
-    let qry = "SELECT id, from_stand, to_stand, place, distance, \
-                    started, completed, route_id, status, reserve, passengers FROM leg WHERE status = 1 OR status = 5 \
-                    ORDER BY route_id ASC, place ASC";
+    let qry = "SELECT l.id, l.from_stand, l.to_stand, l.place, l.distance, l.started, l.completed, \
+                    l.route_id, l.status, l.reserve, l.passengers, c.seats FROM leg l, route r, cab c \
+                    WHERE r.id=l.route_id AND r.cab_id=c.id AND (l.status = 1 OR l.status = 5) \
+                    ORDER BY l.route_id ASC, l.place ASC";
     let selected: Result<Vec<Row>> = conn.query(qry);
     
     match selected {
@@ -119,6 +120,7 @@ pub fn find_legs(conn: &mut PooledConn) -> Vec<Leg> {
                     status: get_route_status(r.get(8).unwrap()),
                     reserve: r.get(9).unwrap(),
                     passengers: r.get(10).unwrap(),
+                    seats: r.get(11).unwrap(),
                 });
             }
         },
@@ -523,7 +525,7 @@ mod tests {
     let br = get_test_branch(order_count);
     
     let orders = init_test_data(order_count);
-    let cab = Cab { id:0, location:0 };
+    let cab = Cab { id:0, location:0, seats: 10 };
     let reserves: [i32; MAXORDID] = [0; MAXORDID];
     let sql = assign_orders_and_save_legs(cab.id, 0, place, br, eta, &mut max_leg_id, &orders, reserves);
     //println!("{}", sql);

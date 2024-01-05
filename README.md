@@ -1,5 +1,5 @@
 # Kern
-This repository contains a subproject of Kabina - Kern minibus dispatcher, which finds the optimal assignment plan for trip requests and available buses.
+This repository contains a subproject of Kabina - Kern minibus dispatcher, which finds the optimal assignment plan for trip requests and available buses. This dispatcher can serve several hundred thousand passengers per hour while running on a regular PC. 
 
 Kern dispatcher consists of three main components:
 * **solver**, which allocates passengers to free cabs ([Hungarian](https://en.wikipedia.org/wiki/Hungarian_algorithm) and [Least Cost Method](https://www.educationlessons.co.in/notes/least-cost-method) are used)
@@ -7,7 +7,7 @@ Kern dispatcher consists of three main components:
 * **route extender** to assign customers to matching routes, including non-perfect matching (multithreaded)
 
 ## Other Kabina subprojects:
-The idea behind Kabina is to provide an enabler (a software skeleton, testing framework and RestAPI proposal) for a minibus service that can assign 15+ passengers to one cab (minibus) per hour, thus reducing the cost of the driver per passenger, among other benefits. Such extended minibus service would allow for the shift to sustainable transport, it might be cost-competitive with the public transport while providing better service quality including shorter travel time.
+The idea behind Kabina is to provide an enabler (a software skeleton, testing framework and RestAPI proposal) for a minibus service that can assign 20+ passengers to one cab (minibus) per hour, thus reducing the cost of the driver per passenger, among other benefits. Such extended minibus service would allow for the shift to sustainable transport, it might be cost-competitive with the public transport while providing better service quality including shorter travel time.
 The following accompanying components have been developed:
 
 * [Kapir](https://gitlab.com/kabina/kapir): Rest API responsible for receiving requests, share statuses and store them in a database
@@ -23,85 +23,13 @@ There are still a few components missing that need to be added to make it a mark
 See here to find more: https://gitlab.com/kabina/kabina/-/blob/master/minibuses.pdf
 
 ## Prerequisites:
-* PostgreSQL
+* MySQL or PostgreSQL (the latter currently not maintained, separate branch)
 * C compiler (optional)
 * Rust compiler
 
 ## How to install and run
-See also [readme](HOWTORUN.md) how to run all Kabina components in a simulation.
+See [readme](HOWTORUN.md) how to run all Kabina components in a simulation.
 
-1) Compile the pool finder (optional, see use_extern_pool below) and make the library available for Rust compiler, an example for Mac OS:
-```
-cd pool
-cc -c -Wno-implicit-function-declaration poold.c dynapool.c -w
-ar -cvq libdynapool.a poold.o dynapool.o
-sudo cp libdynapool.a /Library/Developer/CommandLineTools/SDKs/MacOSX11.1.sdk/usr/lib/
-```
-2) Compile the dispatcher 
-```
-cargo build --release 
-```
-
-3) Create DB schema
-We assume that DB schema and user have been created beforehand, here 'kabina':
-```
-cd sql
-psql -U kabina kabina < create.sql
-psql -U kabina -c "COPY stop(id, no, name, latitude, longitude, bearing) FROM 'stops-Budapest-import.csv' DELIMITER ',' CSV HEADER ENCODING 'UTF8';"
-```
-This will create example stop, cab and customer entities. 
-
-4) Edit config file <em>kern.toml</em>
-
-| Parameter | Purpose
-|----------|--------
-| db_conn | database connection string - user, password, address, port, schema
-| run_after | time difference in seconds between dispatcher executions
-| max_assign_time | time in minutes after which orders expire
-| max_solver_size | if demand and supply exceed the value LCM will be called to shrink the model
-| max_legs | how many legs can a route have, used in route extender
-| max_angle | max angle between consecutive stops; used to promote streight routes 
-| cab_speed | average speed in km/h
-| stop_wait | how many minutes it takes at a stop
-| log_file  | log file location and name
-| use_pool | if pool finder should be used
-| use_extern_pool | if external pool finder (C library) should be used
-| use_extender | if route extender should be used (experimental)
-| thread_numb | how many threads should be used
-| max_pool4_size | max allowed size of demand for pools with 4 passengers (for tuning, depends on hardware performance)
-| max_pool3_size | max allowed size of demand for pools with 3 passengers
-| max_pool2_size | max allowed size of demand for pools with 2 passengers
-
-Scheduler can be started with `target/release/kern` or `cargo run --release`
-Though nothing will happen until cabs will report their availability and customers will submit their trip requests, both via RestAPI. 
-
-### Rest API 
-There are four API implementations, only that written in Rust will be maintained:
-[Kapir](https://gitlab.com/kabina/kapir): Rust (Actix)
-[Kapi](https://gitlab.com/kabina/kapi): Go (two versions - Echo and Gin)
-[Kaboot](https://gitlab.com/kabina/kaboot): Java (Spring Boot)
-[Kore](https://gitlab.com/kabina/kore): C# (.Net Core)
-
-Just build the Rust one with `cargo build --release` and run with `target/release/kapir`
-
-### Rest API client simulators
-There are two implementations, Go will be maintained:
-[Kapi](https://gitlab.com/kabina/kapi/-/tree/main/client): Go
-[Kaboot](https://gitlab.com/kabina/kaboot/-/tree/master/generators/src) Java (see [README.md](https://gitlab.com/kabina/kaboot/-/blob/master/README.md) how to run it)
-
-`go build` will make a **kabina** executable that runs in two ways:
-`./kabina` runs threads with customers
-`./kabina cab` runs threads with cabs. You should run it first and wait a minute so that cabs manage to update their availability.
-
-### How to rerun
-One has to clean up some tables to run a simulation again:
-```
-update cab set status=2;
-update stat set int_val=0;
-delete from taxi_order;
-delete from leg;
-delete from route;
-```
 ## How it works
 ### Core
 * available buses (cabs) and incoming requests from customers are read from database
@@ -147,14 +75,12 @@ delete from route;
 |13|	2863|	3130|	4|	3|	6|	2022-08-24 22:58:31|	2022-08-24 23:02:31|	0|	2|	6
 |102|	3130|	2179|	3|	2|	6|	2022-08-24 23:03:31|	2022-08-24 23:06:31|	0|	2|	7
 |14|	2179|	2701|	4|	1|	6|	2022-08-24 23:07:31|	2022-08-24 23:11:31|	0|	2|	8
+
 ## Current work in Kern
-* faster sigle threaded route extender (single thread has its pros) - DONE 24.09.2022
-* assigning cabs while they are on a route's last leg.
+* assigning cab while it is on a route's last leg.
 * an order serviced by two cabs (cab change) 
 
 ## Future work
-* take cabs on last leg into account
-* trip with a change of cab (better cab utilization)
 * distance service based on data from the field
 * charging plans & payment integration
 * resistance to bizarre situations (customers interrupting trips, for example)
@@ -239,7 +165,7 @@ AS aa GROUP BY order_count`
 
 ## Copyright notice
 
-Copyright 2022 Bogusz Jelinski
+Copyright 2024 Bogusz Jelinski
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -254,7 +180,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 #
 Bogusz Jelinski    
-January 2022  
+January 2024
 Mo i Rana
 
 bogusz.jelinski (at) g m a i l
