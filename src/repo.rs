@@ -215,11 +215,25 @@ pub fn update_reserves_in_legs_before_and_including(route_id: i64, place: i32, w
     if place < 0 {
         return "".to_string();
     }
-    debug!("Updating reserve in route_id={} starting with place={}, wait_diff={}", 
+    debug!("Updating reserve in route_id={}, before place={}, wait_diff={}", 
             route_id, place, wait_diff);
-    return format!("\
-        UPDATE leg SET reserve=LEAST(reserve, {}) WHERE route_id={} AND place <= {};\n", 
+    return format!("UPDATE leg SET reserve=LEAST(reserve, {}) WHERE route_id={} AND place <= {};\n", 
                 wait_diff, route_id, place);
+}
+
+pub fn update_reserves_in_legs_before_and_including2(route_id: i64, place: i32, wait_diff: i32, cost: i32) -> String {
+    if place < 0 {
+        return "".to_string();
+    }
+    debug!("Updating reserve in route_id={}, BEFORE place={}, wait_diff={}", 
+            route_id, place, wait_diff);
+            // first reserves for other orders, decreased by added cost
+    let mut sql = format!("\
+        UPDATE leg SET reserve=GREATEST(0, reserve-{}) WHERE route_id={} AND place <= {};\n", cost, route_id, place);
+        // for wait reserve for the current order 
+    sql += format!("\
+        UPDATE leg SET reserve=LEAST(reserve, {}) WHERE route_id={} AND place <= {};\n", wait_diff, route_id, place).as_str();
+    return sql;
 }
 
 pub fn assign_pool_to_cab(cab: Cab, orders: &[Order; MAXORDERSNUMB], pool: Branch, max_route_id: &mut i64, 
