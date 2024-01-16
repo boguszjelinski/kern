@@ -15,6 +15,7 @@ use mysql::*;
 use mysql::prelude::*;
 use crate::model::{ Order, OrderStatus, Stop, Leg, RouteStatus, MAXSTOPSNUMB };
 use crate::repo::{find_legs, assign_order_find_cab, create_leg, update_leg_a_bit2, update_reserves_in_legs_before_and_including,
+                  update_reserves_in_legs_before_and_including2,
                   update_place_in_legs_after, update_passengers_and_reserve_in_legs_between, update_reserve_after,
                   find_orders_by_status_and_time, CNFG};
 use crate::distance::DIST;
@@ -31,7 +32,7 @@ struct LegIndicesWithDistance2 {
   dist: i32,
   wait: i32,
   tour: i32,
-  sum_reserve: i32,
+  sum_reserve: i32, // sum in dropp-off stage
   order: Order
 }
 
@@ -242,20 +243,24 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
   let max_angle = unsafe { CNFG.max_angle as f32 };
   let max_angle_dist = unsafe { CNFG.max_angle_dist as i32 };
   let mut wait_legs: i16 = 0; // each leg takes 15secs more, TODO: check why
+  let mut first_leg: usize = i; // index of the first leg in a route, needed by 'wait_exceeded'
 
   while i < legs.len() { // this is the pick-up loop
     let leg = legs[i];
     if leg.route_id != legs[i-1].route_id { // new route -> check the previous one
+      first_leg = i;
       let prev_leg_to = legs[i-1].to as usize;
       let dist1 = dist[prev_leg_to][order_from] as i32;
       is_short = leg_is_short(leg_count.get(&leg.route_id));
       // check beyond route
-      if total_dist + dist1 + ((wait_legs as f32 * 0.5) as i32) < order.wait
+      if total_dist + dist1 + extra_wait(wait_legs + 1) < order.wait
          && dist1 < min_cost
          && (dist1 > max_angle_dist || bearing_diff(stops[prev_leg_to].bearing, stops[order_from].bearing) <  max_angle) { // well, we have to compare to something; there still might be a better plan with lesser wait time
         min_cost = dist1;
-        ret = get_some(i, i, legs[i-1].route_id, dist1, total_dist + dist1+ ((wait_legs as f32 * 0.5) as i32), 
+        ret = get_some(i, i, legs[i-1].route_id, dist1, total_dist + dist1+ extra_wait(wait_legs), 
                       order.dist, 0, order);
+        debug!("DEBUG3C find_route: order_id={}, route_id={}, total_dist={}, dist1={}, wait_legs={}", 
+                      order.id, legs[i-1].route_id, total_dist, dist1, wait_legs +1);
         // i beyond the route, just to mark a leg in the next route
       }
       wait_legs = 0;
@@ -287,7 +292,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
                             - leg.dist;
     if leg.to != order.from // direct hit in next leg
       && leg.passengers < leg.seats // 'seats' come from 'cab' table; < means at least one seat available, = would mean all occupied 
-      && (total_dist + (dist[leg.from as usize][order_from]) as i32) + ((wait_legs as f32 * 0.5) as i32) <= order.wait 
+      && (total_dist + (dist[leg.from as usize][order_from]) as i32) + extra_wait(wait_legs) <= order.wait 
       && (leg.from == order.from // direct hit
             || (is_short // we don't want to extend long routes
                 && 
@@ -303,23 +308,24 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
       if leg.to == order.to { // direct hit for drop-off in the same leg, and no detour
         if leg.from == order.from { // bingo, no point looking for any other route (TODO: check number of seats!)
           //info!("Extension proposal, perfect match, order_id={}, route_id={}", order.id, leg.route_id);
-          return get_some( i, i, leg.route_id, 0, total_dist + ((wait_legs as f32 * 0.5) as i32), 
+          return get_some( i, i, leg.route_id, 0, total_dist + extra_wait(wait_legs), 
                           order.dist, 0, order);
           // 0: pickup and dropoff are direct hits, best solution TODO: there can be more such solution with shorter wait time!!
           // SAVE1 no leg at all, both are direct hits // check to-to & from-from
         } else if is_short {
           // SAVE2 // pickup was not a direct hit  // two legs affected   // from-from will fail, pickup is expanded
-          if !wait_exceeded(order, i, i, total_dist, add_cost, 0, legs, assigned_orders)
+          if !wait_exceeded(order, wait_legs, first_leg, i, i, total_dist, add_cost, 0, legs, assigned_orders)
              && (dist[leg.from as usize][order_from] > max_angle_dist as i16 || bearing_diff(stops[leg.from as usize].bearing, stops[order_from].bearing) <  max_angle) {
             min_cost = add_cost;
             ret = get_some(i, i, leg.route_id, add_cost, 
-                         total_dist + STOP_WAIT as i32 + (dist[leg.from as usize][order_from] as i32) + ((wait_legs as f32 * 0.5) as i32),
+                         total_dist + STOP_WAIT as i32 + (dist[leg.from as usize][order_from] as i32) + extra_wait(wait_legs),
                           order.dist, 0, order);
           }
         }
       } else { // find in next legs
-        match find_droppoff(order, legs, i, add_cost, min_cost, 
-              total_dist + (dist[leg.from as usize][order_from] as i32), dist, is_short, assigned_orders, stops) {
+        match find_droppoff(order, legs, first_leg, i, add_cost, min_cost, 
+                      total_dist + (dist[leg.from as usize][order_from] as i32) + extra_wait(wait_legs), wait_legs,
+                            dist, is_short, assigned_orders, stops) {
           Some(x) => { 
             min_cost = x.dist; 
             ret = Some(x); 
@@ -330,7 +336,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
     } 
     total_dist += leg.dist + STOP_WAIT as i32;
     wait_legs += 1;
-    if total_dist + ((wait_legs as f32 * 0.5) as i32) > order.wait { // nothing to look for here, find next route
+    if total_dist + extra_wait(wait_legs) > order.wait { // nothing to look for here, find next route
       let mut i2 = i + 1;
       while i2 < legs.len() && legs[i2].route_id == leg.route_id { i2 += 1; }
       i = i2;
@@ -339,12 +345,12 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
     }
   }
   // beyond the last route
-  let last_dist = total_dist + STOP_WAIT as i32 + (dist[legs[i-1].to as usize][order_from] as i32) + ((wait_legs as f32 * 0.5) as i32);
+  let last_dist = total_dist + STOP_WAIT as i32 + (dist[legs[i-1].to as usize][order_from] as i32) + extra_wait(wait_legs);
   if last_dist < order.wait
     && (dist[legs[i-1].to as usize][order_from] as i32) < min_cost { // well, we have to compare to something; there still might be a better plan with lesser wait time
     // SAVE6
     //info!("Extension proposal, beyond route, order_id={}, route_id={}", order.id, legs[i-1].route_id);
-    debug!("DEBUG6 find_route: order_id={}, , route_id={}, leg_id={}, leg_dist={}, leg_reserve={}, from={}, to={}, dist={},", 
+    debug!("DEBUG6 find_route: order_id={}, route_id={}, leg_id={}, leg_dist={}, leg_reserve={}, from={}, to={}, dist={},", 
           order.id, legs[i-1].route_id, legs[i-1].id, legs[i-1].dist, legs[i-1].reserve, legs[i-1].to, order.from, 
           dist[legs[i-1].to as usize][order_from]);
     return get_some( i, i, legs[i-1].route_id, dist[legs[i-1].to as usize][order_from] as i32,
@@ -357,7 +363,12 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
   return ret;
 }
 
-fn wait_exceeded(ord: &Order, i: usize, j:usize, wait: i32, add_cost: i32, add_cost2: i32, legs: &Vec<Leg>, ass_orders: &HashMap<i64, Vec<Order>>) -> bool {
+// for unknown reason cabs wait about 30s more than defined one minute
+fn extra_wait(count: i16) -> i32 { 
+  return (count as f32 * 0.5) as i32;
+}
+
+fn wait_exceeded(ord: &Order, wait_legs: i16, first_leg: usize, i: usize, j:usize, wait: i32, add_cost: i32, add_cost2: i32, legs: &Vec<Leg>, ass_orders: &HashMap<i64, Vec<Order>>) -> bool {
   if i>= legs.len() { return false; }
   let add2_cost = if add_cost2 < 0 { 0 } else { add_cost2 };
   let route_id = legs[i].route_id;
@@ -367,25 +378,29 @@ fn wait_exceeded(ord: &Order, i: usize, j:usize, wait: i32, add_cost: i32, add_c
   } , None => { 
     return false; 
   } };
-  let mut log = format!("wait_exceeded: order_id={}, leg_from={}, leg_to={}, route_id={}, wait={}, add_cost={}, add_cost2={} legs={}, orders={}; ", 
+  let mut log = format!("wait_debug: order_id={}, leg_from={}, leg_to={}, route_id={}, wait={}, wait_legs={}, add_cost={}, add_cost2={} legs={}, orders={}; ", 
                                 ord.id, if i< legs.len() { legs[i].id } else { -1 }, if j<legs.len() { legs[j].id } else { -1 }, 
-                                route_id, wait, add_cost, add_cost2, legs.len(), orders.len());
+                                route_id, wait, wait_legs, add_cost, add_cost2, legs.len(), orders.len());
   let mut total_dist = wait + legs[i].dist + STOP_WAIT as i32 + if add_cost < 0 { 0 } else { add_cost }  ;
   if j == i { total_dist += add2_cost; }
   let mut idx = i + 1; // we will check the impact on wait of the other customers, beyond the extended leg (i)
-
+  let mut passed_log: String = String::new();
+  let xtra_wait = extra_wait(wait_legs);
   while idx < legs.len() {
     if legs[idx].route_id != route_id {
-      //info!("{}", log); TODO check one day
-      return false;
+      break; // go to max_loss check below
     }
     for o in &orders {
-      let time_passed = get_elapsed(o.received)/60; // we do not have assignment timestamp
+      if o.id == ord.id { // wait time in this order is checked before this function is called
+        continue;
+      }
+      let time_passed = get_elapsed(o.received)/60; // TODO: we do not have assignment timestamp
       if time_passed == -1 { // TODO it should never happen!!
         warn!("Assigned order but received is NULL");
         continue;
       }
-      if o.from == legs[idx].from && time_passed as i32 + total_dist + ((idx as f32 * 0.5) as i32) >= o.wait - STOP_WAIT as i32 { // - STOP_WAIT due to some rounding errors - eg. while subtracting elapsed time
+      passed_log += &format!("[order_id={}, passed={}, total_dist={}, extra_wait={}], ", o.id, time_passed, total_dist, xtra_wait);
+      if o.from == legs[idx].from && time_passed as i32 + total_dist + xtra_wait >= o.wait - STOP_WAIT as i32 { // - STOP_WAIT due to some rounding errors - eg. while subtracting elapsed time
         return true;
       }
     }
@@ -394,7 +409,48 @@ fn wait_exceeded(ord: &Order, i: usize, j:usize, wait: i32, add_cost: i32, add_c
     log += &format!("[dist after leg={}, dist={}], ", legs[idx].id, total_dist);
     idx += 1;
   }
-  //info!("{}", log); TODO: check it!
+  return false;
+  //info!("{} {}", log, passed_log);
+  // let's check max_loss in other orders
+  passed_log += &format!("LOSS CHECK: first_leg={}, i={}, j={}, legs[first_leg].id={}, numb of orders={}", first_leg, i, j, legs[first_leg].id, orders.len());
+  for o in &orders {
+    passed_log += &format!("({})", o.id);
+    if o.id == ord.id { // wait time in this order is checked before this function is called
+      continue;
+    }
+    let dist_with_loss: i32 = ((1.0 + o.loss as f32 / 100.0) * o.dist as f32).round() as i32;
+    let mut legs_count = 0; // to count extra_wait
+    total_dist = add_cost; // just in case the order has allready started (no "from"), so pickup extension will affect this order 
+    idx = first_leg; // where the route starts
+    while (idx == first_leg || legs[idx].route_id == legs[idx - 1].route_id) && idx < legs.len() {
+      if o.to == legs[idx].to {
+        if idx < i { // 'to' is before any extension, this order will not be affected
+          break;
+        }
+        if idx >= j { // 'to' is after extension, this order is affected by drop-off extension
+          total_dist += add2_cost;
+        } 
+        if total_dist + legs[idx].dist /*+ extra_wait(legs_count)*/ > dist_with_loss + STOP_WAIT as i32 { //+ stop so that we are not so strict
+          return true; // one of old orders would not like it
+        }
+        passed_log += &format!("[order_id={}, total_dist={}, extra_wait={}, dist_with_loss={}], ", o.id, total_dist, extra_wait(legs_count), dist_with_loss);
+        break; // check next order
+      }
+      if o.from == legs[idx].from { // it may never happen for an order that is in progress at this
+        if idx > j { // the older order is not affected by droppoff, so not by the whole extension
+          break; // check next order
+        }
+        if idx > i { // pickup extension does not affect this old order
+          total_dist = 0;
+        } 
+        legs_count = 0;
+      }
+      total_dist += legs[idx].dist + STOP_WAIT as i32;
+      legs_count += 1;
+      idx += 1;
+    }
+  }
+  info!("{} {}", log, passed_log);
   return false;
 }
 
@@ -412,7 +468,7 @@ fn get_some(from: usize, to: usize, route_id: i64, cost: i32, wait: i32, tour: i
   });
 }
 
-fn find_droppoff(order: &Order, legs: &Vec<Leg>, i: usize, add_cost: i32, mincost: i32, wait: i32,
+fn find_droppoff(order: &Order, legs: &Vec<Leg>, first_leg: usize, i: usize, add_cost: i32, mincost: i32, wait: i32, wait_legs: i16, 
                 dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB], is_short: bool, assigned_orders: &HashMap<i64, Vec<Order>>, stops: &Vec<Stop>) -> Option<LegIndicesWithDistance2> {
   let mut ret: Option<LegIndicesWithDistance2> = None;
   let max_angle = unsafe { CNFG.max_angle as f32 };
@@ -426,7 +482,7 @@ fn find_droppoff(order: &Order, legs: &Vec<Leg>, i: usize, add_cost: i32, mincos
   // first check the same leg as pickup                        
   if is_short && 
       add2_cost <= legs[i].reserve && add_cost + add2_cost < min 
-      && !wait_exceeded(order, i, i, wait, add_cost, add2_cost, legs, assigned_orders) { // still no detour loss
+      && !wait_exceeded(order, wait_legs, first_leg, i, i, wait, add_cost, add2_cost, legs, assigned_orders) { // still no detour loss
 
     min = add_cost + add2_cost;
     ret = get_some(i, i, legs[i].route_id, add_cost + add2_cost, wait, order.dist, legs[i].reserve, order);
@@ -440,7 +496,7 @@ fn find_droppoff(order: &Order, legs: &Vec<Leg>, i: usize, add_cost: i32, mincos
     //}
   }
   // but it might be a better plan in next legs of the route
-  let mut tour: i32 = dist[order.from as usize][legs[i].to as usize] as i32; // it is valid even if direct hit
+  let mut tour: i32 = dist[order.from as usize][legs[i].to as usize] as i32 + STOP_WAIT as i32; // it is valid even if direct hit
   let mut sum_reserve: i32 = cmp::max(0, legs[i].reserve - add_cost);
 
   while j < legs.len() && legs[j].route_id == legs[j-1].route_id {
@@ -454,15 +510,15 @@ fn find_droppoff(order: &Order, legs: &Vec<Leg>, i: usize, add_cost: i32, mincos
         || (is_short
             && 
             add2_cost < leg.reserve
-            && tour + (dist[leg_from][order_to] as i32) + (((j-i) as f32 * 0.5) as i32) <= dist_with_loss // TODO: (j-i) is a misterious delay each leg, to be analysed, some delay in Kim?
+            && tour + (dist[leg_from][order_to] as i32) + extra_wait((j-i) as i16) <= dist_with_loss // TODO: (j-i) is a misterious delay each leg, to be analysed, some delay in Kim?
             && add_cost + add2_cost < min)
             && (dist[leg_from][order_to] > max_angle_dist as i16 || bearing_diff(stops[leg_from].bearing, stops[order_to].bearing) <  max_angle) )
-        && !wait_exceeded(order, i, j, wait, add_cost, add2_cost, legs, assigned_orders) {
+        && !wait_exceeded(order, wait_legs + ((j - i) as i16), first_leg, i, j, wait, add_cost, add2_cost, legs, assigned_orders) {
       min = add_cost + add2_cost;
       ret = get_some( i, j, legs[i].route_id, add_cost + add2_cost, wait, 
-                      tour + (dist[leg_from][order_to] as i32), sum_reserve, order); // tour is later used to count reserve (reserve=dist*loss-tour), but beware, if not used in some other way!
-      debug!("DEBUG4 dropp-off: order_id={}, leg_id={}, leg_dist={}, leg_reserve={}, from={}, to={}, add2_cost={}, a={}, b={}, 1={}, 2={}, 3={}", 
-          order.id, leg.id, leg.dist, leg.reserve, leg.from, leg.to, add2_cost, 
+                      tour + (dist[leg_from][order_to] as i32) + extra_wait((j-i) as i16), sum_reserve, order); // tour is later used to count reserve (reserve=dist*loss-tour), but beware, if not used in some other way!
+      debug!("DEBUG4 dropp-off: order_id={}, route_id={}, leg_id={}, leg_dist={}, wait={}, leg_reserve={}, from={}, to={}, add2_cost={}, a={}, b={}, 1={}, 2={}, 3={}", 
+          order.id, legs[i].route_id, leg.id, leg.dist, wait, leg.reserve, leg.from, leg.to, add2_cost, 
           dist[leg_from][order_to], dist[order_to][leg.to as usize],
           leg.from, order.to, leg.to);
       // SAVE4
@@ -475,19 +531,19 @@ fn find_droppoff(order: &Order, legs: &Vec<Leg>, i: usize, add_cost: i32, mincos
     }
     tour += leg.dist + STOP_WAIT as i32;
     sum_reserve += leg.reserve;
-    if tour <= dist_with_loss { 
+    if tour + extra_wait((j-i) as i16) <= dist_with_loss { 
       return ret; // nothing to look after any more
     }
     j += 1;
   }
   // what if dropoff extends beyond the route?
   if //j > 1 && legs[j-2].route_id == legs[j-1].route_id 
-    tour + (dist[legs[j-1].to as usize][order_to] as i32) + (((j-i) as f32 * 0.5) as i32) < dist_with_loss 
+    tour + (dist[legs[j-1].to as usize][order_to] as i32) + extra_wait((j-i) as i16) < dist_with_loss 
         && add_cost < min 
-        && !wait_exceeded(order, i, j, wait, add_cost, add2_cost, legs, assigned_orders) 
+        && !wait_exceeded(order, wait_legs + ((j - i) as i16), first_leg, i, j, wait, add_cost, add2_cost, legs, assigned_orders) 
         && (dist[legs[j-1].to as usize][order_to] > max_angle_dist as i16 || bearing_diff(stops[legs[j-1].to as usize].bearing, stops[order_to].bearing) <  max_angle) { // we don't ruin the current route so we just take the pickup cost, but you might think otherwise
     ret = get_some(i, j, legs[i].route_id, add_cost, wait, 
-                  tour + (dist[legs[j-1].to as usize][order_to] as i32), sum_reserve, order);
+                  tour + (dist[legs[j-1].to as usize][order_to] as i32) + extra_wait((j-i) as i16), sum_reserve, order);
     debug!("DEBUG dropp-off beyond: order_id={}, leg_id={}, to={}", order.id, legs[j-1].id, legs[j-1].to);             
     // SAVE5
     // !!! necessary check j>legs.len() || route_id != route_id, which means beyond route
@@ -504,6 +560,7 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
           -> String {
   let mut prev_leg: Leg = legs[f.idx_from - 1];
   let reserve = cmp::max(0, f.order.wait - f.wait);
+  // reserves before changed leg have to satisfy the current order and (!) the added cost will affect wait time of orders that start after the extension
   let detour_reserve = cmp::max(0, (((100.0 + f.order.loss as f32) / 100.0) * f.order.dist as f32) as i32 - f.tour);
   let mut sql: String = String::from("");
   sql += &assign_order_find_cab(f.order.id,
@@ -551,10 +608,11 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
         max_leg_id,
         1, 
         &("route extender SAVE0C".to_string()));      
+        debug!("SAVE0C: route_id={}, res: {}, wait: {}", f.route_id, reserve, f.wait);
     }
   } else { // inside, at least pickup
     let leg_pick = legs[f.idx_from];
-    sql += &update_reserves_in_legs_before_and_including(leg_pick.route_id, leg_pick.place -1, reserve);
+    sql += &update_reserves_in_legs_before_and_including2(leg_pick.route_id, leg_pick.place -1, reserve, f.dist);
     
     if f.idx_from == f.idx_to  { // one leg will be extended, 4 situations here
       let resrv = cmp::max(0, cmp::min(leg_pick.reserve, detour_reserve) - STOP_WAIT as i32);
@@ -612,13 +670,16 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
       } else { // no match, the order will extend one leg
         sql += &update_place_in_legs_after(leg_pick.route_id, leg_pick.place + 1); // TODO: one call, not two
         sql += &update_place_in_legs_after(leg_pick.route_id, leg_pick.place + 1);
+        let added_cost = (dist[leg_pick.from as usize][f.order.from as usize] + STOP_WAIT + dist[f.order.from as usize][f.order.to as usize] 
+                              + STOP_WAIT + dist[f.order.to as usize][leg_pick.to as usize]) as i32 + extra_wait(2) - leg_pick.dist;
         sql += &create_leg(f.order.id, 
           f.order.from,
           f.order.to,
           leg_pick.place + 1,
           RouteStatus::ASSIGNED,
           f.order.dist as i16,
-          resrv,
+          // 3 things - current reserve (other orders), reserve for the new order and how the new order affects the old ones
+          cmp::max(0, cmp::min(leg_pick.reserve - added_cost, detour_reserve)),
           leg_pick.route_id as i64, 
           max_leg_id,
           leg_pick.passengers as i8 + 1, 
@@ -627,14 +688,14 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
         let len_diff: i32 = (f.order.dist + dist[f.order.to as usize][leg_pick.to as usize] as i32 + STOP_WAIT as i32) - leg_pick.dist;
         let reserve_subtr = cmp::max(resrv, len_diff);
         let reserve2 = cmp::min(leg_pick.reserve - reserve_subtr, f.order.wait - f.wait - f.sum_reserve);
-
+        // beyond the new order, detour of this order is not needed
         sql += &create_leg(f.order.id, 
           f.order.to,
           leg_pick.to, // == order.to
           leg_pick.place + 2,
           RouteStatus::ASSIGNED,
           dist[f.order.to as usize][leg_pick.to as usize],
-          cmp::min(resrv, f.sum_reserve), // reserve2
+          cmp::min(cmp::min(resrv, f.sum_reserve),  reserve2),
           leg_pick.route_id as i64, 
           max_leg_id,
           leg_pick.passengers as i8, 
@@ -642,7 +703,7 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
         // the extended leg should point at the new leg added above
         sql += &update_leg_a_bit2(leg_pick.route_id, leg_pick.id, f.order.from, 
                  dist[leg_pick.from as usize][f.order.from as usize], 
-                 cmp::max(0, cmp::min(leg_pick.reserve - reserve_subtr - reserve2, f.order.wait - f.wait) - STOP_WAIT as i32), 
+                 cmp::max(0, cmp::min(leg_pick.reserve - added_cost, f.order.wait - f.wait)), // leg_pick.reserve - reserve_subtr - reserve2
                  leg_pick.passengers as i8);
       }
     } else { // more legs to be extended, possibly
@@ -674,11 +735,13 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
           max_leg_id,
           leg_pick.passengers as i8 + 1, 
           &("route extender SAVE4B".to_string()));
+        debug!("SAVE4B: route_id={}, wait:{}, detour_res:{}, res:{}", f.route_id, f.wait, detour_reserve, res);
         // the extended leg should point at the new leg added above
         let res = cmp::max(0, cmp::min(res, leg_pick.reserve - res)); // sum of the two legs (reserve) cannot be bigger than the original leg 
         sql += &update_leg_a_bit2(leg_pick.route_id, leg_pick.id, f.order.from, 
                             dist[leg_pick.from as usize][f.order.from as usize],
-                            res,
+                            // previous version: leg_pick.reserve - len_diff
+                            cmp::max(0, cmp::min(f.order.wait - f.wait, leg_pick.reserve - res)), // -res, to subtract reserve ffrom the leg above
                             leg_pick.passengers as i8);
       }
       // DROP-OFF
@@ -1190,7 +1253,7 @@ fn test_wait_exceed_no_assigned_orders_then_false() {
     received: None, started: None, completed: None, at_time: None, eta: 1, route_id: 12 };
   let ass_orders = vec![o];
   let ass_orders_map = assigned_orders(&ass_orders);  
-  let ret = wait_exceeded(&o, 1, 2, unsafe{DIST[4][5] as i32}, 1, 1, &get_test_legs5(unsafe{&DIST}), &ass_orders_map);
+  let ret = wait_exceeded(&o, 0, 0, 1, 2, unsafe{DIST[4][5] as i32}, 1, 1, &get_test_legs5(unsafe{&DIST}), &ass_orders_map);
   assert!(!ret);
 }
 
@@ -1203,7 +1266,7 @@ fn test_wait_exceed_assigned_order_and_too_long_then_true() {
     started: None, completed: None, at_time: None, eta: 1, route_id: 123 };
   let ass_orders = vec![o];
   let ass_orders_map = assigned_orders(&ass_orders);  
-  let ret = wait_exceeded(&o, 1, 2, unsafe{DIST[4][5] as i32}, 1, 1, &get_test_legs5(unsafe{&DIST}), &ass_orders_map);
+  let ret = wait_exceeded(&o, 0, 0, 1, 2, unsafe{DIST[4][5] as i32}, 1, 1, &get_test_legs5(unsafe{&DIST}), &ass_orders_map);
   assert!(ret);
 }
 
@@ -1216,7 +1279,7 @@ fn test_wait_exceed_assigned_order_and_not_too_long_then_false() {
                   started: None, completed: None, at_time: None, eta: 1, route_id: 123 };
   let ass_orders = vec![o];
   let ass_orders_map = assigned_orders(&ass_orders);  
-  let ret = wait_exceeded(&o, 1, 2, unsafe{DIST[4][5] as i32}, 1, 1, &get_test_legs5(unsafe{&DIST}), &ass_orders_map);
+  let ret = wait_exceeded(&o, 0, 0, 1, 2, unsafe{DIST[4][5] as i32}, 1, 1, &get_test_legs5(unsafe{&DIST}), &ass_orders_map);
   //each leg = 1min distance + 1min at the stop
   // four legs = 4*1 + 3*1 = 7 min. + 1min of waittime since 'received'. Should be OK
   assert!(!ret);
