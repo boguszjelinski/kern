@@ -518,9 +518,9 @@ mod tests {
   use super::*;
   use crate::distance::init_distance;
   use chrono::Local;
-use serial_test::serial;
+  use serial_test::serial;
   use std::time::Instant;
-  use std::time::SystemTime;
+ // use std::time::SystemTime;
 
   fn get_stops() -> Vec<Stop> {
     let mut stops: Vec<Stop> = vec![];

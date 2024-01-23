@@ -5,8 +5,7 @@
 /// A pool is a group of orders to be picked up by a cab in a prescribed sequence
 /// 
 
-use std::collections::HashMap;
-use std::io::Write;
+use std::collections::HashMap; //use std::io::Write;
 use std::{thread, cmp, vec};
 use chrono::{Local, Duration};
 use log::{info, warn, debug};

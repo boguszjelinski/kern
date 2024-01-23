@@ -14,7 +14,7 @@ use model::{KernCfg,Order,OrderStatus,OrderTransfer,Stop,Cab,CabStatus,Branch,
 use stats::{Stat,update_max_and_avg_time,update_max_and_avg_stats,incr_val};
 use pool::{orders_to_array,orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
 use repo::{CNFG, assign_pool_to_cab};
-use extender::{find_matching_routes, write_sql_to_file, get_handle};
+use extender::{find_matching_routes, get_handle}; // write_sql_to_file
 use utils::get_elapsed;
 use mysql::*;
 use mysql::prelude::*;
@@ -262,10 +262,15 @@ fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Ord
             (pl, sql) = find_external_pool(&mut demand, cabs, stops, cfg.thread_numb, &mut max_route_id, &mut max_leg_id);
         } else {
             for p in (2..5).rev() { // 4,3,2
-                let mut ret = find_pool(p, unsafe { CNFG.thread_numb } as i16,
-                        &mut demand, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
-                pl.append(&mut ret.0);
-                sql += &ret.1;
+                if (p == 5 && demand.len() < unsafe { (CNFG.max_pool5_size/2) as usize } ) || // 5: TODO: check if it works!!
+                    (p == 4 && demand.len() < unsafe { (CNFG.max_pool4_size/2) as usize }) ||
+                    (p == 3 && demand.len() < unsafe { (CNFG.max_pool3_size/2) as usize }) ||
+                    (p == 2 && demand.len() < unsafe { (CNFG.max_pool2_size/2) as usize }) { // /2 as Rust is slower than C
+                    let mut ret = find_pool(p, unsafe { CNFG.thread_numb } as i16,
+                            &mut demand, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
+                    pl.append(&mut ret.0);
+                    sql += &ret.1;
+                }
             }
         }
         update_max_and_avg_time(Stat::AvgPoolTime, Stat::MaxPoolTime, start_pool);
