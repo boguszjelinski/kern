@@ -1,6 +1,6 @@
 db_conn = "mysql://kabina:kaboot@localhost:3306/kabina"
 run_after = 15
-solver_interval = 4
+solver_delay = 35
 max_assign_time = 3
 max_legs = 10
 max_angle = 120.0
@@ -16,4 +16,4 @@ max_pool5_size = 50
 max_pool4_size = 100
 max_pool3_size = 300
 max_pool2_size = 800
-max_solver_size = 1400
+max_solver_size = 600

@@ -38,7 +38,7 @@ use log4rs::{
 const CFG_FILE_DEFAULT: &str = "kern.toml";
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
-    println!("cargo:rustc-link-lib=dynapool98");
+    println!("cargo:rustc-link-lib=dynapool99");
     // reading Config
     let mut cfg_file: String = CFG_FILE_DEFAULT.to_string();
 
@@ -79,7 +79,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
             max_pool4_size:  cfg["max_pool4_size"].parse().unwrap(),
             max_pool3_size:  cfg["max_pool3_size"].parse().unwrap(),
             max_pool2_size:  cfg["max_pool2_size"].parse().unwrap(),
-            solver_interval: cfg["solver_interval"].parse().unwrap(),
+            solver_delay: cfg["solver_delay"].parse().unwrap(),
         };
     }
     setup_logger(cfg["log_file"].clone());
@@ -100,7 +100,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
         info!("pool4_size: {}", CNFG.max_pool4_size);
         info!("pool3_size: {}", CNFG.max_pool3_size);
         info!("pool2_size: {}", CNFG.max_pool2_size);
-        info!("solver_interval: {}", CNFG.solver_interval);
+        info!("solver_delay: {}", CNFG.solver_delay);
     }
     // init DB
     // 192.168.10.176
@@ -185,7 +185,7 @@ fn setup_logger(file_path: String) {
     let _handle = log4rs::init_config(config);
 }
 
-#[link(name = "dynapool98")]
+#[link(name = "dynapool99")]
 extern "C" {
     fn dynapool(
 		numbThreads: i32,
@@ -297,7 +297,10 @@ fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Ord
     }
 
     // we don't want to run run solver each time, once a minute is fine, these are som trouble-making customers :)
-    if (itr % unsafe { CNFG.solver_interval }) == 0 {
+
+    demand = get_old_orders(&demand);
+
+    if demand.len() > 0 {
         // shrinking vectors, getting rid of .id == -1 and (TODO) distant orders and cabs !!!!!!!!!!!!!!!
         (*cabs, demand) = shrink(&cabs, demand);
         stats::update_max_and_avg_stats(Stat::AvgSolverDemandSize, Stat::MaxSolverDemandSize, demand.len() as i64);
@@ -357,12 +360,18 @@ fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Ord
 // least/low cost method - shrinking the model so that it can be sent to solver
 fn lcm(host: &String, mut cabs: &mut Vec<Cab>, mut orders: &mut Vec<Order>, max_route_id: &mut i64, max_leg_id: &mut i64, how_many: i16) 
                                 -> thread::JoinHandle<()> {
-    // let us start with a big cost - is there any smaller?
-    let big_cost: i32 = 1000000;
     if how_many < 1 { // we would like to find at least one
         warn!("LCM asked to do nothing");
         return thread::spawn(|| { });
     }
+    let pairs: Vec<(i16,i16)> = lcm_gen_pairs2(cabs, orders, how_many);
+    let sql = repo::assign_order_to_cab_lcm(pairs, &mut cabs, &mut orders, max_route_id, max_leg_id);
+    return get_handle(host.clone(), sql, "LCM".to_string());
+}
+
+fn lcm_gen_pairs(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i16)> {
+        // let us start with a big cost - is there any smaller?
+    let big_cost: i32 = 1000000;
     let mut cabs_cpy = cabs.to_vec(); // clone
     let mut orders_cpy = orders.to_vec();
     let mut lcm_min_val;
@@ -395,12 +404,62 @@ fn lcm(host: &String, mut cabs: &mut Vec<Cab>, mut orders: &mut Vec<Order>, max_
         cabs_cpy[smin as usize].id = -1;
         orders_cpy[dmin as usize].id = -1;
     }
-    let sql = repo::assign_order_to_cab_lcm(pairs, &mut cabs, &mut orders, max_route_id, max_leg_id);
-    return get_handle(host.clone(), sql, "LCM".to_string());
+    return pairs;
+}
+
+fn lcm_gen_pairs2(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i16)> {
+    // let us start with a big cost - is there any smaller?
+let big_cost: i32 = 1000000;
+let mut cabs_cpy = cabs.to_vec(); // clone
+let mut orders_cpy = orders.to_vec();
+let mut lcm_min_val;
+let mut pairs: Vec<(i16,i16)> = vec![];
+for _ in 0..how_many { // we need to repeat the search (cut off rows/columns) 'howMany' times
+    lcm_min_val = big_cost;
+    let mut smin: i16 = -1;
+    let mut dmin: i16 = -1;
+    // now find the minimal element in the whole matrix
+    unsafe {
+    let mut s: usize = 0;
+    let mut found = false;
+    for cab in cabs_cpy.iter() {
+        if cab.id == -1 {
+            s += 1;
+            continue;
+        }
+        let mut d: usize = 0;
+        for order in orders_cpy.iter() {
+            if order.id != -1 && (distance::DIST[cab.location as usize][order.from as usize] as i32) < lcm_min_val {
+                lcm_min_val = distance::DIST[cab.location as usize][order.from as usize] as i32;
+                smin = s as i16;
+                dmin = d as i16;
+                if lcm_min_val == 0 { // you can't have a better solution
+                    found = true;
+                    break;
+                }
+            }
+            d += 1;
+        }
+        if found {
+            break; // yes, we could have loop labels and break two of them here, but this is for migration to C
+        }
+        s += 1;
+    }}
+    if lcm_min_val == big_cost {
+        info!("LCM minimal cost is big_cost - no more interesting stuff here");
+        break;
+    }
+    // binding cab to the customer order
+    pairs.push((smin, dmin));
+    // removing the "columns" and "rows" from a virtual matrix
+    cabs_cpy[smin as usize].id = -1;
+    orders_cpy[dmin as usize].id = -1;
+}
+return pairs;
 }
 
 // remove orders and cabs allocated by the pool so that the vectors can be sent to solver
-fn shrink (cabs: &Vec<Cab>, orders: Vec<Order>) -> (Vec<Cab>, Vec<Order>) {
+fn shrink(cabs: &Vec<Cab>, orders: Vec<Order>) -> (Vec<Cab>, Vec<Order>) {
     let mut new_cabs: Vec<Cab> = vec![];
     let mut new_orders: Vec<Order> = vec![];
     // v.iter().filter(|x| x % 2 == 0).collect() ??
@@ -411,6 +470,16 @@ fn shrink (cabs: &Vec<Cab>, orders: Vec<Order>) -> (Vec<Cab>, Vec<Order>) {
         if o.id != -1 { new_orders.push(*o); }
     }
     return (new_cabs, new_orders);
+}
+
+fn get_old_orders(orders: &Vec<Order>) -> Vec<Order> {
+    let mut new_orders: Vec<Order> = vec![];
+    for o in orders.iter() { 
+        if get_elapsed(o.received) > unsafe { CNFG.solver_delay as i64 } { 
+            new_orders.push(*o); 
+        }
+    }
+    return new_orders;
 }
 
 // count orders allocated by pool finder
@@ -806,6 +875,18 @@ mod tests {
     return ret;
   }
 
+    fn get_orders2(size: usize) -> Vec<Order> {
+        let mut ret: Vec<Order> = vec![];
+        for i in 0..size as i32 {
+            let from: i32 = 2400 - i % 2400;
+            let to: i32 = from + 5;
+            let dista = unsafe { DIST[from as usize][to as usize] as i32 };
+            ret.push(Order{ id: i as i64, from, to, wait: 15, loss: 70, dist: dista,
+                shared: true, in_pool: false, received: Some(Local::now().naive_local()), started: None, completed: None, at_time: None,
+                eta: 1, route_id: -1 });
+        }
+        return ret;
+    }
 
   fn get_cabs() -> Vec<Cab> {
     let mut ret: Vec<Cab> = vec![];
@@ -850,4 +931,26 @@ mod tests {
     assert_eq!(ret.1.len(), 17401); // TODO: Rust gives 17406
   }
 
+  #[test]  
+  #[serial]
+  fn test_performance_lcm() {
+    let stops = get_stops(0.05);
+    init_distance(&stops);
+    let mut orders: Vec<Order> = get_orders2(1500);
+    let mut cabs: Vec<Cab> = get_cabs();
+    let ret = lcm_gen_pairs(&mut cabs, &mut orders, 100);
+    let ret2 = lcm_gen_pairs2(&mut cabs, &mut orders, 100);
+    assert_eq!(ret.len(), 100);
+    assert_eq!(ret.len(), 100);
+    assert_eq!(ret[0].0, 901);
+    assert_eq!(ret[0].1, 1499);
+    assert_eq!(ret[1].0, 902);
+    assert_eq!(ret[1].1, 1498);
+
+    assert_eq!(ret2.len(), 100);
+    assert_eq!(ret2[0].0, 901);
+    assert_eq!(ret2[0].1, 1499);
+    assert_eq!(ret2[1].0, 902);
+    assert_eq!(ret2[1].1, 1498);
+  }
 }

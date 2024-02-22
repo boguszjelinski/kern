@@ -408,7 +408,10 @@ fn wait_exceeded(ord: &Order, wait_legs: i16, first_leg: usize, i: usize, j:usiz
     log += &format!("[dist after leg={}, dist={}], ", legs[idx].id, total_dist);
     idx += 1;
   }
-  return false;
+
+  // maybe we do not need such a strong controll, like the lines below
+  //return false;
+  
   //info!("{} {}", log, passed_log);
   // let's check max_loss in other orders
   passed_log += &format!("LOSS CHECK: first_leg={}, i={}, j={}, legs[first_leg].id={}, numb of orders={}", first_leg, i, j, legs[first_leg].id, orders.len());
@@ -417,32 +420,36 @@ fn wait_exceeded(ord: &Order, wait_legs: i16, first_leg: usize, i: usize, j:usiz
     if o.id == ord.id { // wait time in this order is checked before this function is called
       continue;
     }
-    let dist_with_loss: i32 = ((1.0 + o.loss as f32 / 100.0) * o.dist as f32).round() as i32;
+    let dist_with_loss: i32 = ((1.0 + o.loss as f32 / 100.0) * o.dist as f32).round() as i32 + 3*STOP_WAIT as i32; //+ stop so that we are not so strict
     let mut legs_count = 0; // to count extra_wait
     total_dist = add_cost; // just in case the order has allready started (no "from"), so pickup extension will affect this order 
     idx = first_leg; // where the route starts
     while (idx == first_leg || legs[idx].route_id == legs[idx - 1].route_id) && idx < legs.len() {
+      if o.from == legs[idx].from { // it may never happen for an order that is in progress at this
+        if idx > j { // the older order is not affected by droppoff, so not by the whole extension
+          break; // check next order
+        }
+        if idx > i {
+          total_dist = 0;
+        } else {
+          total_dist = add_cost; // we have to repeat the initial assignment as some distances could have been added
+        } 
+        legs_count = 0;
+      }
       if o.to == legs[idx].to {
         if idx < i { // 'to' is before any extension, this order will not be affected
           break;
         }
         if idx >= j { // 'to' is after extension, this order is affected by drop-off extension
           total_dist += add2_cost;
-        } 
-        if total_dist + legs[idx].dist /*+ extra_wait(legs_count)*/ > dist_with_loss + STOP_WAIT as i32 { //+ stop so that we are not so strict
+        }
+        if total_dist + legs[idx].dist /*+ extra_wait(legs_count)*/ > dist_with_loss {
+          // some orders began before legs read from database, so we don't even sum up the whole trip, we are not that strict
+          // we would have to check 'started'of that order
           return true; // one of old orders would not like it
         }
-        passed_log += &format!("[order_id={}, total_dist={}, extra_wait={}, dist_with_loss={}], ", o.id, total_dist, extra_wait(legs_count), dist_with_loss);
+        passed_log += &format!("[order_id={}, total_dist={}, extra_wait={}, dist_with_loss={}], ", o.id, total_dist, extra_wait(legs_count), dist_with_loss - 3*STOP_WAIT as i32);
         break; // check next order
-      }
-      if o.from == legs[idx].from { // it may never happen for an order that is in progress at this
-        if idx > j { // the older order is not affected by droppoff, so not by the whole extension
-          break; // check next order
-        }
-        if idx > i { // pickup extension does not affect this old order
-          total_dist = 0;
-        } 
-        legs_count = 0;
       }
       total_dist += legs[idx].dist + STOP_WAIT as i32;
       legs_count += 1;

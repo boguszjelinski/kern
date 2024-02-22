@@ -439,7 +439,7 @@ fn find_nearest_cab(o_idx: i32, pass_count: i32) -> i32 {
         continue;
       }
       found_any = true;
-      if DIST[c.location as usize][o.from as usize] < dist && c.seats <= pass_count {
+      if DIST[c.location as usize][o.from as usize] < dist && c.seats >= pass_count {
         dist = DIST[c.location as usize][o.from as usize];
         nearest = i as i32;
       }

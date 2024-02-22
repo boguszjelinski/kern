@@ -175,5 +175,5 @@ pub struct KernCfg {
     pub max_pool4_size: i32,
     pub max_pool3_size: i32,
     pub max_pool2_size: i32,
-    pub solver_interval: i32,
+    pub solver_delay: i32,
 }

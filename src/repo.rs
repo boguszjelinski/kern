@@ -26,7 +26,7 @@ pub static mut CNFG: KernCfg = KernCfg {
     max_pool4_size: 120,
     max_pool3_size: 300,
     max_pool2_size: 600,
-    solver_interval: 4,
+    solver_delay: 60,
 };
 
 pub fn find_orders_by_status_and_time(conn: &mut PooledConn, status: OrderStatus, at_time: NaiveDateTime) -> Vec<Order> {
