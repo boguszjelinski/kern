@@ -397,7 +397,7 @@ int findNearestCab(int from, int pass_count) {
       if (supply[i].id == -1) // allocated earlier to a pool
         continue;
       found_any = 1;
-      if (dist(supply[i].location, from) < dst && supply[i].seats <= pass_count) {
+      if (dist(supply[i].location, from) < dst && supply[i].seats >= pass_count) {
         dst = dist(supply[i].location, from);
         nearest = i;
       }

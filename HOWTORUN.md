@@ -63,7 +63,7 @@ For MySQL run this:
   |----------|--------
   | db_conn | database connection string - user, password, address, port, schema
   | run_after | time difference in seconds between dispatcher executions
-  | solver_interval | how often solver is engaged, 4 means every fourth lap. The idea is to wait for more requests, maybe some of them will allow for a pool
+  | solver_delay | time in seconds after receiving an order when order can no longer wait for a pool and should be assigned by solver.
   | max_assign_time | time in minutes after which orders expire
   | max_solver_size | if demand and supply exceed the value LCM will be called to shrink the model
   | max_legs | how many legs can a route have, used in route extender
@@ -85,7 +85,7 @@ Scheduler can be started with `target/release/kern` or `cargo run --release`
 Though nothing will happen until cabs will report their availability and customers will submit their trip 
 requests, e.g. with [Kim](https://gitlab.com/kabina/kim) or via RestAPI. 
 
-6) After a simulation ended (only taxi_orders with statuses 3 and 8, CANCELLED AND COMPLETED in the database) you can run some KPI calculations, based both on SQL and Kim log analysis:
+1) After a simulation ended (only taxi_orders with statuses 3 and 8, CANCELLED AND COMPLETED in the database) you can run some KPI calculations, based both on SQL and Kim log analysis:
    ```
    cd sql
    ./kpis-mysql.sh

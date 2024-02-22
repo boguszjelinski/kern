@@ -25,3 +25,9 @@ serial_test = "0.9.0"
 
 [dependencies.mysql_common]
 features = ["chrono"]
+
+[profile.dev]
+opt-level = 0
+
+[profile.release]
+opt-level = 3
