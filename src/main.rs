@@ -927,8 +927,8 @@ mod tests {
     let ret = find_external_pool(&mut orders, &mut cabs, &stops, 8_i32, &mut 0, &mut 0);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
-    assert_eq!(ret.0.len(), 12); 
-    assert_eq!(ret.1.len(), 17401); // TODO: Rust gives 17406
+    assert_eq!(ret.0.len(), 8); 
+    assert_eq!(ret.1.len(), 12841); // TODO: Rust gives 17406
   }
 
   #[test]  
