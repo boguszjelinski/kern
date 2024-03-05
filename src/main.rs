@@ -111,7 +111,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
     let stops = repo::read_stops(&mut conn);
     distance::init_distance(&stops);
 
-    let mut itr: i32 = 0;
     unsafe {
         if CNFG.use_extern_pool {
             initMem();
@@ -124,10 +123,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
 
         // get newly requested trips and free cabs, reject expired orders (no luck this time)
         let tmp_model = prepare_data(&mut conn);
-        let mut rest: usize = 0;
+        
         match tmp_model {
             Some(mut x) => { 
-                rest = dispatch(itr, &db_conn_str, &mut conn, &mut x.0, &mut x.1, &stops, unsafe { CNFG.clone() });
+                let rest: usize = dispatch(&db_conn_str, &mut conn, &mut x.0, &mut x.1, &stops, unsafe { CNFG.clone() });
+                info!("Dispatch rest size: {}", rest);
             },
             None => {
                 info!("Nothing to do");
@@ -146,7 +146,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
             debug!("Sleeping in {} secs", wait);
             thread::sleep(std::time::Duration::from_secs(wait));
         }}
-        itr += 1;
     }
 }
 
@@ -207,13 +206,13 @@ extern "C" {
     fn initMem();
 }
 
-fn run_extender(_thr_numb: i32, itr: i32, host: &String, conn: &mut PooledConn, orders: &Vec<Order>, stops: &Vec<Stop>, 
+fn run_extender(_thr_numb: i32, conn: &mut PooledConn, orders: &Vec<Order>, stops: &Vec<Stop>, 
                 max_leg_id: &mut i64, label: &str, cfg: &KernCfg) -> Vec<Order> {
     let len_before = orders.len();
     if cfg.use_extender {
         let start_extender = Instant::now();
         let demand 
-            = find_matching_routes(itr, _thr_numb, &host, conn, orders, &stops, max_leg_id, unsafe { &DIST });
+            = find_matching_routes(_thr_numb, conn, orders, &stops, max_leg_id, unsafe { &DIST });
         update_max_and_avg_time(Stat::AvgExtenderTime, Stat::MaxExtenderTime, start_extender);
         let len_after = demand.len();
         if len_before != len_after {
@@ -232,7 +231,7 @@ fn run_extender(_thr_numb: i32, itr: i32, host: &String, conn: &mut PooledConn, 
 // 2) pool finder
 // 3) solver (LCM in most scenarious won't be called)
 // SQL updates execute in background as async
-fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>, cfg: KernCfg) -> usize {
+fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>, cfg: KernCfg) -> usize {
     if orders.len() == 0 {
         info!("No demand, no dispatch");
         return 0;
@@ -245,7 +244,7 @@ fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Ord
     
     // check if we want to run extender is done in run_extender
     let mut demand
-        = run_extender(thread_num, itr, &host, conn, orders, &stops, &mut max_leg_id, "FIRST", &cfg);
+        = run_extender(thread_num, conn, orders, &stops, &mut max_leg_id, "FIRST", &cfg);
     // POOL FINDER
     if cabs.len() == 0 {
         info!("No cabs");
@@ -293,7 +292,7 @@ fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Ord
         // let's try extender on the new routes if there still is demand
         (*cabs, demand) = shrink(&cabs, demand);
         demand
-            = run_extender(thread_num, itr, &host, conn, &demand, &stops, &mut max_leg_id, "SECOND", &cfg);
+            = run_extender(thread_num, conn, &demand, &stops, &mut max_leg_id, "SECOND", &cfg);
     }
 
     // we don't want to run run solver each time, once a minute is fine, these are som trouble-making customers :)
@@ -367,44 +366,6 @@ fn lcm(host: &String, mut cabs: &mut Vec<Cab>, mut orders: &mut Vec<Order>, max_
     let pairs: Vec<(i16,i16)> = lcm_gen_pairs2(cabs, orders, how_many);
     let sql = repo::assign_order_to_cab_lcm(pairs, &mut cabs, &mut orders, max_route_id, max_leg_id);
     return get_handle(host.clone(), sql, "LCM".to_string());
-}
-
-fn lcm_gen_pairs(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i16)> {
-        // let us start with a big cost - is there any smaller?
-    let big_cost: i32 = 1000000;
-    let mut cabs_cpy = cabs.to_vec(); // clone
-    let mut orders_cpy = orders.to_vec();
-    let mut lcm_min_val;
-    let mut pairs: Vec<(i16,i16)> = vec![];
-    for _ in 0..how_many { // we need to repeat the search (cut off rows/columns) 'howMany' times
-        lcm_min_val = big_cost;
-        let mut smin: i16 = -1;
-        let mut dmin: i16 = -1;
-        // now find the minimal element in the whole matrix
-        unsafe {
-        for (s, cab) in cabs_cpy.iter().enumerate() {
-            if cab.id == -1 {
-                continue;
-            }
-            for (d, order) in orders_cpy.iter().enumerate() {
-                if order.id != -1 && (distance::DIST[cab.location as usize][order.from as usize] as i32) < lcm_min_val {
-                    lcm_min_val = distance::DIST[cab.location as usize][order.from as usize] as i32;
-                    smin = s as i16;
-                    dmin = d as i16;
-                }
-            }
-        }}
-        if lcm_min_val == big_cost {
-            info!("LCM minimal cost is big_cost - no more interesting stuff here");
-            break;
-        }
-        // binding cab to the customer order
-        pairs.push((smin, dmin));
-        // removing the "columns" and "rows" from a virtual matrix
-        cabs_cpy[smin as usize].id = -1;
-        orders_cpy[dmin as usize].id = -1;
-    }
-    return pairs;
 }
 
 fn lcm_gen_pairs2(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i16)> {
@@ -938,14 +899,7 @@ mod tests {
     init_distance(&stops);
     let mut orders: Vec<Order> = get_orders2(1500);
     let mut cabs: Vec<Cab> = get_cabs();
-    let ret = lcm_gen_pairs(&mut cabs, &mut orders, 100);
     let ret2 = lcm_gen_pairs2(&mut cabs, &mut orders, 100);
-    assert_eq!(ret.len(), 100);
-    assert_eq!(ret.len(), 100);
-    assert_eq!(ret[0].0, 901);
-    assert_eq!(ret[0].1, 1499);
-    assert_eq!(ret[1].0, 902);
-    assert_eq!(ret[1].1, 1498);
 
     assert_eq!(ret2.len(), 100);
     assert_eq!(ret2[0].0, 901);

@@ -9,14 +9,11 @@ use std::collections::HashMap; //use std::io::Write;
 use std::{thread, cmp, vec};
 use chrono::{Local, Duration};
 use log::{info, warn, debug};
-//use postgres::{Client, NoTls};
 use mysql::*;
 use mysql::prelude::*;
 use crate::model::{ Order, OrderStatus, Stop, Leg, RouteStatus, MAXSTOPSNUMB };
-use crate::repo::{find_legs, assign_order_find_cab, create_leg, update_leg_a_bit2, update_reserves_in_legs_before_and_including,
-                  update_reserves_in_legs_before_and_including2,
-                  update_place_in_legs_after, update_passengers_and_reserve_in_legs_between, update_reserve_after,
-                  find_orders_by_status_and_time, CNFG};
+use crate::repo::{find_legs, assign_order_find_cab, create_leg, update_leg_a_bit2, retrieve_legs, retrieve_ass_orders,
+                  update_place_in_legs_after, update_passengers_in_legs_between, find_orders_by_status_and_time, CNFG};
 use crate::distance::DIST;
 use crate::utils::get_elapsed;
 
@@ -45,7 +42,7 @@ pub fn bearing_diff(a: i32, b: i32 ) -> f32 {
   return r.abs();
 }
 
-pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, conn: &mut PooledConn, demand: &Vec<Order>, stops: &Vec<Stop>, 
+pub fn find_matching_routes(_thr_numb: i32, conn: &mut PooledConn, demand: &Vec<Order>, stops: &Vec<Stop>, 
                             max_leg_id: &mut i64, dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) 
                             -> Vec<Order> {
     if demand.len() == 0 {
@@ -64,14 +61,9 @@ pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, conn: &mut 
       info!("Extender START, new orders count={} assigned orders={} legs count={}", demand.len(), ass_orders.len(), legs.len());
       let ass_orders_map = assigned_orders(&ass_orders);
 
-      let (mut ret_part, missed, sql)
+      let (mut ret_part, missed, ext_routes, new_ass_orders, sql)
         = extend_routes(&demand_cpy, &ass_orders_map, stops, &mut legs, max_leg_id, dist);
-        
-      // EXECUTE SQL !!
-      //write_sql_to_file(itr, &sql_bulk, "extender");
-      //for s in split_sql(sql_bulk, 150) {
-      //  client.batch_execute(&s).unwrap();
-      //}
+
       if sql.len() > 0 {
         //debug!("{}", sql_bulk);
         match conn.query_iter(&sql) {
@@ -80,6 +72,23 @@ pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, conn: &mut 
             warn!("Extender SQL error: {}", err);
           }
         }
+        // now updating reserves in extended routes, let's first retrieve all extended routes (well - their legs)
+        let count_routes = ext_routes.len();
+        info!("update_reserves START"); // just for performance check
+        let extended_legs: Vec<Leg> = retrieve_legs(conn, &ext_routes);
+
+        let assigned_orders = retrieve_ass_orders(conn, &ext_routes);
+        info!("retrieved {} legs from {} routes for reserve correction", extended_legs.len(), count_routes);
+        let sql2 = update_reserves(&extended_legs, &assigned_orders);
+        info!("update_reserves gave {} updates", sql2.chars().filter(|c| *c == ';').count());
+
+        match conn.query_iter(&sql2) {
+          Ok(_) => {}
+          Err(err) => {
+            warn!("Extender SQL error: {}", err);
+          }
+        }
+        info!("update_reserves succedded"); // just for performance check
       }
       ret.append(&mut ret_part);
       if missed.len() == 0 { break; }
@@ -88,11 +97,133 @@ pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, conn: &mut 
     return ret;
 }
 
-pub fn write_sql_to_file(itr: i32, sql: &String, label: &str) {
-  let file_name = format!("{}-{}.sql", label.to_string(), itr);
-  let msg = format!("SQL for {} failed", file_name);
-  let mut _file = std::fs::File::create(&file_name).expect(&("Create ".to_string() + &msg));
-  //file.write_all(sql.as_bytes()).expect(&("Write ".to_string() + &msg));
+// pick up orders in a route
+pub fn find_routes_orders(orders: &Vec<Order>, route_id: i64) -> Vec<Order> {
+  let mut ret: Vec<Order> = Vec::new();
+  if orders.len() == 0 {
+    return ret;
+  }
+  for order in orders.iter() {
+    if order.route_id == route_id {
+      ret.push(*order);
+    }
+  }
+  return ret;
+}
+
+fn found_assignment_error(legs: &Vec<Leg>, ass_orders: &Vec<Order>) -> bool {
+  for o in ass_orders.iter() {
+    let mut route_id = -1;
+    let mut found = false;
+    for l in legs.iter() {
+      if l.from == o.from {
+        route_id = l.route_id;
+      }
+      if l.to == o.to && l.route_id == route_id {
+        found = true;
+        break;
+      }
+    }
+    if !found {
+      return true;
+    }
+  }
+  return false;
+}
+
+// this function gives a SQL that updates reserves in extended routes
+fn update_reserves(legs: &Vec<Leg>, assigned_orders: &Vec<Order>) -> String {
+  if legs.len() == 0 {
+    return "".to_string();
+  }
+  // maybe start with MAX reserves, we count them all anyway ???
+  let mut legs_new = legs.clone();
+  // development quality check, to be removed - if we have got extended legs from Mysql
+  if found_assignment_error(legs, &assigned_orders) {
+    warn!("update_reserves got legs without an assigned order");
+  }
+
+  let mut sql: String = "".to_string();
+  let mut curr_route_id = legs[0].route_id;
+  let mut routes_orders: Vec<Order> = find_routes_orders(&assigned_orders, curr_route_id);
+  let mut trip_len: i32 = 0;
+  if legs[0].status == RouteStatus::ASSIGNED { 
+    trip_len += STOP_WAIT as i32; // we have to assume that the cab has just stopped at the stand and will wait a minute
+  }
+  let mut first_leg_idx = 0;
+
+  for (pos, leg) in legs.iter().enumerate() {
+      if leg.route_id != curr_route_id { // new/next route
+        // generating SQL for the previous route
+        sql += "UPDATE leg SET reserve = (case ";
+        for i in first_leg_idx..pos {
+          sql += &format!("when place={} then {} ", legs_new[i].place, legs_new[i].reserve);
+        }
+        sql += &format!("else reserve end) WHERE route_id={};\n", curr_route_id);
+        // resetting
+        curr_route_id = leg.route_id;
+        routes_orders = find_routes_orders(&assigned_orders, curr_route_id);
+        trip_len = 0;
+        first_leg_idx = pos;
+      }
+      // find orders starting at this leg
+      for o in routes_orders.iter_mut() { // TODO: how will this work when there are repetitions - the same stand twice+ in a route
+        let order_detour = (((100.0 + o.loss as f32) / 100.0) * o.dist as f32) as i32;
+        if leg.from == o.from {
+            // WAIT TIME
+            // iterate all previous legs
+            for i in first_leg_idx..pos {
+              legs_new[i].reserve = cmp::max(0, cmp::min(legs_new[i].reserve, o.wait - trip_len));
+            }
+            // count detour
+            let (tour, last_leg_idx) = count_tour(pos, legs, o, curr_route_id);
+            // correct reserves with detour
+            for j in pos..last_leg_idx + 1 {
+              legs_new[j].reserve = cmp::max(0, cmp::min(legs_new[j].reserve, order_detour - tour));
+            }
+            o.from = -1; // this marks this Order as processed, in contrast to Orders without IN, which will be processed below
+            continue; // skip the if below
+        }
+        if o.from != -1 // not processed above, no IN
+           && leg.to == o.to { // all previous legs are this order's tour 
+          for i in first_leg_idx..pos + 1 { // + 1 including this leg
+            legs_new[i].reserve = cmp::max(0, cmp::min(legs_new[i].reserve, order_detour - trip_len));
+          }
+        }
+      }
+      if leg.status == RouteStatus::STARTED {
+        trip_len += get_dist_started(leg);
+      } else {
+        trip_len += leg.dist + STOP_WAIT as i32;
+      }
+  }
+  // last route in loop here
+  sql += "UPDATE leg SET reserve = (case ";
+  for i in first_leg_idx..legs_new.len() {
+    sql += &format!("when place={} then {} ", legs_new[i].place, legs_new[i].reserve);
+  }
+  sql += &format!("else reserve end) WHERE route_id={};\n", curr_route_id);
+
+  return sql;
+}
+
+pub fn count_tour(pos: usize, legs: &Vec<Leg>, o: &Order, curr_route_id: i64) -> (i32, usize) {
+  let mut tour = 0;
+  let mut last_leg_idx: usize = pos;
+  for j in pos..legs.len() {
+    if legs[j].to == o.to {
+      last_leg_idx = j;
+      tour += legs[j].dist;
+      break;
+    }
+    if legs[j].route_id != curr_route_id { // this condition should never happen, OUT should always be there
+      last_leg_idx = j - 1;
+      warn!("OUT stop not found for order_id: {}", o.id);
+      break;
+    }
+    tour += legs[j].dist + STOP_WAIT as i32;
+  }
+  return (tour, last_leg_idx);
 }
 
 pub fn count_legs(legs: &Vec<Leg>) -> HashMap<i64, i8> {
@@ -137,7 +268,7 @@ pub fn assigned_orders(assigned_orders: &Vec<Order>) -> HashMap<i64, Vec<Order>>
 }
 
 fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>, stops: &Vec<Stop>, legs: &mut Vec<Leg>, max_leg_id: &mut i64,
-                  dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> (Vec<Order>, Vec<Order>, String) {
+                  dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> (Vec<Order>, Vec<Order>, Vec<i64>, Vec<i64>, String) {
   let mut t_numb = 10; // mut: there might be one more thread, rest of division
 	let leg_count: HashMap<i64, i8> = count_legs(legs);
   
@@ -178,7 +309,7 @@ fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>
   let mut missed_matches_no_dups: Vec<i64> = Vec::new();
 
   for ind in indices {
-    if extended_routes.contains(&ind.route_id) {
+    if extended_routes.contains(&ind.route_id) { // this route is extended - was found here in the loop earlier
       missed_matches.push(ind.order.id);
       continue;
     }
@@ -198,7 +329,8 @@ fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>
     }
     missed_orders_for_pool.push(*o);
   }
-  return (missed_orders_for_pool, missed_orders, sql);
+
+  return (missed_orders_for_pool, missed_orders, extended_routes, assigned_orders, sql);
 }
 
 fn iterate(orders: Vec<Order>, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &HashMap<i64, i8>, assigned_orders: &HashMap<i64, Vec<Order>>) 
@@ -222,6 +354,12 @@ fn leg_is_short(val: Option<&i8>) -> bool {
   }
 }
 
+pub fn get_dist_started(leg: &Leg) -> i32 {
+  let mut on_the_way = get_elapsed(leg.started) as i32;
+  if on_the_way == -1 { on_the_way = 0; }
+  return cmp::max(0, leg.dist - on_the_way/60) + STOP_WAIT as i32;
+}
+
 // iterate over all existing routes and find the one that will be least distracted (additional path is shortest)
 fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB], leg_count: &HashMap<i64, i8>,
               assigned_orders: &HashMap<i64, Vec<Order>>) -> Option<LegIndicesWithDistance2> {
@@ -230,9 +368,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
   let mut i: usize = 1; // index of pickup TODO: i=0 has to be considered one day
   let mut total_dist: i32;
   if legs[i].status == RouteStatus::STARTED {
-    let mut on_the_way = get_elapsed(legs[0].started) as i32;
-    if on_the_way == -1 { on_the_way = 0; }
-    total_dist = cmp::max(0, legs[0].dist - on_the_way/60) + STOP_WAIT as i32;
+    total_dist = get_dist_started(&legs[0]);
   } else {
    total_dist = legs[0].dist + STOP_WAIT as i32; // distance from the begining of a route; well, only the remaining legs
   }
@@ -265,9 +401,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
       wait_legs = 0;
       total_dist = 0;
       if leg.status == RouteStatus::STARTED { // but we need such legs to avoid assigning legs that very soon will start (little chance to let know the driver)
-        let mut on_the_way = get_elapsed(leg.started) as i32;
-        if on_the_way == -1 { on_the_way = 0; }
-        total_dist += cmp::max(0, leg.dist - on_the_way/60) + STOP_WAIT as i32;
+        total_dist += get_dist_started(&leg);
         wait_legs += 1;
         i += 1;
         continue; 
@@ -281,9 +415,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
       }
     }
     if leg.status == RouteStatus::STARTED { // this should never happen, the same check is above when new route is found 
-      let mut on_the_way = get_elapsed(leg.started) as i32;
-      if on_the_way == -1 { on_the_way = 0; }
-      total_dist += cmp::max(0, leg.dist - on_the_way/60) + STOP_WAIT as i32;
+      total_dist += get_dist_started(&leg);
       i += 1;
       continue; 
     }
@@ -456,7 +588,7 @@ fn wait_exceeded(ord: &Order, wait_legs: i16, first_leg: usize, i: usize, j:usiz
       idx += 1;
     }
   }
-  info!("{} {}", log, passed_log);
+  //info!("{} {}", log, passed_log);
   return false;
 }
 
@@ -565,7 +697,6 @@ fn find_droppoff(order: &Order, legs: &Vec<Leg>, first_leg: usize, i: usize, add
 fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB])
           -> String {
   let mut prev_leg: Leg = legs[f.idx_from - 1];
-  let reserve = cmp::max(0, f.order.wait - f.wait);
   // reserves before changed leg have to satisfy the current order and (!) the added cost will affect wait time of orders that start after the extension
   let detour_reserve = cmp::max(0, (((100.0 + f.order.loss as f32) / 100.0) * f.order.dist as f32) as i32 - f.tour);
   let mut sql: String = String::from("");
@@ -578,146 +709,117 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
     // SAVE0, SAVE6
     // it will be both pick-up and drop-off
     if prev_leg.to == f.order.from { // direct hit
-      sql += &update_reserves_in_legs_before_and_including(prev_leg.route_id, prev_leg.place, reserve); 
       sql += &create_leg(f.order.id, 
-        f.order.from,
-        f.order.to,
-        prev_leg.place + 1,
-        RouteStatus::ASSIGNED,
-        f.order.dist as i16,
-        detour_reserve,
-        prev_leg.route_id as i64, 
-        max_leg_id, // incremented inside
-        1, 
-        &("route extender SAVE0A".to_string()));
+                        f.order.from,
+                        f.order.to,
+                        prev_leg.place + 1,
+                        RouteStatus::ASSIGNED,
+                        f.order.dist as i16,
+                        detour_reserve,
+                        prev_leg.route_id as i64, 
+                        max_leg_id, // incremented inside
+                        1, 
+                        &("route extender SAVE0A".to_string()));
     } else { // not a direct hit
-      sql += &update_reserves_in_legs_before_and_including(prev_leg.route_id, prev_leg.place, reserve); 
       sql += &create_leg(-1,  // ??
-        prev_leg.to,
-        f.order.from,
-        prev_leg.place + 1,
-        RouteStatus::ASSIGNED,
-        dist[prev_leg.to as usize][f.order.from as usize],
-        reserve,
-        prev_leg.route_id as i64, 
-        max_leg_id, // incremented inside
-        0, 
-        &("route extender SAVE0B".to_string()));
+                        prev_leg.to,
+                        f.order.from,
+                        prev_leg.place + 1,
+                        RouteStatus::ASSIGNED,
+                        dist[prev_leg.to as usize][f.order.from as usize],
+                        cmp::max(0, f.order.wait - f.wait),
+                        prev_leg.route_id as i64, 
+                        max_leg_id, // incremented inside
+                        0, 
+                        &("route extender SAVE0B".to_string()));
       sql += &create_leg(f.order.id, 
-        f.order.from,
-        f.order.to,
-        prev_leg.place + 2,
-        RouteStatus::ASSIGNED,
-        f.order.dist as i16,
-        detour_reserve,
-        prev_leg.route_id as i64, 
-        max_leg_id,
-        1, 
-        &("route extender SAVE0C".to_string()));      
-        debug!("SAVE0C: route_id={}, res: {}, wait: {}", f.route_id, reserve, f.wait);
+                        f.order.from,
+                        f.order.to,
+                        prev_leg.place + 2,
+                        RouteStatus::ASSIGNED,
+                        f.order.dist as i16,
+                        detour_reserve,
+                        prev_leg.route_id as i64, 
+                        max_leg_id,
+                        1, 
+                        &("route extender SAVE0C".to_string()));      
+                        debug!("SAVE0C: route_id={}, wait: {}", f.route_id, f.wait);
     }
   } else { // inside, at least pickup
     let leg_pick = legs[f.idx_from];
-    sql += &update_reserves_in_legs_before_and_including2(leg_pick.route_id, leg_pick.place -1, reserve, f.dist);
     
     if f.idx_from == f.idx_to  { // one leg will be extended, 4 situations here
-      let resrv = cmp::max(0, cmp::min(leg_pick.reserve, detour_reserve) - STOP_WAIT as i32);
-      // first adjust reserves after the leg as extension (3 of 4 cases below) will affect wait time
-      sql += &update_reserve_after(leg_pick.route_id, f.dist, leg_pick.place+1);
-
       if leg_pick.from == f.order.from && legs[f.idx_to].to == f.order.to { // matches perfectly
         // SAVE 1
-        sql += &update_passengers_and_reserve_in_legs_between(leg_pick.route_id, detour_reserve, leg_pick.place, leg_pick.place); // one leg to be updated                                                    
+        sql += &update_passengers_in_legs_between(leg_pick.route_id, leg_pick.place, leg_pick.place); // one leg to be updated                                                    
       } else if leg_pick.from == f.order.from { // only pickup matches
         // SAVE 3
         //sql += &update_passengers_and_reserve_in_legs_between(leg_pick.route_id, resrv, leg_pick.place + 1, 100); // 100: all after +1
         sql += &update_place_in_legs_after(leg_pick.route_id, leg_pick.place + 1);
-        let len_diff: i32 = (dist[f.order.to as usize][leg_pick.to as usize] + f.order.dist as i16 + STOP_WAIT) as i32 - leg_pick.dist;
         sql += &create_leg(f.order.id, 
-          f.order.to, // well, a leg after drop-off will be assigned to the order, not quite awesome
-          leg_pick.to,
-          leg_pick.place + 1,
-          RouteStatus::ASSIGNED,
-          dist[f.order.to as usize][leg_pick.to as usize],
-          cmp::max(0, leg_pick.reserve - len_diff), // 'dist' contains added cost/length
-          leg_pick.route_id as i64, 
-          max_leg_id,
-          leg_pick.passengers as i8, 
-          &("route extender SAVE3".to_string()));
+                          f.order.to, // well, a leg after drop-off will be assigned to the order, not quite awesome
+                          leg_pick.to,
+                          leg_pick.place + 1,
+                          RouteStatus::ASSIGNED,
+                          dist[f.order.to as usize][leg_pick.to as usize],
+                          leg_pick.reserve,
+                          leg_pick.route_id as i64, 
+                          max_leg_id,
+                          leg_pick.passengers as i8, 
+                          &("route extender SAVE3".to_string()));
         // the extended leg should point at the new leg added above
         sql += &update_leg_a_bit2(leg_pick.route_id, leg_pick.id, f.order.to, 
-                f.order.dist as i16, cmp::min(resrv, len_diff), leg_pick.passengers as i8 +1); // MIN because reserve in 2 legs <= reserve in one leg; len_diff = reserv - (reserv - len_diff)
+                                  f.order.dist as i16, leg_pick.passengers as i8 +1);
       } else if legs[f.idx_to].to == f.order.to { // only drop-off matches
         // SAVE 3
-        sql += &update_passengers_and_reserve_in_legs_between(leg_pick.route_id, resrv, leg_pick.place + 1, 100); // 100: all after +1
+        sql += &update_passengers_in_legs_between(leg_pick.route_id, leg_pick.place + 1, 100); // 100: all after +1
         sql += &update_place_in_legs_after(leg_pick.route_id, leg_pick.place + 1);
         sql += &create_leg(f.order.id, 
-          f.order.from,
-          leg_pick.to, // == order.to
-          leg_pick.place + 1,
-          RouteStatus::ASSIGNED,
-          f.order.dist as i16,
-          resrv,
-          leg_pick.route_id as i64, 
-          max_leg_id,
-          leg_pick.passengers as i8 + 1, 
-          &("route extender SAVE3B".to_string()));
-        // the new leg above will have a smaller reserv than the extended leg, but how much smaller - what will be the reserve of the existing leg?
-        // it will be cmp::min(leg_pick.reserve - resrv, leg_pick.reserve - len_diff)
-        // but to spare one subtraction let's find the max first
-        let len_diff: i32 = (f.order.dist + dist[leg_pick.from as usize][f.order.from as usize] as i32 + STOP_WAIT as i32) - leg_pick.dist;
-        let reserve_subtr = cmp::max(resrv, len_diff);
-
+                            f.order.from,
+                            leg_pick.to, // == order.to
+                            leg_pick.place + 1,
+                            RouteStatus::ASSIGNED,
+                            f.order.dist as i16,
+                            leg_pick.reserve,
+                            leg_pick.route_id as i64, 
+                            max_leg_id,
+                            leg_pick.passengers as i8 + 1, 
+                            &("route extender SAVE3B".to_string()));
         // the extended leg should point at the new leg added above
         sql += &update_leg_a_bit2(leg_pick.route_id, leg_pick.id, f.order.from, 
-                 dist[leg_pick.from as usize][f.order.from as usize], 
-                 cmp::max(0, cmp::min(leg_pick.reserve - reserve_subtr, f.order.wait - f.wait)), // yes, wait time has to be taken into acount too
-                 leg_pick.passengers as i8);
+                            dist[leg_pick.from as usize][f.order.from as usize], leg_pick.passengers as i8);
       } else { // no match, the order will extend one leg
         sql += &update_place_in_legs_after(leg_pick.route_id, leg_pick.place + 1); // TODO: one call, not two
         sql += &update_place_in_legs_after(leg_pick.route_id, leg_pick.place + 1);
-        let added_cost = (dist[leg_pick.from as usize][f.order.from as usize] + STOP_WAIT + dist[f.order.from as usize][f.order.to as usize] 
-                              + STOP_WAIT + dist[f.order.to as usize][leg_pick.to as usize]) as i32 + extra_wait(2) - leg_pick.dist;
         sql += &create_leg(f.order.id, 
-          f.order.from,
-          f.order.to,
-          leg_pick.place + 1,
-          RouteStatus::ASSIGNED,
-          f.order.dist as i16,
-          // 3 things - current reserve (other orders), reserve for the new order and how the new order affects the old ones
-          cmp::max(0, cmp::min(leg_pick.reserve - added_cost, detour_reserve)),
-          leg_pick.route_id as i64, 
-          max_leg_id,
-          leg_pick.passengers as i8 + 1, 
-          &("route extender SAVE3C".to_string()));
+                          f.order.from,
+                          f.order.to,
+                          leg_pick.place + 1,
+                          RouteStatus::ASSIGNED,
+                          f.order.dist as i16,
+                          leg_pick.reserve,
+                          leg_pick.route_id as i64, 
+                          max_leg_id,
+                          leg_pick.passengers as i8 + 1, 
+                          &("route extender SAVE3C".to_string()));
         // like in SAVE3B, here the reserve has to be split in 3 (!) legs
-        let len_diff: i32 = (f.order.dist + dist[f.order.to as usize][leg_pick.to as usize] as i32 + STOP_WAIT as i32) - leg_pick.dist;
-        let reserve_subtr = cmp::max(resrv, len_diff);
-        let reserve2 = cmp::min(leg_pick.reserve - reserve_subtr, f.order.wait - f.wait - f.sum_reserve);
         // beyond the new order, detour of this order is not needed
         sql += &create_leg(f.order.id, 
-          f.order.to,
-          leg_pick.to, // == order.to
-          leg_pick.place + 2,
-          RouteStatus::ASSIGNED,
-          dist[f.order.to as usize][leg_pick.to as usize],
-          cmp::min(cmp::min(resrv, f.sum_reserve),  reserve2),
-          leg_pick.route_id as i64, 
-          max_leg_id,
-          leg_pick.passengers as i8, 
-          &("route extender SAVE3C".to_string()));  
+                          f.order.to,
+                          leg_pick.to, // == order.to
+                          leg_pick.place + 2,
+                          RouteStatus::ASSIGNED,
+                          dist[f.order.to as usize][leg_pick.to as usize],
+                          leg_pick.reserve,
+                          leg_pick.route_id as i64, 
+                          max_leg_id,
+                          leg_pick.passengers as i8, 
+                          &("route extender SAVE3C".to_string()));  
         // the extended leg should point at the new leg added above
         sql += &update_leg_a_bit2(leg_pick.route_id, leg_pick.id, f.order.from, 
-                 dist[leg_pick.from as usize][f.order.from as usize], 
-                 cmp::max(0, cmp::min(leg_pick.reserve - added_cost, f.order.wait - f.wait)), // leg_pick.reserve - reserve_subtr - reserve2
-                 leg_pick.passengers as i8);
+                              dist[leg_pick.from as usize][f.order.from as usize], leg_pick.passengers as i8);
       }
     } else { // more legs to be extended, possibly
-      // !!! we have to update reserves in bettwen pickup and drop-off (see at the end) and after, before are updated above
-      if f.idx_to < legs.len() // beyond the last route in the list, here we do not have route_id
-          && f.route_id == legs[f.idx_to].route_id {
-        sql += &update_reserve_after(leg_pick.route_id, f.dist, legs[f.idx_to].place+1);
-      }
       let place_start: i32;
       // PICK-UP first
       if leg_pick.from == f.order.from {
@@ -728,27 +830,21 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
         place_start = leg_pick.place + 1;
              // we have to increment 'place' before drop-off INSERTs  
         sql += &update_place_in_legs_after(leg_pick.route_id, leg_pick.place + 1);
-        let len_diff: i32 = (dist[leg_pick.from as usize][f.order.from as usize] + STOP_WAIT + dist[f.order.from as usize][leg_pick.to as usize]) as i32 - leg_pick.dist;
-        let res = cmp::max(0, cmp::min(detour_reserve, leg_pick.reserve - len_diff));
         sql += &create_leg(f.order.id, 
-          f.order.from,
-          leg_pick.to,
-          leg_pick.place + 1,
-          RouteStatus::ASSIGNED,
-          dist[f.order.from as usize][leg_pick.to as usize] as i16,
-          res,
-          leg_pick.route_id as i64, 
-          max_leg_id,
-          leg_pick.passengers as i8 + 1, 
-          &("route extender SAVE4B".to_string()));
-        debug!("SAVE4B: route_id={}, wait:{}, detour_res:{}, res:{}", f.route_id, f.wait, detour_reserve, res);
+                            f.order.from,
+                            leg_pick.to,
+                            leg_pick.place + 1,
+                            RouteStatus::ASSIGNED,
+                            dist[f.order.from as usize][leg_pick.to as usize] as i16,
+                            leg_pick.reserve,
+                            leg_pick.route_id as i64, 
+                            max_leg_id,
+                            leg_pick.passengers as i8 + 1, 
+                            &("route extender SAVE4B".to_string()));
+        debug!("SAVE4B: route_id={}, wait:{}", f.route_id, f.wait);
         // the extended leg should point at the new leg added above
-        let res = cmp::max(0, cmp::min(res, leg_pick.reserve - res)); // sum of the two legs (reserve) cannot be bigger than the original leg 
         sql += &update_leg_a_bit2(leg_pick.route_id, leg_pick.id, f.order.from, 
-                            dist[leg_pick.from as usize][f.order.from as usize],
-                            // previous version: leg_pick.reserve - len_diff
-                            cmp::max(0, cmp::min(f.order.wait - f.wait, leg_pick.reserve - res)), // -res, to subtract reserve ffrom the leg above
-                            leg_pick.passengers as i8);
+                            dist[leg_pick.from as usize][f.order.from as usize], leg_pick.passengers as i8);
       }
       // DROP-OFF
       let place_incr = if place_start > leg_pick.place { 2 } else { 1 };
@@ -756,18 +852,18 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
       if f.idx_to >= legs.len() // beyond the last route in the list, here we do not have route_id
           || f.route_id != legs[f.idx_to].route_id { // we know that there is no perfect match for 'to', it would be the last leg in a route
         prev_leg = legs[f.idx_to -1];
-        debug!("SAVE5: route_id: {}, detour_res: {}, sum_reserve: {}", f.route_id, detour_reserve, f.sum_reserve);
+        debug!("SAVE5: route_id: {}", f.route_id);
         sql += &create_leg(-1,  // ??
-          prev_leg.to,
-          f.order.to,
-          prev_leg.place + place_incr, 
-          RouteStatus::ASSIGNED,
-          dist[prev_leg.to as usize][f.order.to as usize],
-          cmp::max(0, detour_reserve - f.sum_reserve), // reserve in all legs cannot be bigger than dist-tour 
-          prev_leg.route_id as i64, 
-          max_leg_id,
-          1, 
-          &("route extender SAVE5".to_string()));
+                          prev_leg.to,
+                          f.order.to,
+                          prev_leg.place + place_incr, 
+                          RouteStatus::ASSIGNED,
+                          dist[prev_leg.to as usize][f.order.to as usize],
+                          detour_reserve,
+                          prev_leg.route_id as i64, 
+                          max_leg_id,
+                          1, 
+                          &("route extender SAVE5".to_string()));
       } else { // one of existing legs
         let leg = legs[f.idx_to];
         if leg.to == f.order.to {
@@ -778,25 +874,20 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
         } else {
           // SAVE 4
           sql += &update_place_in_legs_after(leg_pick.route_id, leg.place + place_incr);
-          let len_diff: i32 = (dist[leg.from as usize][f.order.to as usize] + STOP_WAIT + dist[f.order.to as usize][leg.to as usize]) as i32 - leg.dist;
-          let reserve1 = cmp::max(0, cmp::min(detour_reserve, leg.reserve - len_diff - f.sum_reserve));
           sql += &create_leg(-1, 
-            f.order.to,
-            leg.to,
-            leg.place + place_incr,
-            RouteStatus::ASSIGNED,
-            dist[f.order.to as usize][leg.to as usize],
-            reserve1,
-            leg_pick.route_id as i64, 
-            max_leg_id,
-            leg.passengers as i8, 
-            &("route extender SAVE4C".to_string()));
+                            f.order.to,
+                            leg.to,
+                            leg.place + place_incr,
+                            RouteStatus::ASSIGNED,
+                            dist[f.order.to as usize][leg.to as usize],
+                            leg.reserve,
+                            leg_pick.route_id as i64, 
+                            max_leg_id,
+                            leg.passengers as i8, 
+                            &("route extender SAVE4C".to_string()));
           // the extended leg should point at the new leg added above
-          let reserve_subtr = cmp::min(leg.reserve - detour_reserve, leg.reserve - reserve1); // how much reserve is left for the other leg
           sql += &update_leg_a_bit2(leg.route_id, leg.id, f.order.to, 
-            dist[leg.from as usize][f.order.to as usize],
-            cmp::max(0, cmp::min(reserve_subtr, detour_reserve)), // reserve - detour: sum of reserver in 2 legs cannot be bigger than leg.reserve
-            leg.passengers as i8 + 1);
+                              dist[leg.from as usize][f.order.to as usize], leg.passengers as i8 + 1);
         }
       }
       if f.route_id == leg_pick.route_id { // at least pickup is in an existing leg 
@@ -809,8 +900,7 @@ fn get_sql(f: &LegIndicesWithDistance2, max_leg_id: &mut i64, legs: &Vec<Leg>, d
         } else { 
           place_stop = legs[f.idx_to -1 ].place;
         }
-        sql += &update_passengers_and_reserve_in_legs_between(leg_pick.route_id, cmp::max(0, detour_reserve),
-                                                  place_start, place_stop); // TODO: SQL without BETWEEN!
+        sql += &update_passengers_in_legs_between(leg_pick.route_id, place_start, place_stop); // TODO: SQL without BETWEEN!
       }
     }
   }
@@ -935,7 +1025,7 @@ mod tests {
     let orders = vec![Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, 
                                       dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, shared: true, in_pool: false, 
       received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 }];
-    let (_ret, _, sql) = extend_routes(&orders, &HashMap::new(),  &get_stops(),
+    let (_ret, _, _,_, sql) = extend_routes(&orders, &HashMap::new(),  &get_stops(),
                                                        &mut get_test_legs(unsafe{&DIST}), &mut max_leg_id, unsafe { &DIST });
     assert_eq!(sql, expected_sql);
   }
@@ -946,7 +1036,7 @@ mod tests {
     let orders = vec![Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, 
                                       dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, shared: true, in_pool: false, 
       received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 }];
-    let (_ret, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
+    let (_ret, _, _,_, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
                                                          &mut get_test_legs2(unsafe{&DIST}), &mut max_leg_id, unsafe { &DIST });
     assert_eq!(sql, expected_sql);
   }
@@ -1072,7 +1162,7 @@ fn test_extend_legs_sql4(from_stand: i32, to_stand: i32, expected_sql: &str) {
   let orders = vec![Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, 
                                     dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, shared: true, in_pool: false, 
     received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 }];
-  let (_ret, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
+  let (_ret, _, _, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
                                                        &mut get_test_legs4(unsafe{&DIST}), &mut max_leg_id, unsafe { &DIST });
   assert_eq!(sql, expected_sql);
 }
@@ -1153,7 +1243,7 @@ fn test_extend_legs_no_match(from_stand: i32, to_stand: i32) {
   let orders = vec![Order { id: 1, from: from_stand, to: to_stand, wait: 1, loss:1, 
                                     dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, shared: true, in_pool: false, 
     received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 }];
-  let (ret, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
+  let (ret, _, _, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
                                                        &mut get_test_legs2(unsafe{&DIST}), &mut max_leg_id, unsafe { &DIST });
   assert_eq!(sql, "");
   assert_eq!(ret.len(), 1);
@@ -1174,7 +1264,7 @@ fn test_extend_legs_identical_orders(from_stand: i32, to_stand: i32) {
             shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 },
     Order { id: 2, from: from_stand, to: to_stand, wait: 10, loss:90, dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32},
             shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 }];
-  let (ret, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
+  let (ret, _, _, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
                                                        &mut get_test_legs2(unsafe{&DIST}), &mut max_leg_id, unsafe { &DIST });
   assert_eq!(sql, "UPDATE taxi_order AS o SET route_id=123, leg_id=0, cab_id=r.cab_id, status=1, eta=0, in_pool=true \
   FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n\
@@ -1250,6 +1340,23 @@ fn test_wait_exceed_assigned_order_and_not_too_long_then_false() {
   //each leg = 1min distance + 1min at the stop
   // four legs = 4*1 + 3*1 = 7 min. + 1min of waittime since 'received'. Should be OK
   assert!(!ret);
+}
+
+#[test]
+fn test_update_reserves() {
+  init_distance(&get_stops());
+  let legs = get_test_legs3(unsafe{ &DIST });
+  let orders = vec![
+    Order { id: 1, from: 4, to: 5, wait: 10, loss:90, dist:unsafe{DIST[4][5] as i32},
+            shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, eta: 1, route_id: 124},
+    Order { id: 2, from: 2, to: 5, wait: 10, loss:90, dist:unsafe{DIST[2][5] as i32},
+            shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, eta: 1, route_id: 123},
+    Order { id: 3, from: 0, to: 2, wait: 10, loss:90, dist:unsafe{DIST[0][2] as i32},
+            shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, eta: 1, route_id: 125},
+    Order { id: 4, from: 4, to: 5, wait: 10, loss:90, dist:unsafe{DIST[2][5] as i32},
+            shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, eta: 1, route_id: 126}];
+  let sql = update_reserves(&legs, &orders);
+  assert_eq!(sql.chars().filter(|c| *c == ';').count(), 4);
 }
 
 }

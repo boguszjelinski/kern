@@ -129,6 +129,82 @@ pub fn find_legs(conn: &mut PooledConn) -> Vec<Leg> {
     return ret;
 }
 
+pub fn retrieve_legs(conn: &mut PooledConn, ids: &Vec<i64>) -> Vec<Leg> {
+    let mut ret: Vec<Leg> = Vec::new();
+    if ids.len() < 1 {
+        return ret;
+    }
+    let mut qry = "SELECT id, from_stand, to_stand, place, distance, started, completed, \
+                         route_id, status, reserve, passengers FROM leg WHERE route_id IN (".to_string();
+    for id in ids.iter() {
+        qry += &format!("{},", id);
+    }
+    qry.pop(); // removing last comma
+    qry += ") AND (status = 1 OR status = 5) ORDER BY route_id ASC, place ASC";
+    let selected: Result<Vec<Row>> = conn.query(qry);
+
+    match selected {
+        Ok(sel) => {
+            for r in sel {
+                ret.push(Leg {
+                    id: r.get(0).unwrap(),
+                    from: r.get(1).unwrap(),
+                    to: r.get(2).unwrap(),
+                    place: r.get(3).unwrap(),
+                    dist: r.get(4).unwrap(),
+                    started: get_naivedate(&r, 5),
+                    completed: get_naivedate(&r, 6),
+                    route_id: r.get(7).unwrap(),
+                    status: get_route_status(r.get(8).unwrap()),
+                    reserve: r.get(9).unwrap(),
+                    passengers: r.get(10).unwrap(),
+                    seats: -1,
+                });
+            }
+        },
+        Err(error) => warn!("Problem reading row: {:?}", error),
+    }
+    return ret;
+}
+
+pub fn retrieve_ass_orders(conn: &mut PooledConn, ids: &Vec<i64>) -> Vec<Order> {
+    let mut ret : Vec<Order> = Vec::new();
+    let mut qry = "SELECT id, from_stand, to_stand, max_wait, max_loss, distance, shared, in_pool, \
+               received, started, completed, at_time, eta, route_id FROM taxi_order WHERE route_id IN (".to_string();
+    for id in ids.iter() {
+        qry += &format!("{},", id);
+    }
+    qry.pop(); // removing last comma
+    qry += ")";
+
+    let selected: Result<Vec<Row>> = conn.query(qry);
+    
+    match selected {
+        Ok(sel) => {
+            for r in sel {
+                ret.push(Order {
+                    id: r.get(0).unwrap(),
+                    from: r.get(1).unwrap(),
+                    to: r.get(2).unwrap(),
+                    wait: r.get(3).unwrap(),
+                    loss: r.get(4).unwrap(),
+                    dist: r.get(5).unwrap(),
+                    shared: r.get(6).unwrap(),
+                    in_pool: r.get(7).unwrap(),
+                    received: get_naivedate(&r, 8),
+                    started: get_naivedate(&r, 9),
+                    completed: get_naivedate(&r, 10),
+                    at_time: get_naivedate(&r, 11),
+                    eta: r.get(12).unwrap(),
+                    route_id: get_i64(&r, 13),
+                });
+            }
+        },
+        Err(error) => warn!("Problem reading row: {:?}", error),
+    }
+    return ret;
+}
+
 pub fn get_route_status(idx: i32) -> RouteStatus {
     return unsafe { ::std::mem::transmute(idx as i8) };
 }
@@ -178,12 +254,11 @@ pub fn create_leg(order_id: i64, from: i32, to: i32, place: i32, status: RouteSt
     return ret;
 }
 
-pub fn update_leg_a_bit2(route_id: i64, leg_id: i64, to: i32, dist: i16, reserve: i32, passengers: i8) -> String {
-    debug!("Updating existing route_id={}, leg_id={}, to={}, distance={}, reserve={}, passengers={}", 
-                route_id, leg_id, to, dist, reserve, passengers);
+pub fn update_leg_a_bit2(route_id: i64, leg_id: i64, to: i32, dist: i16, passengers: i8) -> String {
+    debug!("Updating existing route_id={}, leg_id={}, to={}, distance={}, passengers={}", 
+                route_id, leg_id, to, dist, passengers);
     return format!("\
-        UPDATE leg SET to_stand={}, distance={}, reserve={}, passengers={} WHERE id={};\n", 
-        to, dist, reserve, passengers, leg_id);
+        UPDATE leg SET to_stand={}, distance={}, passengers={} WHERE id={};\n", to, dist, passengers, leg_id);
 }
 
 pub fn update_place_in_legs_after(route_id: i64, place: i32) -> String {
@@ -191,49 +266,15 @@ pub fn update_place_in_legs_after(route_id: i64, place: i32) -> String {
     return format!("UPDATE leg SET place=place+1 WHERE route_id={} AND place >= {};\n", route_id, place);
 }
 
-pub fn update_passengers_and_reserve_in_legs_between(route_id: i64, reserve: i32, place_from: i32, place_to: i32) -> String {
+pub fn update_passengers_in_legs_between(route_id: i64, place_from: i32, place_to: i32) -> String {
     if place_from > place_to {
         return "".to_string();
     }
-    debug!("Updating passengers and reserve in route_id={}, reserve={} from place={} to place={}", 
-                    route_id, reserve, place_from, place_to);
+    debug!("Updating passengers in route_id={}, from place={} to place={}", 
+                    route_id, place_from, place_to);
     return format!("\
-        UPDATE leg SET passengers=passengers+1, reserve=LEAST(reserve, {}) WHERE route_id={} AND place BETWEEN {} AND {};\n", 
-                    reserve, route_id, place_from, place_to);
-}
-
-pub fn update_reserve_after(route_id: i64, cost: i32, place_from: i32) -> String {
-    if cost < 0 {
-        return "".to_string();
-    }
-    debug!("Updating reserve in route_id={}, cost={} from place={}", route_id, cost, place_from);
-    return format!("\
-        UPDATE leg SET reserve=GREATEST(0, reserve-{}) WHERE route_id={} AND place >= {};\n", cost, route_id, place_from);
-}
-
-pub fn update_reserves_in_legs_before_and_including(route_id: i64, place: i32, wait_diff: i32) -> String {
-    if place < 0 {
-        return "".to_string();
-    }
-    debug!("Updating reserve in route_id={}, before place={}, wait_diff={}", 
-            route_id, place, wait_diff);
-    return format!("UPDATE leg SET reserve=LEAST(reserve, {}) WHERE route_id={} AND place <= {};\n", 
-                wait_diff, route_id, place);
-}
-
-pub fn update_reserves_in_legs_before_and_including2(route_id: i64, place: i32, wait_diff: i32, cost: i32) -> String {
-    if place < 0 {
-        return "".to_string();
-    }
-    debug!("Updating reserve in route_id={}, BEFORE place={}, wait_diff={}", 
-            route_id, place, wait_diff);
-            // first reserves for other orders, decreased by added cost
-    let mut sql = format!("\
-        UPDATE leg SET reserve=GREATEST(0, reserve-{}) WHERE route_id={} AND place <= {};\n", cost, route_id, place);
-        // for wait reserve for the current order 
-    sql += format!("\
-        UPDATE leg SET reserve=LEAST(reserve, {}) WHERE route_id={} AND place <= {};\n", wait_diff, route_id, place).as_str();
-    return sql;
+        UPDATE leg SET passengers=passengers+1 WHERE route_id={} AND place BETWEEN {} AND {};\n", 
+                    route_id, place_from, place_to);
 }
 
 pub fn assign_pool_to_cab(cab: Cab, orders: &[Order; MAXORDERSNUMB], pool: Branch, max_route_id: &mut i64, 
@@ -405,9 +446,7 @@ pub fn assign_order_to_cab_lcm(sol: Vec<(i16,i16)>, cabs: &mut Vec<Cab>, demand:
         let mut reserve: i32 = order.wait - unsafe { DIST[cab.location as usize][order.from as usize] } as i32; // expected time of arrival
         if reserve < 0 { reserve = 0; } 
         sql += &update_cab_add_route(&cab, &order, &mut place, &mut eta,  reserve, max_route_id, max_leg_id);
-        let loss = unsafe { DIST[order.from as usize][order.to as usize] as f32
-            * (100.0 + order.loss as f32) / 100.0 } as i32 ;
-        if reserve > loss { reserve = loss; } 
+        reserve = unsafe { DIST[order.from as usize][order.to as usize] as f32 * (order.loss as f32) / 100.0 } as i32; // reserve is the acceptable loss
         sql += &assign_order_to_cab(order, cab, place, eta, reserve, *max_route_id, max_leg_id, "assignCustToCabLCM");
         cabs[*cab_idx as usize].id = -1; // munkres should not assign this cab
         demand[*ord_idx as usize].id = -1;
@@ -417,7 +456,7 @@ pub fn assign_order_to_cab_lcm(sol: Vec<(i16,i16)>, cabs: &mut Vec<Cab>, demand:
 }
 
 fn assign_order_to_cab(order: Order, cab: Cab, place: i32, eta: i16, reserve: i32, route_id: i64, 
-                    max_leg_id: &mut i64, called_by: &str) -> String {
+                        max_leg_id: &mut i64, called_by: &str) -> String {
     let mut sql: String = String::from("");
     unsafe {
         sql += &create_leg(order.id, order.from, order.to, place, RouteStatus::ASSIGNED, 
@@ -445,11 +484,9 @@ pub fn assign_cust_to_cab_munkres(sol: Vec<i16>, cabs: &Vec<Cab>, demand: &Vec<O
             // TODO/TASK we should communicate with the customer, if this is acceptable, more than WAIT TIME
             reserve = 0; 
         } 
-        
         let loss = unsafe { DIST[order.from as usize][order.to as usize] as f32 * (order.loss as f32) / 100.0 } as i32 ;
-        if reserve > loss { reserve = loss; } 
         sql += &update_cab_add_route(&cab, &order, &mut place, &mut eta, reserve, max_route_id, max_leg_id);
-        sql += &assign_order_to_cab(order, cabs[cab_idx], place, eta, reserve, *max_route_id, max_leg_id, "assignCustToCabMunkres");
+        sql += &assign_order_to_cab(order, cabs[cab_idx], place, eta, loss, *max_route_id, max_leg_id, "assignCustToCabMunkres");
         *max_route_id += 1;
     }
     return sql;
@@ -545,7 +582,6 @@ mod tests {
     let sql = assign_orders_and_save_legs(cab.id, 0, place, br, eta, &mut max_leg_id, &orders, reserves);
     //println!("{}", sql);
     assert_eq!(sql, "INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (0,0,1,0,2,1,0,0,1);\nUPDATE taxi_order SET route_id=0, leg_id=0, cab_id=0, status=1, eta=0, in_pool=true WHERE id=0 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (1,1,2,1,2,1,0,0,2);\nUPDATE taxi_order SET route_id=0, leg_id=1, cab_id=0, status=1, eta=2, in_pool=true WHERE id=1 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (2,2,3,2,2,1,0,0,3);\nUPDATE taxi_order SET route_id=0, leg_id=2, cab_id=0, status=1, eta=4, in_pool=true WHERE id=2 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (3,3,0,3,0,1,0,0,4);\nUPDATE taxi_order SET route_id=0, leg_id=3, cab_id=0, status=1, eta=6, in_pool=true WHERE id=3 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (4,0,7,4,14,1,0,0,5);\nUPDATE taxi_order SET route_id=0, leg_id=4, cab_id=0, status=1, eta=6, in_pool=true WHERE id=0 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (5,7,4,5,0,1,0,0,4);\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (6,4,5,6,2,1,0,0,3);\n");
-
   }
 
 /*
