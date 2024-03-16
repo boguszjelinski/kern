@@ -78,7 +78,8 @@ pub fn find_matching_routes(_thr_numb: i32, conn: &mut PooledConn, demand: &Vec<
         let extended_legs: Vec<Leg> = retrieve_legs(conn, &ext_routes);
 
         let assigned_orders = retrieve_ass_orders(conn, &ext_routes);
-        info!("retrieved {} legs from {} routes for reserve correction", extended_legs.len(), count_routes);
+        info!("update_reserves: retrieved {} legs from {} routes, assigned orders: {} for reserve correction", 
+              extended_legs.len(), count_routes, assigned_orders.len());
         let sql2 = update_reserves(&extended_legs, &assigned_orders);
         info!("update_reserves gave {} updates", sql2.chars().filter(|c| *c == ';').count());
 
@@ -111,26 +112,6 @@ pub fn find_routes_orders(orders: &Vec<Order>, route_id: i64) -> Vec<Order> {
   return ret;
 }
 
-fn found_assignment_error(legs: &Vec<Leg>, ass_orders: &Vec<Order>) -> bool {
-  for o in ass_orders.iter() {
-    let mut route_id = -1;
-    let mut found = false;
-    for l in legs.iter() {
-      if l.from == o.from {
-        route_id = l.route_id;
-      }
-      if l.to == o.to && l.route_id == route_id {
-        found = true;
-        break;
-      }
-    }
-    if !found {
-      return true;
-    }
-  }
-  return false;
-}
-
 // this function gives a SQL that updates reserves in extended routes
 fn update_reserves(legs: &Vec<Leg>, assigned_orders: &Vec<Order>) -> String {
   if legs.len() == 0 {
@@ -138,11 +119,6 @@ fn update_reserves(legs: &Vec<Leg>, assigned_orders: &Vec<Order>) -> String {
   }
   // maybe start with MAX reserves, we count them all anyway ???
   let mut legs_new = legs.clone();
-  // development quality check, to be removed - if we have got extended legs from Mysql
-  if found_assignment_error(legs, &assigned_orders) {
-    warn!("update_reserves got legs without an assigned order");
-  }
-
   let mut sql: String = "".to_string();
   let mut curr_route_id = legs[0].route_id;
   let mut routes_orders: Vec<Order> = find_routes_orders(&assigned_orders, curr_route_id);
@@ -178,16 +154,18 @@ fn update_reserves(legs: &Vec<Leg>, assigned_orders: &Vec<Order>) -> String {
             // count detour
             let (tour, last_leg_idx) = count_tour(pos, legs, o, curr_route_id);
             // correct reserves with detour
+            let reserve = order_detour - tour; // - extra_wait((pos - first_leg_idx) as i16);
             for j in pos..last_leg_idx + 1 {
-              legs_new[j].reserve = cmp::max(0, cmp::min(legs_new[j].reserve, order_detour - tour));
+              legs_new[j].reserve = cmp::max(0, cmp::min(legs_new[j].reserve, reserve));
             }
             o.from = -1; // this marks this Order as processed, in contrast to Orders without IN, which will be processed below
             continue; // skip the if below
         }
         if o.from != -1 // not processed above, no IN
            && leg.to == o.to { // all previous legs are this order's tour 
+          let reserve = order_detour - trip_len; // - extra_wait((pos - first_leg_idx) as i16);
           for i in first_leg_idx..pos + 1 { // + 1 including this leg
-            legs_new[i].reserve = cmp::max(0, cmp::min(legs_new[i].reserve, order_detour - trip_len));
+            legs_new[i].reserve = cmp::max(0, cmp::min(legs_new[i].reserve, reserve));
           }
         }
       }
@@ -203,7 +181,7 @@ fn update_reserves(legs: &Vec<Leg>, assigned_orders: &Vec<Order>) -> String {
     sql += &format!("when place={} then {} ", legs_new[i].place, legs_new[i].reserve);
   }
   sql += &format!("else reserve end) WHERE route_id={};\n", curr_route_id);
-
+  info!("{}", sql);
   return sql;
 }
 
@@ -218,7 +196,12 @@ pub fn count_tour(pos: usize, legs: &Vec<Leg>, o: &Order, curr_route_id: i64) ->
     }
     if legs[j].route_id != curr_route_id { // this condition should never happen, OUT should always be there
       last_leg_idx = j - 1;
-      warn!("OUT stop not found for order_id: {}", o.id);
+      let mut log = "".to_string();
+      for i in pos..j {
+        log += &format!("(id: {}, to: {}),", legs[i].id, legs[i].to);
+      }
+      warn!("OUT stop not found for order_id: {}, leg from: (id: {}, from:{}), to: {}, legs' to: {}", 
+            o.id, legs[pos].id, legs[pos].from, o.to, log);
       break;
     }
     tour += legs[j].dist + STOP_WAIT as i32;

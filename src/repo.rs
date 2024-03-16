@@ -101,7 +101,7 @@ pub fn find_legs(conn: &mut PooledConn) -> Vec<Leg> {
     let mut ret: Vec<Leg> = Vec::new();
     let qry = "SELECT l.id, l.from_stand, l.to_stand, l.place, l.distance, l.started, l.completed, \
                     l.route_id, l.status, l.reserve, l.passengers, c.seats FROM leg l, route r, cab c \
-                    WHERE r.id=l.route_id AND r.cab_id=c.id AND (l.status = 1 OR l.status = 5) \
+                    WHERE r.id=l.route_id AND r.cab_id=c.id AND l.status IN (1,5) \
                     ORDER BY l.route_id ASC, l.place ASC";
     let selected: Result<Vec<Row>> = conn.query(qry);
     
@@ -140,7 +140,7 @@ pub fn retrieve_legs(conn: &mut PooledConn, ids: &Vec<i64>) -> Vec<Leg> {
         qry += &format!("{},", id);
     }
     qry.pop(); // removing last comma
-    qry += ") AND (status = 1 OR status = 5) ORDER BY route_id ASC, place ASC";
+    qry += ") AND status IN (1,5) ORDER BY route_id ASC, place ASC";
     let selected: Result<Vec<Row>> = conn.query(qry);
 
     match selected {
@@ -175,7 +175,7 @@ pub fn retrieve_ass_orders(conn: &mut PooledConn, ids: &Vec<i64>) -> Vec<Order> 
         qry += &format!("{},", id);
     }
     qry.pop(); // removing last comma
-    qry += ")";
+    qry += ") AND status IN (0,1,2)";
 
     let selected: Result<Vec<Row>> = conn.query(qry);
     
@@ -293,7 +293,6 @@ pub fn assign_pool_to_cab(cab: Cab, orders: &[Order; MAXORDERSNUMB], pool: Branc
     return sql;
 }
 
-// !! KEX does not have 'reserve' here, creat_leg get ZERO as a reserve
 fn update_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16, reserve: i32,  max_route_id: &mut i64, max_leg_id: &mut i64) -> String {
     // 0: CabStatus.ASSIGNED TODO: hardcoded status
     let mut sql: String = String::from("UPDATE cab SET status=0 WHERE id=");
