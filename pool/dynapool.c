@@ -281,6 +281,16 @@ int compareCost(const void * a, const void * b) {
   return brA->cost - brB->cost;
 }
 
+int compareCostDetour(const void * a, const void * b) {
+  Branch *brA = (Branch *)a;
+  Branch *brB = (Branch *)b;
+  int comp = brA->cost - brB->cost;
+  if (comp == 0) {
+    return brA->cab - brB->cab; // cab? it temporarily contains distance without passengers
+  }
+  return comp;
+}
+
 int countNodeSize(int lev) {
   int count=0;
   Branch *arr = node[lev];
@@ -298,7 +308,7 @@ void showBranch(int no, Branch *ptr) {
 int countPassengers(Branch *ptr) {
   int curr_count = 0;
   int max_count = 0;
-  for (int i=0; i < ptr->ordNumb; i++) {
+  for (int i = 0; i < ptr->ordNumb; i++) {
     if (ptr->ordActions[i] == 'i') {
       curr_count++;
       if (curr_count > max_count) max_count = curr_count; // max_count++ would be the same; which one is faster?
@@ -320,7 +330,14 @@ void rmDuplicatesAndFindCab(int inPool) {
     register Branch *ptr;
     if (nodeSize[lev] < 1) return;
 
-    qsort(arr, size, sizeof(Branch), compareCost);
+    for (int i = 0; i< size; i++) {
+      ptr = arr + i;
+      ptr -> cost = sumDetour(ptr);
+      ptr -> cab = countDistanceWithoutPassengers(ptr); // cab? I don't want to change Branch right now, which is mapped to a Rust structure
+    }
+
+    //qsort(arr, size, sizeof(Branch), compareCost);
+    qsort(arr, size, sizeof(Branch), compareCostDetour);
 
     for (int i = 0; i < size; i++) {
       ptr = arr + i;
@@ -377,6 +394,53 @@ boolean constraintsMet(int idx, Branch *el, int distCab) {
   }
   // we don't need to check the last leg as it does not concern "loss", this has been check earlier 
   return true;
+}
+
+// needed to sort the result by detour
+int sumDetour(Branch *el) {
+  Order *o, *o2;
+  int from, to, dst, sum = 0;
+  for (int i = 0; i < el->ordNumb - 1; i++) {
+    if (el->ordActions[i] == 'i') { // now find 'o' and count detour
+      dst = 0;
+      for (int j = i + 1; j < el->ordNumb; j++) {
+        o = &demand[el->ordIDs[j - 1]];
+        o2 = &demand[el->ordIDs[j]];
+        from = el->ordActions[j - 1] == 'i' ? o->fromStand : o->toStand;
+        to = el->ordActions[j] == 'i' ? o2->fromStand : o2->toStand;
+        if (from != to) { 
+          dst += dist(from, to) + STOP_WAIT;
+        }
+        if (el->ordIDs[j] == el->ordIDs[i]) { // you don't need to check 'o', it has to be it
+          sum += (dst - o->distance); // actual distance - distance without pool
+          break;
+        }
+      }
+    } 
+  }
+  return sum;
+}
+
+int countDistanceWithoutPassengers(Branch *el) {
+  int count = 0;
+  int dst = 0;
+  Order *o, *o2;
+  int from, to;
+  for (int i = 0; i < el->ordNumb - 2; i++) { // normaly it would be -1, but we know that the last leg cannot be empty
+    if (el->ordActions[i] == 'i') {
+      count++;
+    } else count --; // 'o'
+    if (count == 0) { // now check if the leg is movement, if so - add distance
+      o = &demand[el->ordIDs[i]];
+      o2 = &demand[el->ordIDs[i + 1]];
+      from = el->ordActions[i] == 'i' ? o->fromStand : o->toStand;
+      to = el->ordActions[i + 1] == 'i' ? o2->fromStand : o2->toStand;
+      if (from != to) { 
+        dst += dist(from, to) + STOP_WAIT;
+      }
+    }
+  }
+  return dst;
 }
 
 /// check if passengers in pool 'x' exist in pool 'y'

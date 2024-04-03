@@ -375,7 +375,8 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
          && dist1 < min_cost
          && (dist1 > max_angle_dist || bearing_diff(stops[prev_leg_to].bearing, stops[order_from].bearing) <  max_angle) { // well, we have to compare to something; there still might be a better plan with lesser wait time
         min_cost = dist1;
-        ret = get_some(i, i, legs[i-1].route_id, dist1, total_dist + dist1+ extra_wait(wait_legs), 
+        ret = get_some(i, i, legs[i-1].route_id, STOP_WAIT as i32 + dist1,
+                      total_dist + dist1 + extra_wait(wait_legs), 
                       order.dist, 0, order);
         debug!("DEBUG3C find_route: order_id={}, route_id={}, total_dist={}, dist1={}, wait_legs={}", 
                       order.id, legs[i-1].route_id, total_dist, dist1, wait_legs +1);
@@ -467,7 +468,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
     debug!("DEBUG6 find_route: order_id={}, route_id={}, leg_id={}, leg_dist={}, leg_reserve={}, from={}, to={}, dist={},", 
           order.id, legs[i-1].route_id, legs[i-1].id, legs[i-1].dist, legs[i-1].reserve, legs[i-1].to, order.from, 
           dist[legs[i-1].to as usize][order_from]);
-    return get_some( i, i, legs[i-1].route_id, dist[legs[i-1].to as usize][order_from] as i32,
+    return get_some( i, i, legs[i-1].route_id, (STOP_WAIT + dist[legs[i-1].to as usize][order_from]) as i32,
                     last_dist, order.dist, 0, order);
   }
   if min_cost == MAXCOST {
@@ -479,7 +480,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, dist: &[[i16; M
 
 // for unknown reason cabs wait about 30s more than defined one minute
 fn extra_wait(count: i16) -> i32 { 
-  return (count as f32 * 0.5) as i32;
+  return 0; // (count as f32 * 0.5) as i32;
 }
 
 fn wait_exceeded(ord: &Order, wait_legs: i16, first_leg: usize, i: usize, j:usize, wait: i32, add_cost: i32, add_cost2: i32, legs: &Vec<Leg>, ass_orders: &HashMap<i64, Vec<Order>>) -> bool {
@@ -663,7 +664,7 @@ fn find_droppoff(order: &Order, legs: &Vec<Leg>, first_leg: usize, i: usize, add
         && add_cost < min 
         && !wait_exceeded(order, wait_legs + ((j - i) as i16), first_leg, i, j, wait, add_cost, add2_cost, legs, assigned_orders) 
         && (dist[legs[j-1].to as usize][order_to] > max_angle_dist as i16 || bearing_diff(stops[legs[j-1].to as usize].bearing, stops[order_to].bearing) <  max_angle) { // we don't ruin the current route so we just take the pickup cost, but you might think otherwise
-    ret = get_some(i, j, legs[i].route_id, add_cost, wait, 
+    ret = get_some(i, j, legs[i].route_id, add_cost + (STOP_WAIT + dist[legs[j-1].to as usize][order_to]) as i32, wait, 
                   tour + (dist[legs[j-1].to as usize][order_to] as i32) + extra_wait((j-i) as i16), sum_reserve, order);
     debug!("DEBUG dropp-off beyond: order_id={}, leg_id={}, to={}", order.id, legs[j-1].id, legs[j-1].to);             
     // SAVE5

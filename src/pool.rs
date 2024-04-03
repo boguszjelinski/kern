@@ -7,7 +7,7 @@
 /// 
 use std::thread;
 use log::debug;
-use crate::model::{Order,OrderTransfer,Stop,Cab,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB};
+use crate::model::{Order, OrderTransfer, Stop, Cab, Branch, MAXSTOPSNUMB, MAXCABSNUMB, MAXORDERSNUMB};
 use crate::distance::DIST;
 use crate::repo::{assign_pool_to_cab, CNFG};
 

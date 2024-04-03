@@ -16,7 +16,7 @@ file3 = open('order_status.txt', 'w')
 # column names
 execSql(conn, file1, 'select * from stat order by name', 0)
 
-for t in range(0,120):
+for t in range(0,180):
     conn = mysql.connector.connect(host=dbhost, user='kabina', password='kaboot', database='kabina', auth_plugin='mysql_native_password') 
     execSql(conn, file1, 'select * from stat order by name', 1)
     execSql(conn, file2, 'select status, count(*) from cab group by status order by status', 0)
@@ -24,7 +24,7 @@ for t in range(0,120):
     execSql(conn, file3, 'select status, count(*) from taxi_order group by status order by status', 0)
     execSql(conn, file3, 'select status, count(*) from taxi_order group by status order by status', 1)
     conn.close()
-    time.sleep(60) # 60 seconds
+    time.sleep(30) # 30 seconds
 file1.close()
 file2.close()
 file3.close()

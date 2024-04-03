@@ -3,7 +3,7 @@ use mysql::*;
 use mysql::prelude::*;
 use chrono::NaiveDateTime;
 use std::cmp;
-use crate::model::{KernCfg,Order, OrderStatus, Stop, Cab, CabStatus, Leg, RouteStatus, Branch,MAXORDERSNUMB,MAXORDID};
+use crate::model::{KernCfg,Order, OrderStatus, Stop, Cab, CabStatus, Leg, RouteStatus, Branch, MAXORDERSNUMB, MAXORDID};
 use crate::distance::DIST;
 use crate::stats::{STATS, Stat, add_avg_element, update_val, count_average};
 use crate::utils::get_elapsed;
@@ -311,6 +311,8 @@ fn update_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16
                             *max_route_id, max_leg_id, 0, "assignCab");
         *place += 1;
         //TODO: statSrvc.addToIntVal("total_pickup_distance", Math.abs(cab.getLocation() - order.fromStand));
+    } else {
+        *eta = unsafe { CNFG.stop_wait }; // at the first stop the cab also has to wait
     }
     return sql;
 }
@@ -365,7 +367,7 @@ fn count_reserves(cab_dist: i16, br: Branch, orders: &[Order; MAXORDERSNUMB]) ->
                                                     * orders[br.ord_ids[c] as usize].dist as f32) as i32;
                     let mut reserve:i32  = acceptable_distance - dist;
                     if reserve < 0 {
-                        warn!("Max loss of order {} is not met", orders[br.ord_ids[c] as usize].id);
+                        //warn!("Max loss of order {} is not met", orders[br.ord_ids[c] as usize].id);
                         reserve = 0;
                     }
                     for e in c..d { // which means excluding d
@@ -425,7 +427,7 @@ fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Br
             add_avg_element(Stat::AvgOrderAssignTime, get_elapsed(order.received));
         }
         if stand1 != stand2 {
-            eta += dist;
+            eta += dist + CNFG.stop_wait;
         }
       }
     }
