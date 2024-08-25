@@ -215,10 +215,12 @@ Just run:
 ```
 python3 city.py
 ```
-or for a specific taxi order submit the ID:
+or for a specific taxi order submit its ID:
 ```
 python3 city.py 12345
 ```
+<img src="docs/img/kabina-viewer-route.png" alt="Route viewer" style="width:600px;"/>
+
 Two PNG files with the map and help have not been stored in GIT, just email me. 
 
 ## How to rerun

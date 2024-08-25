@@ -277,7 +277,7 @@ fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>
   // collect the data from threads, join their execution first
   let mut indices : Vec<LegIndicesWithDistance2> = Vec::new();
   for handle in children {
-    let mut cpy : Vec<LegIndicesWithDistance2> = handle.join().unwrap().to_vec();
+    let mut cpy : Vec<LegIndicesWithDistance2> = handle.join().unwrap().to_vec(); // TODO: unwrap panicked with little demand
     indices.append(&mut cpy);
   }
   // sort - there might be extensions of the same route, we will choose the better one, the worse one will go to next iteration

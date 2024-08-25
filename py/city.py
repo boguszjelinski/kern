@@ -49,9 +49,9 @@ def show_db(object):
         color = RED
         if object == 'CAB':
             if row[2] == 0: # ASSIGNED
-                color = YELLOW
-            elif row[2] == 1: # FREE
                 color = BLACK
+            elif row[2] == 1: # FREE
+                color = GREEN
             # else out-of-service RED
         elif object == 'ORDER':
             if row[2] == 0: # RECEIVED
@@ -59,7 +59,7 @@ def show_db(object):
             elif row[2] == 1: # ASSIGNED
                 color = BLACK
             elif row[2] == 7: # picked up
-                color = YELLOW
+                color = GREEN
             # else any other RED
         elif object == 'STOP':
             color = BLUE
@@ -109,13 +109,13 @@ def show_route(ord_id):
         # ARROW
         if prev_x != -1: # not the first stop
             if prev_status == 1: # ASSIGNED
-                color = RED
+                color = BLACK
             elif prev_status == 5: # STARTED
                 color = GREEN
             elif prev_status == 6: # COMPLETED
-                color = BLACK
-            else:
                 color = BLUE
+            else:
+                color = RED
 
             start_point = (prev_x, h - prev_y)  
             end_point = (x, h - y)  
@@ -142,13 +142,13 @@ def show_route(ord_id):
 
     # ARROW
     if prev_status == 1: # ASSIGNED
-        color = RED
+        color = BLACK
     elif prev_status == 5: # STARTED
         color = GREEN
     elif prev_status == 6: # COMPLETED
-        color = BLACK
-    else:
         color = BLUE
+    else:
+        color = RED
 
     start_point = (prev_x, h - prev_y)  
     end_point = (to_x, h - to_y)  
@@ -193,7 +193,10 @@ else:
 
 while True:
     k = cv2.waitKey(0)
-    print('Key: ', k)
+    #print('Key: ', k)
+    w_magn = int(w/magnification/2) # /2 means we will move half the screen
+    h_magn = int(h/magnification/2)
+
     if k == 27 : # UP: 0, DOWN: 1, RIGHT: 3, LEFT: 2, MINUS: 45, PLUS: 43
         break
     elif k == 43 and magnification < 16 : # PLUS
@@ -201,38 +204,43 @@ while True:
         draw_img()  
     elif k == 45 and magnification > 1 : # MINUS
         # check if not at the edge
-        if y_loc + int(h/magnification) + 1 > h:
-            y_loc -= int(h/magnification)
-        if x_loc + int(w/magnification) + 1 > w:
-            x_loc -= int(w/magnification)            
+        if y_loc + h/magnification + h_magn + h_magn/2 > h: # +1 should be enough, but lets use h_magn/2
+            if y_loc - h_magn < 0:
+                y_loc = 0
+            else: 
+                y_loc -= h_magn
+        else: 
+            y_loc = 0
+        if x_loc + w/magnification + w_magn + w_magn/2 > w: # at the edge, we have to step back with location, otherwise do nothing
+            if x_loc - w_magn < 0:
+                x_loc = 0
+            else:
+                x_loc -= w_magn
+        else:
+            x_loc = 0
         magnification = int(magnification/2)
-        print('magn: ', magnification)
         draw_img()
-    elif k == 3 and x_loc + int(w/magnification) < w - int(w/magnification) + 1: # RIGHT
-        x_loc += int(w/magnification)
-        print('x_loc: ', x_loc)
+    elif k == 3 and x_loc + w_magn < w - w_magn: # RIGHT
+        x_loc += w_magn
         draw_img()  
     elif k == 2 : # LEFT
-        if x_loc - int(w/magnification) < 0:
+        if x_loc - w_magn < 0:
             x_loc = 0
         else:
-            x_loc -= int(w/magnification)
-        print('x_loc: ', x_loc)
+            x_loc -= w_magn
         draw_img()
-    elif k == 1 and y_loc + int(h/magnification) < h - int(h/magnification) + 1: # DOWN
-        y_loc += int(h/magnification)
-        print('y_loc: ', y_loc)
+    elif k == 1 and y_loc + h_magn < h - h_magn: # DOWN
+        y_loc += h_magn
         draw_img()  
     elif k == 0 : # UP
-        if y_loc - int(h/magnification) < 0:
+        if y_loc - h_magn < 0:
             y_loc = 0
         else:
-            y_loc -= int(h/magnification)
-        print('y_loc: ', y_loc)
+            y_loc -= h_magn
         draw_img()
     elif k == 104 : # h
         cv2.namedWindow("Help")
-        img_help = cv2.imread("/Users/m91127/TAXI/viewer-help.png", cv2.IMREAD_ANYCOLOR)
+        img_help = cv2.imread("/Users/m91127/TAXI/vwr_help.png", cv2.IMREAD_ANYCOLOR)
         cv2.imshow("Help", img_help)
     elif k == 49 : # 1: ORDERS
         view = 'ORDER'
