@@ -28,7 +28,7 @@ See here to find more: https://gitlab.com/kabina/kabina/-/blob/master/minibuses.
 * Rust compiler
 
 ## How to install and run
-See [readme](HOWTORUN.md) how to run all Kabina components in a simulation.
+See [readme](HOWTORUN.md) how to run all Kabina components in a simulation. Have a look at a summary on YouTube: https://www.youtube.com/watch?v=-CumrqlN33U 
 
 ## How it works
 ### Core
