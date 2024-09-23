@@ -14,10 +14,10 @@ INSERT INTO cab (id, location, status, seats) with digit as (
     select 4 union all select 5 union all select 6 union all
     select 7 union all select 8 union all select 9        
 ),
-seq as (select a.d + (10 * b.d) + (100 * c.d) + (1000 * d.d) as num
-    from digit a cross join digit b cross join digit c cross join digit d order by 1        
+seq as (select a.d + (10 * b.d) + (100 * c.d) + (1000 * d.d) + (10000 * e.d) as num
+    from digit a cross join digit b cross join digit c cross join digit d cross join digit e order by 1        
 )
-select seq.num,0,2,10 from seq where seq.num<10000;
+select seq.num,0,2,10 from seq where seq.num<20000;
 -- Source: http://www.silota.com/docs/recipes/mysql-sequential-generate-series-numbers-time.html
 
 -- CUSTOMER
@@ -29,7 +29,7 @@ INSERT INTO customer (id) with digit as (
     select 7 union all select 8 union all select 9        
 ), seq as (select a.d + (10 * b.d) + (100 * c.d) + (1000 * d.d) + (10000 * e.d) as num
     from digit a cross join digit b cross join digit c cross join digit d cross join digit e order by 1        
-) select seq.num from seq where seq.num<100000;
+) select seq.num from seq where seq.num<200000;
 
 -- ROUTE
 DROP TABLE route CASCADE;

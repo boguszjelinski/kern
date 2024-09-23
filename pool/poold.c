@@ -21,9 +21,6 @@
 time_t rawtime;
 struct tm * timeinfo;
 
-//int maxInPool[MAXINPOOL - 1] = {80, 160, 300, 600}; // see main.rs !!! these are overwritten
-//int inPool[MAXINPOOL - 1] = {5, 4, 3, 2};
-
 short *distance;
 int distNumb;
 
@@ -129,4 +126,65 @@ void dynapool(int numbThreads, int poolsize[MAXINPOOL - 1],
     
     *count = retCount;
     //freeMem();
+}
+
+inline short dis(short *dista, int dist_size, int row, int col) {
+  return *(dista + (row * dist_size) + col);
+}
+
+void c_lcm(short *dista, int distSize,
+          Order *orders_cpy, int ordersSize, 
+          Cab *cabs_cpy, int cabsSize, 
+          int how_many,
+          // returned values, the size is determined by how_many
+          short *supply,
+          short *demand,
+          int *count) {
+  int big_cost = 1000000;
+  int lcm_min_val;
+  int smin;
+  int dmin;
+  Cab *cab = cabs_cpy + 1;
+  Order *ord;
+  int i; // returned count
+        
+  for (i = 0; i < how_many; i++) { // we need to repeat the search (cut off rows/columns) 'howMany' times
+    lcm_min_val = big_cost;
+    smin = 0;
+    dmin = 0;
+    // now find the minimal element in the whole matrix
+    int found = 0; // flase
+    for (int s = 0; s < cabsSize; s++) {
+      cab = cabs_cpy + s;
+      if ((*cab).id == -1) {
+          continue;
+      }
+      for (int d = 0; d < ordersSize; d++) {
+        ord = orders_cpy + d;
+        if ((*ord).id != -1 && dis(dista, distSize, (*cab).location, (*ord).fromStand) < lcm_min_val) {
+          lcm_min_val = dis(dista, distSize, (*cab).location, (*ord).fromStand);
+          smin = s;
+          dmin = d;
+          if (lcm_min_val == 0) { // you can't have a better solution
+            found = 1; // true
+            break;
+          }
+        }
+      }
+      if (found) {
+        break;
+      }
+    }
+    if (lcm_min_val == big_cost) {
+      // LCM minimal cost is big_cost - no more interesting stuff here
+      break;
+    }
+    // binding cab to the customer order
+    *(supply + i) = smin;
+    *(demand + i) = dmin;
+    // removing the "columns" and "rows" from a virtual matrix
+    (*(cabs_cpy + smin)).id = -1;
+    (*(orders_cpy + dmin)).id = -1;
+  }
+  *count = i;
 }
