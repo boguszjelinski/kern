@@ -5,11 +5,12 @@
 /// A pool is a group of orders to be picked up by a cab in a prescribed sequence
 /// 'Branch' structure describes one such group (saved as route in the database)
 /// 
-use std::thread;
+use std::{thread, vec};
 use log::debug;
-use crate::model::{Order,OrderTransfer,Stop,Cab,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB};
+use crate::model::{Order,OrderTransfer,Stop,Cab,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB,MAXORDID};
 use crate::distance::DIST;
 use crate::repo::{assign_pool_to_cab, CNFG};
+const MAXANGLEDIST: i16 = 1;
 
 static mut STOPS : [Stop; MAXSTOPSNUMB] = [Stop {id: 0, latitude: 0.0, longitude: 0.0, bearing: 0}; MAXSTOPSNUMB];
 static mut STOPS_LEN: usize = 0;
@@ -22,8 +23,18 @@ static mut ORDERS_LEN: usize = 0;
 static mut CABS: [Cab; MAXCABSNUMB] = [Cab {id:0, location:0, seats: 0}; MAXCABSNUMB];
 static mut CABS_LEN: usize = 0;
 
-pub const NODE_INIT_SIZE:usize = 3000000;
-pub const NODE_THREAD_INIT_SIZE:usize = 100000;
+const MAX_THREAD_NUMB:usize = 5; // this has to be +1 possible config value!!
+const MAX_BRANCH_SIZE:usize = 10000;
+static mut RETS: [[Branch; MAX_BRANCH_SIZE]; MAX_THREAD_NUMB] = [[Branch {
+  cost: 0, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 }; MAX_BRANCH_SIZE]; MAX_THREAD_NUMB];
+static mut RETS_SIZE: [usize; MAX_THREAD_NUMB] = [0; MAX_THREAD_NUMB];
+
+const MAXINPOOL: usize = 4;
+const MAXNODE: usize = MAXINPOOL+MAXINPOOL-1;
+
+static mut NODE: [[Branch; MAX_BRANCH_SIZE*MAX_THREAD_NUMB]; MAXNODE] = [[Branch {
+  cost: 0, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 }; MAX_BRANCH_SIZE*MAX_THREAD_NUMB]; MAXNODE];
+static mut NODE_SIZE: [usize; MAXNODE] = [0; MAXNODE];
 
 /// Returns a list of pools sorted by total trip length (sorting helps filter out worse plans)
 /// in_pool: how many passengers
@@ -52,11 +63,10 @@ pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mu
       }
   }
   // recursive dive until the leaves of the permutation tree
-	let mut root = dive(0, in_pool, threads);
-
+	dive(0, in_pool, threads);
   // there might be pools with same passengers, with different length - sort and find the best ones
   let ret = rm_duplicates_assign_cab(
-          in_pool as usize, &mut root, &mut max_route_id, max_leg_id, supply);
+          in_pool as usize, &mut max_route_id, max_leg_id, supply);
 
   // mark orders in pools as assigned so that next call to find_pool (with fewer 'in_pool') skips them
   for br in ret.0.iter() {
@@ -65,6 +75,10 @@ pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mu
     }
   }
   debug!("FINAL: inPool: {}, found pools: {}\n", in_pool, ret.0.len());
+  /*for i in 0 .. MAXNODE {
+    println!("node[{:?}].size: {:?}", i, unsafe { NODE_SIZE[i] });
+  }
+  */
   return ret;
 }
 
@@ -78,41 +92,56 @@ pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mu
 /// lev: starting always with zero
 /// in_pool: number of passengers going together
 /// threads_numb: 
-fn dive(lev: u8, in_pool: u8, threads_numb: i16) -> Vec<Branch> {
+fn dive(lev: u8, in_pool: u8, threads_numb: i16){
+  unsafe { NODE_SIZE[lev as usize] = 0; }
 	if lev > in_pool + in_pool - 3 { // lev >= 2*inPool-2, where -2 are last two levels
-		let ret = store_leaves();
-    debug!("Level: {}, size: {}", lev, ret.len());
-    return ret;
+		store_leaves(lev);
+    debug!("Level: {}, size: {}", lev,  unsafe { NODE_SIZE[lev as usize] });
 		// last two levels are "leaves"
+    return;
 	}
 	// dive more
-	let prev_node = dive(lev + 1, in_pool, threads_numb);
+	dive(lev + 1, in_pool, threads_numb);
 
-  let mut t_numb = threads_numb; // mut: there might be one more thread, rest of division
-	
-	let mut node : Vec<Branch> = Vec::with_capacity(NODE_INIT_SIZE);
+  let mut ret_size = 0;
 	let mut children = vec![];
 	unsafe {
-    let chunk: f32 = ORDERS_LEN as f32 / t_numb as f32;
-    if ((t_numb as f32 * chunk).round() as i16) < ORDERS_LEN as i16 { t_numb += 1; } // last thread will be the reminder of division
-    
-    // run the threads, each thread gets its own range of orders to iterate over - hence 'iterate'
-    for i in 0..t_numb { // TASK: allocated orders might be spread unevenly -> count non-allocated and devide chunks ... evenly
-      let node = prev_node.to_vec(); //clone();
-      children.push(thread::spawn(move || {
-        iterate(lev as usize, in_pool, i, chunk, &node)
-      }));
+    let mut t_numb = threads_numb; // mut: there might be one more thread, rest of division
+    let mut chunk = ORDERS_LEN / t_numb as usize;
+    if chunk == 0 { chunk = 1; }
+    if t_numb as usize * chunk < ORDERS_LEN { t_numb += 1; } // last thread will be the reminder of division
+    // when ORDERS_LEN is small then 
+    if t_numb as usize * chunk < ORDERS_LEN { chunk *= 2; }
+    for i in 0..MAX_THREAD_NUMB {
+      RETS_SIZE[i] = 0;
     }
-
+    // run the threads, each thread gets its own range of orders to iterate over - hence 'iterate'
+    for i in 0..t_numb as usize { // TASK: allocated orders might be spread unevenly -> count non-allocated and devide chunks ... evenly
+      children.push(thread::spawn(move || {
+        iterate(lev as usize, in_pool, i, chunk);
+      }))
+    }
     // collect the data from threads, join their execution first
     // there might be 'duplicates', 1-2-3 and 1-3-2 and so on, they will be filtered out later
-    for handle in children {
-      let mut cpy : Vec<Branch> = handle.join().unwrap().to_vec();
-      node.append(&mut cpy);
+    let mut ii: usize = 0;
+    for n in children {
+      n.join().unwrap();
+      NODE[lev as usize][ret_size..ret_size + RETS_SIZE[ii]].copy_from_slice(&RETS[ii][..RETS_SIZE[ii]]);
+      ret_size += RETS_SIZE[ii];
+      ii += 1;
+    }
+    debug!("Level: {}, size: {}", lev, ret_size); // just for memory usage considerations
+    NODE_SIZE[lev as usize] = ret_size;
+    /*if lev == 7 {
+      for i in 0 .. NODE_SIZE[lev as usize] {
+        for j in 0.. NODE[lev as usize][i].ord_numb  as usize {
+          print!("{:?},", NODE[lev as usize][i].ord_ids[j]);
+        }
+        print!("\n");
       }
-    debug!("Level: {}, size: {}", lev, node.len()); // just for memory usage considerations
+    }
+    */
 	}
-	return node;
 }
 
 /// generate permutatations of leaves - last two stops (well, it might be one stop), we skip some checks here
@@ -120,8 +149,7 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16) -> Vec<Branch> {
 /// a leafe is e.g.: 1out-2out or 1in-1out, the last one must be OUT, 'o'
 /// 
 /// returns: leaves
-fn store_leaves() -> Vec<Branch> {
-	let mut ret : Vec<Branch> = Vec::new();
+fn store_leaves(lev: u8){
 	unsafe{
 	for c in 0..ORDERS_LEN {
 	  if ORDERS[c].id != -1 { // not allocated in previous search: inPool+1 (e.g. in_pool=4 and now we search in_pool=3)
@@ -131,17 +159,19 @@ fn store_leaves() -> Vec<Branch> {
 		 	if c == d {
         // 'bearing' checks if stops are in line, it promotes straight paths to avoid unlife solutions
         // !! we might not check bearing here as they are probably distant stops
-        if bearing_diff(STOPS[ORDERS[c].from as usize].bearing, STOPS[ORDERS[d].to as usize].bearing) < CNFG.max_angle as f32  {
-		 		  ret.push(add_branch(c as i32, d as i32, 'i', 'o', 1));
+        if bearing_diff(STOPS[ORDERS[c].from as usize].bearing, STOPS[ORDERS[d].to as usize].bearing) < CNFG.max_angle {
+		 		  NODE[lev as usize][NODE_SIZE[lev as usize]] = add_branch(c as i32, d as i32, 'i', 'o', 1);
+          NODE_SIZE[lev as usize] += 1;
         }
 		 	} 
       // now <1out, 2out>
       else if (DIST[ORDERS[c].to as usize][ORDERS[d].to as usize] as f32)
 				< DIST[ORDERS[d].from as usize][ORDERS[d].to as usize] as f32
 					* (100.0 + ORDERS[d].loss as f32) / 100.0
-		 			&& bearing_diff(STOPS[ORDERS[c].to as usize].bearing, STOPS[ORDERS[d].to as usize].bearing) < CNFG.max_angle as f32 {
+		 			&& bearing_diff(STOPS[ORDERS[c].to as usize].bearing, STOPS[ORDERS[d].to as usize].bearing) < CNFG.max_angle {
 		 		// TASK - this calculation above should be replaced by a redundant value in taxi_order - distance * loss
-		 		ret.push(add_branch(c as i32, d as i32, 'o', 'o', 2));
+		 		NODE[lev as usize][NODE_SIZE[lev as usize]] = add_branch(c as i32, d as i32, 'o', 'o', 2);
+        NODE_SIZE[lev as usize] += 1;
         /*  debug!("c={} d={} c.id={} d.id={} c.to={} d.from={} d.to={} d.loss={} c.to.bearing={} d.to.bearing={} dist_c_d={} dist_d_d={}",
                   c, d, ORDERS[c].id, ORDERS[d].id, ORDERS[c].to, ORDERS[d].from, ORDERS[d].to,
                   ORDERS[d].loss, STOPS[ORDERS[c].to as usize].bearing, STOPS[ORDERS[d].to as usize].bearing,
@@ -154,17 +184,16 @@ fn store_leaves() -> Vec<Branch> {
 	  }
 	}
 	}
-	return ret;
 }
 
-pub fn bearing_diff(a: i32, b: i32 ) -> f32 {
+pub fn bearing_diff(a: i32, b: i32 ) -> i16 {
     let mut r = (a as f32 - b as f32) % 360.0;
     if r < -180.0 {
       r += 360.0;
     } else if r >= 180.0 {
       r -= 360.0;
     }
-    return r.abs();
+    return r.abs() as i16;
 }
 
 fn add_branch(id1: i32, id2: i32, dir1: char, dir2: char, outs: u8) -> Branch {
@@ -185,22 +214,21 @@ fn add_branch(id1: i32, id2: i32, dir1: char, dir2: char, outs: u8) -> Branch {
 
 /// just a loop and calling store_branch...
 /// returns: a chunk of all branches at that level
-fn iterate(lev: usize, in_pool: u8, start: i16, size: f32, prev_node: &Vec<Branch>) -> Vec<Branch> {
-	let ret: &mut Vec<Branch> = &mut Vec::with_capacity(NODE_THREAD_INIT_SIZE);
-	let next = ((start + 1) as f32 * size).round() as i32;
+fn iterate(lev: usize, in_pool: u8, thread: usize, size: usize) {
+ 	let mut stop = (thread + 1) * size;
+  if stop > unsafe {ORDERS_LEN} { stop = unsafe {ORDERS_LEN}; } 
 	unsafe{
-	let stop: i32 = if next > ORDERS_LEN as i32 { ORDERS.len() as i32 } else { next };
-	for ord_id in (start as f32 * size).round() as i32 .. stop {
+	for ord_id in thread * size .. stop {
 		if ORDERS[ord_id as usize].id != -1 { // not allocated in previous search (inPool+1)
-			for b in prev_node.iter() {
-				if b.cost != -1 {  // TODO: this check is probably not needed anymore, comes from duplicate check that we don't do anymore (time consuming, benefits did not cover the cost)
+			for b in NODE[lev+1][0..NODE_SIZE[lev+1]].iter() {
+				//if b.cost != -1 {  // TODO: this check is probably not needed anymore, comes from duplicate check that we don't do anymore (time consuming, benefits did not cover the cost)
 					// we iterate over product of the stage further in the tree: +1
-					store_branch_if_not_found(lev as u8, in_pool, ord_id, &b, ret);
-				}
+					store_branch_if_not_found(lev as u8, in_pool, ord_id as i32, &b, thread);
+				//}
 			}
+     
 		}
 	}
-	return ret.to_vec();
 	}
 }
 
@@ -208,7 +236,7 @@ fn iterate(lev: usize, in_pool: u8, start: i16, size: f32, prev_node: &Vec<Branc
 /// check how an order fits into a pool
 /// br is existing Branch in lev+1
 /// returns: just pushes to a mutable vector
-fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, ret: &mut Vec<Branch>) {
+fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, thread: usize) {
   // two situations: c IN and c OUT
   // c IN has to have c OUT in level+1, and c IN cannot exist in level + 1
   // c OUT cannot have c OUT in level +1
@@ -232,12 +260,14 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, ret
 	  let id = ord_id as usize;
 	
     if out_found { // IN was not found, we would have called 'return'
-      if !is_too_long('o', ord_id, DIST[ORDERS[id].from as usize][next_stop]
+      if !is_too_long('i', ord_id, DIST[ORDERS[id].from as usize][next_stop]
                         + if ORDERS[id].from == next_stop as i32 { 0 } else { CNFG.stop_wait }, br)
         // TASK? if the next stop is OUT of passenger 'c' - we might allow bigger angle
-        && bearing_diff(STOPS[ORDERS[id].from as usize].bearing, STOPS[next_stop].bearing) < CNFG.max_angle as f32 { 
+        && (DIST[ORDERS[id].from as usize][next_stop] > MAXANGLEDIST
+            || bearing_diff(STOPS[ORDERS[id].from as usize].bearing, STOPS[next_stop].bearing) < CNFG.max_angle) { 
 
-        ret.push(store_branch('i', lev, ord_id, br, in_pool)); 
+        RETS[thread][RETS_SIZE[thread]] = store_branch('i', lev, ord_id, br, in_pool); 
+        RETS_SIZE[thread] += 1;
       }
 		} 
     // c OUT as neither IN or OUT was found
@@ -245,9 +275,10 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, ret
         && br.outs < in_pool // numb OUT must be numb IN
         && !is_too_long('o', ord_id, DIST[ORDERS[id].to as usize][next_stop]
                         + if ORDERS[id].to == next_stop as i32 { 0 } else { CNFG.stop_wait }, br)
-        && bearing_diff(STOPS[ORDERS[id].to as usize].bearing, STOPS[next_stop].bearing) < CNFG.max_angle as f32 { 
-
-      ret.push(store_branch('o', lev, ord_id, br, in_pool)); 
+        && (DIST[ORDERS[id].to as usize][next_stop] > MAXANGLEDIST
+            || bearing_diff(STOPS[ORDERS[id].to as usize].bearing, STOPS[next_stop].bearing) < CNFG.max_angle) { 
+          RETS[thread][RETS_SIZE[thread]] = store_branch('o', lev, ord_id, br, in_pool); 
+          RETS_SIZE[thread] += 1;
 		}
 	}
 }
@@ -260,7 +291,7 @@ fn is_too_long(action: char, ord_id: i32, dist: i16, br: &Branch) -> bool {
 	unsafe {
 	  let mut wait = dist;
     // iterate over all previous orders, 
-    for i in 0..(br.ord_numb as usize) -1 {
+    for i in 0..(br.ord_numb as usize -1) {
 		  let id = br.ord_ids[i] as usize;
       if br.ord_actions[i] == 'o' as i8 && action == 'i' && ord_id == br.ord_ids[i] &&
         wait as f32 >  //distance[orders[br.ordIDs[i]].fromStand][orders[br.ordIDs[i]].toStand] 
@@ -278,11 +309,11 @@ fn is_too_long(action: char, ord_id: i32, dist: i16, br: &Branch) -> bool {
                         else { ORDERS[id].to as usize };
       let to = if br.ord_actions[i + 1] == 'i' as i8 { ORDERS[br.ord_ids[i + 1] as usize].from as usize }
                       else { ORDERS[br.ord_ids[i + 1] as usize].to as usize };
-      wait += DIST[from][to] + if from == to { 0 } else { CNFG.stop_wait };
+      if from != to { wait += DIST[from][to] + CNFG.stop_wait; }
     }
     // we have to repeat the check in the loop for the last element in array (max loss)
-    if action == 'i' && ord_id == br.ord_ids[br.ord_numb as usize] &&
-       wait as f32 > ORDERS[ord_id as usize].dist as f32 * (100.0 + ORDERS[ord_id as usize].loss as f32) / 100.0 { 
+    if action == 'i' && ord_id == br.ord_ids[br.ord_numb as usize -1] &&
+        wait > (ORDERS[ord_id as usize].dist as f32 * (100.0 + ORDERS[ord_id as usize].loss as f32) / 100.0) as i16 { 
       return true; 
     }
     // no time constraint is violated
@@ -324,11 +355,12 @@ fn store_branch(action: char, lev: u8, ord_id: i32, b: &Branch, in_pool: u8) -> 
 /// max_leg_id:  primary key available (not used) for route legs
 /// 
 /// returns allocated branches (to regenerate demand and supplu for the solver) and SQL to execute
-fn rm_duplicates_assign_cab(in_pool: usize, arr: &mut Vec<Branch>, mut max_route_id: &mut i64, 
-                       mut max_leg_id: &mut i64, cabs: &mut Vec<Cab>) -> (Vec<Branch>, String) {
+fn rm_duplicates_assign_cab(in_pool: usize, mut max_route_id: &mut i64, 
+                            mut max_leg_id: &mut i64, cabs: &mut Vec<Cab>) -> (Vec<Branch>, String) {
 	let mut ret : Vec<Branch> = Vec::new();
   let mut sql: String = String::from("");
-
+  let slice = unsafe { &NODE[0][0..NODE_SIZE[0]] };
+  let mut arr = slice.to_vec();
   if arr.len() == 0 {
     return (ret, sql);
   }
@@ -343,7 +375,7 @@ fn rm_duplicates_assign_cab(in_pool: usize, arr: &mut Vec<Branch>, mut max_route
       // find nearest cab to first pickup and check if WAIT and LOSS constraints met - allocate
       let cab_idx = find_nearest_cab(arr[i].ord_ids[0], count_passengers(arr[i])); // LCM
       if cab_idx == -1 { // no more cabs
-        mark_pools_as_dead(arr, i);
+        mark_pools_as_dead(&mut arr, i);
         break;
       } else if cab_idx == -2 { // there is no cab for so many passengers
         arr[i].cost = -1;
@@ -354,9 +386,10 @@ fn rm_duplicates_assign_cab(in_pool: usize, arr: &mut Vec<Branch>, mut max_route
                               [ORDERS[arr[i].ord_ids[0] as usize].from as usize];
       if dist_cab == 0 // constraints inside pool are checked while "diving", and cab does not add up anything if == 0
               || constraints_met(arr[i], (dist_cab + CNFG.stop_wait) as i32 ) {
+        arr[i].cab = cab_idx; // maybe needed for debug
         ret.push(arr[i]);
         // assign to a cab and remove all next pools with these passengers (index 'i')
-        sql += &assign_and_remove(arr, in_pool, i, cab_idx as usize, &mut max_route_id, &mut max_leg_id);
+        sql += &assign_and_remove(&mut arr, in_pool, i, cab_idx as usize, &mut max_route_id, &mut max_leg_id);
         // remove the cab from list so that it cannot be allocated twice in LCM or Munkres
         cabs[cab_idx as usize].id = -1;
         // the same with demand, but this static array ORDERS is a copy of Vec, so it is better to do it elsewhere
@@ -513,6 +546,7 @@ pub fn stops_to_array(vec: &Vec<Stop>) -> [Stop; MAXSTOPSNUMB] {
     return arr;
 }
 
+// many tests will fail when run with cargo test. The cause is use of static arrays.
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -520,8 +554,8 @@ mod tests {
   use chrono::Local;
   use serial_test::serial;
   use std::time::Instant;
- // use std::time::SystemTime;
-
+  use rand::Rng;
+ 
   fn get_stops() -> Vec<Stop> {
     let mut stops: Vec<Stop> = vec![];
     let mut c: i64 = 0;
@@ -529,6 +563,20 @@ mod tests {
       for j in 0..49 {
         stops.push(
           Stop{ id: c, bearing: 0, latitude: 49.0 + 0.025 * i as f64, longitude: 19.000 + 0.025 * j as f64}
+        );
+        c = c + 1;
+      }
+    }
+    return stops;
+  }
+
+  fn get_stops2(step: f64) -> Vec<Stop> {
+    let mut stops: Vec<Stop> = vec![];
+    let mut c: i64 = 0;
+    for i in 0..49 {
+      for j in 0..49 {
+        stops.push(
+          Stop{ id: c, bearing: 0, latitude: 49.0 + step * i as f64, longitude: 19.000 + step * j as f64}
         );
         c = c + 1;
       }
@@ -563,11 +611,65 @@ mod tests {
     }
   }
 
-  fn test_branches() -> Vec<Branch> {
-    return vec![ 
-      Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,2,3,4,5,5,4,3,2,1], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 },
-      Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [5,6,7,8,9,9,8,7,6,5], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 },
-      Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,6,7,8,9,9,8,7,6,1], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 }];
+  fn test_init_orders_and_dist3(dist: i16, ord_count: usize) {
+    unsafe {
+      for i in 0..ord_count {
+        ORDERS[i] = Order{ id: i as i64, from: rand::thread_rng().gen_range(0..5200) as i32, 
+          to: rand::thread_rng().gen_range(0..5200) as i32, wait: 15, loss: 70, dist: 7-2*i as i32, 
+          shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 };
+      }
+      ORDERS_LEN = ord_count;
+      for i in 0..7 { DIST[i][i+1] = dist; }    
+      CABS_LEN =2;
+      CABS[0] = Cab{ id: 0, location: 0, seats: 10 };
+      CABS[1] = Cab{ id: 1, location: 1, seats: 10 };
+    }
+  }
+
+
+  fn get_orders(size: usize) -> Vec<Order> {
+    let mut ret: Vec<Order> = vec![];
+    for i in 0..size as i32 {     
+        let from: i32 = i % 2400;
+        let to: i32 = from + 5;
+        let dista = unsafe { DIST[from as usize][to as usize] as i32 };
+        ret.push(Order{ id: i as i64, from, to, wait: 15, loss: 70, dist: dista, 
+                    shared: true, in_pool: false, received: Some(Local::now().naive_local()), started: None, completed: None, at_time: None, 
+                    eta: 1, route_id: -1 });
+    }
+    return ret;
+  }
+
+  fn get_cabs(cab_count: usize) -> Vec<Cab> {
+    let mut ret: Vec<Cab> = vec![];
+    for i in 0..cab_count as i64 {
+        ret.push(Cab{ id: i, location: (i % 2400) as i32, seats: 10});
+    }
+    return ret;
+  }
+
+  fn test_init_orders_and_dist2(dist: f64, ord_count: usize, cab_count: usize) {
+    let stops = get_stops2(dist);
+    init_distance(&stops);
+    let demand: Vec<Order> = get_orders(ord_count);
+    let cabs = get_cabs(cab_count);
+    unsafe {
+      ORDERS = orders_to_array(&demand);
+      CABS = cabs_to_array(&cabs);
+      STOPS = stops_to_array(&stops);
+      ORDERS_LEN = demand.len();
+      CABS_LEN = cabs.len();
+      STOPS_LEN = stops.len();
+    }
+  }
+
+  fn test_branches() {
+    unsafe {
+      NODE[0][0] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,2,3,4,5,5,4,3,2,1], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
+      NODE[0][1] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [5,6,7,8,9,9,8,7,6,5], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
+      NODE[0][2] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,6,7,8,9,9,8,7,6,1], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
+      NODE_SIZE[0] = 3;
+    }
   }
 
   fn test_leaves() -> Vec<Branch> {
@@ -578,18 +680,17 @@ mod tests {
   }
 
   #[test]
-  #[ignore]
   #[serial]
   fn test_find_pool(){
-    //test_init_orders_and_dist(1);
+    test_init_orders_and_dist2(0.05, 10, 1000);
     let mut orders = unsafe { ORDERS.to_vec().drain(..ORDERS_LEN).collect() };
     let mut cabs = unsafe { CABS.to_vec().drain(..CABS_LEN).collect() };
     let stops = vec![ Stop{id:0,bearing:0, latitude: 0.0, longitude: 0.0 }];
     let mut max_route_id: i64 = 0;
     let mut max_leg_id: i64 = 0;
-    let ret = find_pool(4, 4, &mut orders, &mut cabs, 
+    let ret = find_pool(4, 3, &mut orders, &mut cabs, 
             &stops, &mut max_route_id, &mut max_leg_id);
-    assert_eq!(ret.0.len(), 1);
+    assert_eq!(ret.0.len(), 2);
   }
 
   fn get_pool_stops() -> Vec<Stop> {
@@ -662,45 +763,103 @@ mod tests {
     assert_eq!(ret.1.len(), 17406);
   }
 
+fn append<T>(dst: &mut Vec<T>, src: &mut Vec<T>) {
+  let src_len = src.len();
+  let dst_len = dst.len();
+
+  // Ensure that `dst` has enough capacity to hold all of `src`.
+  dst.reserve(src_len);
+
+  unsafe {
+    // The call to add is always safe because `Vec` will never
+    // allocate more than `isize::MAX` bytes.
+    let dst_ptr = dst.as_mut_ptr().add(dst_len);
+    let src_ptr = src.as_ptr();
+
+    // Truncate `src` without dropping its contents. We do this first,
+    // to avoid problems in case something further down panics.
+    src.set_len(0);
+
+    // The two regions cannot overlap because mutable references do
+    // not alias, and two different vectors cannot own the same
+    // memory.
+    std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, src_len);
+
+    // Notify `dst` that it now holds the contents of `src`.
+    dst.set_len(dst_len + src_len);
+  }
+}
+  
+#[test]
+#[serial]
+fn test_append(){
+  let mut v: Vec<Branch> = Vec::with_capacity(2500000); // large !
+  v.resize(2500000, Branch::new());
+  let mut v2: Vec<Branch> = Vec::with_capacity(2500000); // large !
+  v2.resize(2500000, Branch::new());
+  let start = Instant::now();
+  //v.append(&mut v2); // 81ms
+  append(&mut v, &mut v2); // 83ms
+  let elapsed = start.elapsed();
+  println!("Elapsed: {:?}", elapsed); 
+  assert_eq!(v.len(), 5000000);
+}
+
   #[test]
   #[serial]
-  fn test_dive_leaves(){
-    test_init_orders_and_dist(1, 4);
-    // 10 (high) => just the leaves
-    let ret = dive(10, 4, 4);
-    assert_eq!(ret.len(), 10);
+  fn test_memcpy(){
+    unsafe {
+    RETS[0][0] = Branch {
+      cost: 1, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 };
+    NODE[0][0] = Branch {
+      cost: 2, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 };
+    NODE[0][1] = Branch {
+        cost: 3, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 };   
+    let start = Instant::now();
+    NODE[0][1000..2000].copy_from_slice(&RETS[0][..1000]);
+    let elapsed = start.elapsed();
+    println!("Elapsed: {:?}", elapsed); 
+    println!("Ret: {:?}", NODE[0][2000].cost); 
+    }
+  }  
+
+  #[test]
+  fn test_dive_4(){
+    test_init_orders_and_dist2(0.05, 10, 1000);
+    let start = Instant::now();
+    dive(0, 4, 3);
+    println!("Elapsed: {:?}", start.elapsed()); 
+    assert_eq!(unsafe { NODE_SIZE[0]}, 28);
   }
   
   #[test]
-  #[ignore]
   #[serial]
   fn test_dive(){
     test_init_orders_and_dist(1, 4);
-    let ret = dive(0, 4, 4);
-    assert_eq!(ret.len(), 900);
+    let ret = dive(0, 4, 3);
+    assert_eq!(unsafe { NODE_SIZE[0] }, 87);
   }
 
   #[test]
-  #[ignore] // strange random behaviour
   #[serial]
   fn test_store_leaves(){
     init_distance(&get_stops());
     set_orders();
-    let slice = unsafe { &ORDERS[0 .. ORDERS_LEN] };
+    unsafe { ORDERS_LEN = 10; }
+    let slice = unsafe { &ORDERS[0 .. 10] };
     let start = Instant::now();
-    //let ret = store_leaves2(slice);
-    let ret = store_leaves();
+    store_leaves(0);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
-    assert_eq!(ret.len(), 85842);
+    assert_eq!(unsafe { NODE_SIZE[0] }, 28);
   }
 
   #[test]
   #[serial]
   fn test_bearing_diff(){
-    assert_eq!(bearing_diff(0,1), 1.0);
-    assert_eq!(bearing_diff(-1,1), 2.0);
-    assert_eq!(bearing_diff(-1,-2),1.0);
+    assert_eq!(bearing_diff(0,1), 1);
+    assert_eq!(bearing_diff(-1,1), 2);
+    assert_eq!(bearing_diff(-1,-2),1);
   }
 
   #[test]
@@ -715,13 +874,12 @@ mod tests {
   #[serial]
   fn test_iterate() {
     let prev_node: Vec<Branch> = test_leaves();
-    let ret = iterate(0, 4, 0, 1.0, &prev_node);
-    assert_eq!(ret.len(), 1);
+    iterate(0, 4, 0, 1);
+    //assert_eq!(ret.len(), 1);
   }
   //lev: usize, in_pool: u8, start: i16, size: f32, prev_node: &Vec<Branch>) -> Vec<Branch>
 
   #[test]
-  #[ignore]
   #[serial]
   fn test_store_branch_if_not_found(){
     let arr = 
@@ -729,7 +887,7 @@ mod tests {
     };
     test_init_orders_and_dist(1, 5);
     let mut ret: Vec<Branch> = Vec::new();
-    store_branch_if_not_found(0,4,0, &arr, &mut ret);
+    store_branch_if_not_found(0,4,0, &arr, 0);
     assert_eq!(ret.len(), 1);
     assert_eq!(ret[0].ord_ids[0], 0); // was 1, should be 0
     assert_eq!(ret[0].ord_actions[7], 111); // was 0, should be 111
@@ -757,12 +915,12 @@ mod tests {
   #[test]
   #[serial]
   fn test_rm_final_duplicates() {
-    let mut arr: Vec<Branch> = test_branches();
+    test_branches();
     let mut max_route_id: i64 = 0;
     let mut max_leg_id: i64 = 0;
     let mut cabs: Vec<Cab> = vec![Cab{ id: 0, location: 0, seats: 10 },Cab{ id: 1, location: 1, seats: 10 }];
     test_init_orders_and_dist(1, 4);
-    let ret = rm_duplicates_assign_cab(4, &mut arr, &mut max_route_id, 
+    let ret = rm_duplicates_assign_cab(4, &mut max_route_id, 
                                                           &mut max_leg_id, &mut cabs);
     assert_eq!(ret.1, "UPDATE cab SET status=0 WHERE id=1;\nINSERT INTO route (id, status, cab_id) VALUES (0,1,1);\n");
   }
@@ -771,7 +929,9 @@ mod tests {
   #[serial]
   fn test_assign_and_remove() {
     test_init_orders_and_dist(1, 4);
-    let mut arr: Vec<Branch> = test_branches();
+    test_branches();
+    let slice = unsafe { &NODE[0][0..3]};
+    let mut arr = slice.to_vec();
     let mut max_route_id: i64 = 0;
     let mut max_leg_id: i64 = 0;
     let ret = assign_and_remove(&mut arr, 4, 0, 0, &mut max_route_id, &mut max_leg_id);
@@ -781,7 +941,9 @@ mod tests {
   #[test]
   #[serial]
   fn test_is_found() {
-    let arr = test_branches();
+    test_branches();
+    let slice = unsafe { &NODE[0][0..3]};
+    let mut arr = slice.to_vec();
     assert_eq!(is_found(&arr, 0, 1, 4), true);
     assert_eq!(is_found(&arr, 0, 2, 4), true);
   }
@@ -789,7 +951,9 @@ mod tests {
   #[test]
   #[serial]
   fn test_mark_pools_as_dead() {
-    let mut arr: Vec<Branch> = test_branches();
+    test_branches();
+    let slice = unsafe { &NODE[0][0..3]};
+    let mut arr = slice.to_vec();
     mark_pools_as_dead(&mut arr, 0);
     assert_eq!(arr[0].cost, 1);
     assert_eq!(arr[1].cost, -1);

@@ -14,7 +14,7 @@ pub static mut CNFG: KernCfg = KernCfg {
     max_solver_size: 500, // count
     run_after: 15, // secs
     max_legs: 8,
-    max_angle: 120.0,
+    max_angle: 120,
     max_angle_dist: 3, 
     use_pool: true,
     use_extern_pool: true,
@@ -22,7 +22,7 @@ pub static mut CNFG: KernCfg = KernCfg {
     thread_numb: 4,
     stop_wait: 1,
     cab_speed: 60,
-    max_pool5_size: 50,
+    max_pool5_size: 20,
     max_pool4_size: 120,
     max_pool3_size: 300,
     max_pool2_size: 600,
@@ -496,6 +496,7 @@ fn get_i64(row: &Row, index: usize) -> i64 {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use serial_test::serial;
 
   fn init_test_data(order_count: u8) -> [Order; MAXORDERSNUMB] {
     let stop_count = 8;
@@ -530,7 +531,7 @@ mod tests {
   }
 
   #[test]
-  #[ignore]
+  #[serial]
   fn test_assign_orders_and_save_legs() {
     let place = 0;
     let eta: i16 =0;
@@ -545,7 +546,6 @@ mod tests {
     let sql = assign_orders_and_save_legs(cab.id, 0, place, br, eta, &mut max_leg_id, &orders, reserves);
     //println!("{}", sql);
     assert_eq!(sql, "INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (0,0,1,0,2,1,0,0,1);\nUPDATE taxi_order SET route_id=0, leg_id=0, cab_id=0, status=1, eta=0, in_pool=true WHERE id=0 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (1,1,2,1,2,1,0,0,2);\nUPDATE taxi_order SET route_id=0, leg_id=1, cab_id=0, status=1, eta=2, in_pool=true WHERE id=1 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (2,2,3,2,2,1,0,0,3);\nUPDATE taxi_order SET route_id=0, leg_id=2, cab_id=0, status=1, eta=4, in_pool=true WHERE id=2 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (3,3,0,3,0,1,0,0,4);\nUPDATE taxi_order SET route_id=0, leg_id=3, cab_id=0, status=1, eta=6, in_pool=true WHERE id=3 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (4,0,7,4,14,1,0,0,5);\nUPDATE taxi_order SET route_id=0, leg_id=4, cab_id=0, status=1, eta=6, in_pool=true WHERE id=0 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (5,7,4,5,0,1,0,0,4);\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (6,4,5,6,2,1,0,0,3);\n");
-
   }
 
 /*

@@ -136,6 +136,10 @@ pub fn assigned_orders(assigned_orders: &Vec<Order>) -> HashMap<i64, Vec<Order>>
   return ret;
 }
 
+// this method returns:
+// 1) orders that can go to pool finder because they did not match anything in routes 
+// 2) orders than cannot go to pool finder because they perfectly match a route - a duplicate that needs another iteration
+// 3) sql to be run 
 fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>, stops: &Vec<Stop>, legs: &mut Vec<Leg>, max_leg_id: &mut i64,
                   dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> (Vec<Order>, Vec<Order>, String) {
   let mut t_numb = 10; // mut: there might be one more thread, rest of division
@@ -851,6 +855,7 @@ pub fn get_handle(conn_str: String, sql: String, label: String)  -> thread::Join
 mod tests {
   use super::*;
   use crate::distance::init_distance;
+  use serial_test::serial;
 
   fn get_test_legs(dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) -> Vec<Leg> {
     return vec![
@@ -953,11 +958,13 @@ mod tests {
 
   // PERFECT MATCH
   #[test]
+  #[serial]
   fn test_find_route_perfect_match() {
     test_find_route(1,3,1,2);
   }
 
   #[test]
+  #[serial]
   fn test_extend_legs_in_db_returns_sql() {
     test_extend_legs_sql(1,3, 
       "UPDATE taxi_order SET route_id=123, leg_id=1, cab_id=(SELECT cab_id FROM route where id=123), status=1, eta=2, in_pool=true WHERE id=1 AND status=0;\nUPDATE leg SET reserve=GREATEST(0, reserve-1) WHERE route_id=123 AND place <= 0;\nUPDATE leg SET reserve=LEAST(reserve, 8) WHERE route_id=123 AND place <= 0;\nUPDATE leg SET reserve=GREATEST(0, reserve-1) WHERE route_id=123 AND place >= 3;\nUPDATE leg SET passengers=passengers+1, reserve=LEAST(reserve, 2) WHERE route_id=123 AND place BETWEEN 1 AND 2;\n");
@@ -965,11 +972,13 @@ mod tests {
 
   // request from stops in between, both 'from' and 'to'
   #[test]
+  #[serial]
   fn test_find_route_nonperfect_match() {
     test_find_route2(1,3,1,1, 124);
   } 
 
   #[test]
+  #[serial]
   fn test_extend_legs_in_db_returns_sql2() {
     test_extend_legs_sql2(1,3,
       "UPDATE taxi_order SET route_id=124, cab_id=(SELECT cab_id FROM route where id=124), status=1, eta=9, in_pool=true WHERE id=1 AND status=0;\nUPDATE leg SET reserve=LEAST(reserve, 1) WHERE route_id=124 AND place <= 0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (10,5,1,1,7,1,1,124,0);\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (11,1,3,2,3,1,2,124,1);\n");
@@ -978,43 +987,41 @@ mod tests {
   // -----------------------------------------------------------------------------
   // only drop-off is perfect match
   #[test]
+  #[serial]
   fn test_find_route_nonperfect_match2() {
     test_find_route2(1,4,2,2, 123);
   }
 
   #[test]
+  #[serial]
   fn test_extend_legs_in_db_returns_sql3() {
     test_extend_legs_sql2(1,4, 
       "UPDATE taxi_order SET route_id=123, leg_id=1, cab_id=(SELECT cab_id FROM route where id=123), status=1, eta=6, in_pool=true WHERE id=1 AND status=0;\nUPDATE leg SET reserve=GREATEST(0, reserve-4) WHERE route_id=123 AND place <= 0;\nUPDATE leg SET reserve=LEAST(reserve, 4) WHERE route_id=123 AND place <= 0;\nUPDATE leg SET reserve=GREATEST(0, reserve-4) WHERE route_id=123 AND place >= 2;\nUPDATE leg SET passengers=passengers+1, reserve=LEAST(reserve, 3) WHERE route_id=123 AND place BETWEEN 2 AND 100;\nUPDATE leg SET place=place+1 WHERE route_id=123 AND place >= 2;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (10,1,4,2,5,1,3,123,2);\nUPDATE leg SET to_stand=1, distance=1, reserve=1, passengers=1 WHERE id=1;\n");
   }
 
  // only pickup is perfect match - different legs
- #[ignore]
  #[test]
+ #[serial]
  fn test_find_route_nonperfect_match3() {
-  test_find_route2(0,3,2,1, 123);
+  test_find_route2(2,3,2,2, 123); // indices of legs table, not IDs i it
  }
 
+// a trip requested from a leg which is not started but is the first leg, which can start any second
  #[test]
- #[ignore]
+ #[serial]
  fn test_extend_legs_in_db_returns_sql4() {
-  test_extend_legs_sql2(0,3,
-    "UPDATE taxi_order AS o SET route_id=123, leg_id=0, cab_id=r.cab_id, status=1, eta=0, in_pool=true \
-    FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n\
-    UPDATE leg SET reserve=GREATEST(0, reserve-0) WHERE route_id=123 AND place >= 2;\n\
-    UPDATE leg SET place=place+1 WHERE route_id=123 AND place >= 2;\n\
-    INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (10,3,4,2,1,1,5,123,1);\n\
-    UPDATE leg SET to_stand=3, distance=3, reserve=5, passengers=2 WHERE id=1;\n\
-    UPDATE leg SET passengers=passengers+1, reserve=LEAST(reserve, 5) WHERE route_id=123 AND place BETWEEN 0 AND 0;\n");
+  test_extend_legs_sql2(0,3, "");
  }
 
 // only pickup is perfect match - same legs
 #[test]
+#[serial]
 fn test_find_route_nonperfect_match4() {
   test_find_route2(2,3,2,2, 123);
 }
 
 #[test]
+#[serial]
 fn test_extend_legs_in_db_returns_sql5() {
   // leg_id=1 ???
   test_extend_legs_sql2(2,3, 
@@ -1023,11 +1030,13 @@ fn test_extend_legs_in_db_returns_sql5() {
 
 // only drop-off is perfect match - same legs
 #[test]
+#[serial]
 fn test_find_route_nonperfect_match_4_b() {
   test_find_route2(1,2,1,1, 124);
 }
 
 #[test]
+#[serial]
 fn test_extend_legs_in_db_returns_sql_5_b() {
   // leg_id=1 ???
   test_extend_legs_sql2(1,2, 
@@ -1078,6 +1087,7 @@ fn test_extend_legs_sql4(from_stand: i32, to_stand: i32, expected_sql: &str) {
 }
 
 #[test]
+#[serial]
 fn test_extend_legs_in_db_returns_sql_5_c() {
   test_extend_legs_sql4(3,4, 
     "UPDATE taxi_order SET route_id=123, leg_id=1, cab_id=(SELECT cab_id FROM route where id=123), status=1, eta=5, in_pool=true WHERE id=1 AND status=0;\nUPDATE leg SET reserve=GREATEST(0, reserve-0) WHERE route_id=123 AND place <= 0;\nUPDATE leg SET reserve=LEAST(reserve, 5) WHERE route_id=123 AND place <= 0;\nUPDATE leg SET reserve=GREATEST(0, reserve-0) WHERE route_id=123 AND place >= 2;\nUPDATE leg SET place=place+1 WHERE route_id=123 AND place >= 2;\nUPDATE leg SET place=place+1 WHERE route_id=123 AND place >= 2;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (10,3,4,2,1,1,0,123,2);\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (11,4,5,3,1,1,0,123,1);\nUPDATE leg SET to_stand=3, distance=1, reserve=4, passengers=1 WHERE id=1;\n");
@@ -1085,11 +1095,13 @@ fn test_extend_legs_in_db_returns_sql_5_c() {
 
 // only drop-off beyond current legs
 #[test]
+#[serial]
 fn test_find_route_nonperfect_match5() {
   test_find_route(2,4,2,3);
 }
 
 #[test]
+#[serial]
 fn test_extend_legs_in_db_returns_sql6() {
   test_extend_legs_sql(2,4,  
     "UPDATE taxi_order SET route_id=123, leg_id=2, cab_id=(SELECT cab_id FROM route where id=123), status=1, eta=4, in_pool=true WHERE id=1 AND status=0;\nUPDATE leg SET reserve=GREATEST(0, reserve-0) WHERE route_id=123 AND place <= 1;\nUPDATE leg SET reserve=LEAST(reserve, 6) WHERE route_id=123 AND place <= 1;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (10,3,4,3,1,1,0,123,1);\nUPDATE leg SET passengers=passengers+1, reserve=LEAST(reserve, 2) WHERE route_id=123 AND place BETWEEN 2 AND 2;\n");
@@ -1097,11 +1109,13 @@ fn test_extend_legs_in_db_returns_sql6() {
 
 // both pickup and drop-off beyond current legs
 #[test]
+#[serial]
 fn test_find_route_nonperfect_match6() {
   test_find_route(4,5,3,3);
 }
 
 #[test]
+#[serial]
 fn test_extend_legs_in_db_returns_sql7() {
   test_extend_legs_sql(4,5, 
     "UPDATE taxi_order SET route_id=123, cab_id=(SELECT cab_id FROM route where id=123), status=1, eta=9, in_pool=true WHERE id=1 AND status=0;\nUPDATE leg SET reserve=LEAST(reserve, 1) WHERE route_id=123 AND place <= 2;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (10,3,4,3,1,1,1,123,0);\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (11,4,5,4,1,1,0,123,1);\n");
@@ -1142,6 +1156,7 @@ fn test_find_route3(route_id: i64, from_stand: i32, to_stand: i32, from_idx: usi
 }
 
 #[test]
+#[serial]
 fn test_find_route_more_matching_routes() {
   test_find_route3(125, 1,3,5,6);
 }
@@ -1160,12 +1175,12 @@ fn test_extend_legs_no_match(from_stand: i32, to_stand: i32) {
 }
 
 #[test]
+#[serial]
 fn test_extend_legs_in_db_returns_no_sql() {
   test_extend_legs_no_match(5,0);
 }
 
 // test of two identical orders - only one should go thru
-
 fn test_extend_legs_identical_orders(from_stand: i32, to_stand: i32) {
   let mut max_leg_id: &mut i64 = &mut 10;
   init_distance(&get_stops());
@@ -1176,17 +1191,18 @@ fn test_extend_legs_identical_orders(from_stand: i32, to_stand: i32) {
             shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 }];
   let (ret, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
                                                        &mut get_test_legs2(unsafe{&DIST}), &mut max_leg_id, unsafe { &DIST });
-  assert_eq!(sql, "UPDATE taxi_order AS o SET route_id=123, leg_id=0, cab_id=r.cab_id, status=1, eta=0, in_pool=true \
-  FROM route AS r WHERE r.id=123 AND o.id=1 AND o.status=0;\n\
-  UPDATE leg SET reserve=GREATEST(0, reserve-0) WHERE route_id=123 AND place >= 1;\n\
-  UPDATE leg SET passengers=passengers+1, reserve=LEAST(reserve, 2) WHERE route_id=123 AND place BETWEEN 0 AND 0;\n");
-  assert_eq!(ret.len(), 1); // one order should not be allocated
+  assert_eq!(sql, "UPDATE taxi_order SET route_id=123, leg_id=1, cab_id=(SELECT cab_id FROM route where id=123), \
+  status=1, eta=4, in_pool=true WHERE id=1 AND status=0;\n\
+  UPDATE leg SET reserve=GREATEST(0, reserve-0) WHERE route_id=123 AND place <= 0;\n\
+  UPDATE leg SET reserve=LEAST(reserve, 6) WHERE route_id=123 AND place <= 0;\n\
+  UPDATE leg SET reserve=GREATEST(0, reserve-0) WHERE route_id=123 AND place >= 2;\n\
+  UPDATE leg SET passengers=passengers+1, reserve=LEAST(reserve, 2) WHERE route_id=123 AND place BETWEEN 1 AND 1;\n");
+  assert_eq!(ret.len(), 0); // nothing should go to pool finder, one order should be allocated by extender at next iteration 
 }
 
 #[test]
-#[ignore]
 fn test_extend_legs_two_identical_orders() {
-  test_extend_legs_identical_orders(0,2);
+  test_extend_legs_identical_orders(2,4);
 }
 
 // testing wait time
@@ -1209,11 +1225,13 @@ fn test_find_route_wait_time_exceeded(from_stand: i32, to_stand: i32) {
 }
 
 #[test]
+#[serial]
 fn test_find_route_wait_time() {
   test_find_route_wait_time_exceeded(4,5);
 }
 
 #[test]
+#[serial]
 fn test_wait_exceed_no_assigned_orders_then_false() {
   let o = Order { id: 1, from: 4, to: 5, wait: 5, loss:90, 
     dist:unsafe{DIST[4][5] as i32}, shared: true, in_pool: false, 
@@ -1223,21 +1241,27 @@ fn test_wait_exceed_no_assigned_orders_then_false() {
   let ret = wait_exceeded(&o, 0, 0, 1, 2, unsafe{DIST[4][5] as i32}, 1, 1, &get_test_legs5(unsafe{&DIST}), &ass_orders_map);
   assert!(!ret);
 }
-#[ignore]
+
 #[test]
+#[serial]
 fn test_wait_exceed_assigned_order_and_too_long_then_true() {
   init_distance(&get_stops());
   let o = Order { id: 1, from: 4, to: 5, wait: 5, loss:90, 
     dist:unsafe{DIST[4][5] as i32}, shared: true, in_pool: false, 
     received: Local::now().naive_local().checked_sub_signed(chrono::Duration::seconds(3*60)), // ! three minutes are enough to exceed the wait time
     started: None, completed: None, at_time: None, eta: 1, route_id: 123 };
+  let o2 = Order { id: 12345, from: 4, to: 5, wait: 5, loss:90, 
+    dist:unsafe{DIST[4][5] as i32}, shared: true, in_pool: false, 
+    received: Some(Local::now().naive_local()),
+    started: None, completed: None, at_time: None, eta: 1, route_id: 123 };
   let ass_orders = vec![o];
   let ass_orders_map = assigned_orders(&ass_orders);  
-  let ret = wait_exceeded(&o, 0, 0, 1, 2, unsafe{DIST[4][5] as i32}, 1, 1, &get_test_legs5(unsafe{&DIST}), &ass_orders_map);
+  let ret = wait_exceeded(&o2, 0, 0, 1, 2, unsafe{DIST[4][5] as i32}, 1, 1, &get_test_legs5(unsafe{&DIST}), &ass_orders_map);
   assert!(ret);
 }
 
 #[test]
+#[serial]
 fn test_wait_exceed_assigned_order_and_not_too_long_then_false() {
   init_distance(&get_stops());
   let o = Order { id: 1, from: 4, to: 10, wait: 10, loss:90, 

@@ -1,7 +1,7 @@
 use chrono::NaiveDateTime;
 
 pub const MAXSTOPSNUMB : usize = 5200;
-pub const MAXORDERSNUMB: usize = 2000; // max not assigned
+pub const MAXORDERSNUMB: usize = 4000; // max not assigned
 pub const MAXCABSNUMB: usize = 18000;
 pub const MAXBRANCHNUMB: usize = 1000; // size of pool finder's response
 
@@ -163,7 +163,7 @@ pub struct KernCfg {
     pub max_solver_size: usize,
     pub run_after:u64,
     pub max_legs: i8,
-    pub max_angle: f32,
+    pub max_angle: i16,
     pub max_angle_dist: i16,
     pub use_pool: bool,
     pub use_extern_pool: bool,

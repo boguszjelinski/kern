@@ -18,7 +18,7 @@ pthread_t myThread[NUMBTHREAD];
 // thread arguments - which part of a task each gets
 struct arg_struct {
    int i;
-   float chunk;
+   int chunk;
    int lev;
    int inPool;
 } *args[NUMBTHREAD];
@@ -136,7 +136,8 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
       if (!isTooLong(ordId, 'i', dist(demand[ordId].fromStand, nextStop) 
                                   + (demand[ordId].fromStand != nextStop ? STOP_WAIT : 0), ptr)
         // TASK? if the next stop is OUT of passenger 'c' - we might allow bigger angle
-        && (dist(demand[ordId].fromStand, nextStop) > MAXANGLEDIST || bearingDiff(stops[demand[ordId].fromStand].bearing, stops[nextStop].bearing) < MAXANGLE)
+        && (dist(demand[ordId].fromStand, nextStop) > MAXANGLEDIST 
+            || bearingDiff(stops[demand[ordId].fromStand].bearing, stops[nextStop].bearing) < MAXANGLE)
         ) 
         storeBranch(thread, 'i', lev, ordId, ptr, inPool);
     }
@@ -145,22 +146,24 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
         && ptr->outs < inPool // numb OUT must be numb IN
         && !isTooLong(ordId, 'o', dist(demand[ordId].toStand, nextStop)
                                 + (demand[ordId].toStand != nextStop ? STOP_WAIT : 0), ptr)
-        && (dist(demand[ordId].toStand, nextStop) > MAXANGLEDIST || bearingDiff(stops[demand[ordId].toStand].bearing, stops[nextStop].bearing) < MAXANGLE)
+        && (dist(demand[ordId].toStand, nextStop) > MAXANGLEDIST 
+           || bearingDiff(stops[demand[ordId].toStand].bearing, stops[nextStop].bearing) < MAXANGLE)
         ) storeBranch(thread, 'o', lev, ordId, ptr, inPool);
 }
 
 /// just a loop and calling store_branch...
 void iterate(void *arguments) {
   struct arg_struct *ar = arguments;
-  int size = round(((ar->i + 1) * ar->chunk) > demandNumb) ? demandNumb : round((ar->i + 1) * ar->chunk);
+  int stop = (ar->i + 1) * ar->chunk;
+  if (stop > demandNumb) stop = demandNumb;
   
-  for (int ordId = round(ar->i * ar->chunk); ordId < size; ordId++) 
+  for (int ordId = ar->i * ar->chunk; ordId < stop; ordId++) 
    if (demand[ordId].id != -1) { // not allocated in previous search (inPool+1)
     for (int b = 0; b < nodeSize[ar->lev + 1]; b++) 
-      if (node[ar->lev + 1][b].cost != -1) {  
+      //if (node[ar->lev + 1][b].cost != -1) {  we do not set the value any longer, an old check of duplicates
         // we iterate over product of the stage further in the tree: +1
         storeBranchIfNotFoundDeeperAndNotTooLong(ar->i, ar->lev, ordId, b, ar->inPool);
-    }
+    //}
   }
 }
 
@@ -231,9 +234,13 @@ void dive(int lev, int inPool, int numbThreads) {
     return; // last two levels are "leaves"
   }
   dive(lev + 1, inPool, numbThreads);
-  const float chunk = demandNumb / numbThreads;
-  if (round(numbThreads*chunk) < demandNumb) numbThreads++; // last thread will be the reminder of division
-
+  int chunk = demandNumb / numbThreads;
+  if (chunk == 0) chunk = 1;
+  if (numbThreads * chunk < demandNumb) numbThreads++; // last thread will be the reminder of division
+  // but with small numbers (demand) it still might be not enough
+  // all this will run faster then rounding/float variables
+  if (numbThreads * chunk < demandNumb) chunk *= 2;
+  //printf("thr=%d chunk=%d\n", numbThreads, chunk);
   // run the threads, each thread gets its own range of orders to iterate over - hence 'iterate'
   for (int i = 0; i<numbThreads; i++) { // TASK: allocated orders might be spread unevenly -> count non-allocated and devide chunks ... evenly
       args[i]->i = i; 
@@ -263,6 +270,14 @@ void dive(int lev, int inPool, int numbThreads) {
       idx += nodeSizeSMP[i];
   }
   nodeSize[lev] = idx;
+  /*
+  if (lev ==7) 
+    for (int i=0; i<nodeSize[lev]; i++) {
+      for (int j=0; j<node[lev][i].ordNumb; j++) 
+        printf("%d,", node[lev][i].ordIDs[j]);
+      printf("\n");
+    }
+  */
 }
 
 int bearingDiff(int a, int b) {
@@ -330,14 +345,15 @@ void rmDuplicatesAndFindCab(int inPool) {
     register Branch *ptr;
     if (nodeSize[lev] < 1) return;
 
+    /* 
     for (int i = 0; i< size; i++) {
       ptr = arr + i;
-      ptr -> cost = sumDetour(ptr);
-      ptr -> cab = countDistanceWithoutPassengers(ptr); // cab? I don't want to change Branch right now, which is mapped to a Rust structure
+      ptr -> cost = sumDetour(ptr); // TODO: goal function in config file
+      ptr -> cab = countDistanceWithoutPassengers(ptr); // cab? I don't want to change Branch structure right now, which is mapped to a Rust structure
     }
-
-    //qsort(arr, size, sizeof(Branch), compareCost);
     qsort(arr, size, sizeof(Branch), compareCostDetour);
+    */
+    qsort(arr, size, sizeof(Branch), compareCost);
 
     for (int i = 0; i < size; i++) {
       ptr = arr + i;
