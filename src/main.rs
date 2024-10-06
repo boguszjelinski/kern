@@ -39,7 +39,7 @@ const MAXLCM : usize = 20000; // !! max number of cabs or orders sent to LCM in 
 const CFG_FILE_DEFAULT: &str = "kern.toml";
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
-    println!("cargo:rustc-link-lib=dynapool117");
+    println!("cargo:rustc-link-lib=dynapool119");
     // reading Config
     let mut cfg_file: String = CFG_FILE_DEFAULT.to_string();
 
@@ -190,7 +190,7 @@ fn setup_logger(file_path: String) {
     let _handle = log4rs::init_config(config);
 }
 
-#[link(name = "dynapool117")]
+#[link(name = "dynapool119")]
 extern "C" {
     fn dynapool(
 		numbThreads: i32,
@@ -512,6 +512,7 @@ fn find_internal_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
             (p == 2 && demand.len() < unsafe { (CNFG.max_pool2_size/2) as usize }) { // /2 as Rust is slower than C
             let mut ret = find_pool(p, unsafe { CNFG.thread_numb } as i16,
                                                             demand,  cabs, &stops, max_route_id, max_leg_id);
+            print!("Pool with {}, found pools: {}\n", p, ret.0.len());
             pl.append(&mut ret.0);
             sql += &ret.1;
         }

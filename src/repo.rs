@@ -19,7 +19,7 @@ pub static mut CNFG: KernCfg = KernCfg {
     use_pool: true,
     use_extern_pool: true,
     use_extender: false,
-    thread_numb: 4,
+    thread_numb: 8,
     stop_wait: 1,
     cab_speed: 60,
     max_pool5_size: 20,

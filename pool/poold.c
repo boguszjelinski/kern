@@ -1,5 +1,5 @@
 /// Kabina minibus/taxi dispatcher
-/// Copyright (c) 2022 by Bogusz Jelinski bogusz.jelinski@gmail.com
+/// Copyright (c) 2024 by Bogusz Jelinski bogusz.jelinski@gmail.com
 /// 
 /// Pool finder submodule.
 /// A pool is a group of orders to be picked up by a cab in a prescribed sequence
@@ -36,15 +36,12 @@ int cabsNumb;
 extern struct Branch;
 typedef struct Branch Branch;
 
-int memSize[MAXNODE] = {50000000, 100000000, 100000000, 100000000, 100000000, 100000000, 50000000, 1000000, 50000};
-Branch *node[MAXNODE];
-int nodeSize[MAXNODE];
+Branch node[MAXNODEMEM];
+int nodeSize;
 int nodeSizeSMP[NUMBTHREAD];
 
 Branch *retNode;
 int retCount = 0, retNumb=0;
-
-volatile sig_atomic_t done = 0;
 
 extern struct arg_struct {
    int i;
@@ -53,27 +50,13 @@ extern struct arg_struct {
    int inPool;
 } *args[NUMBTHREAD];
 
-void handle_signal(int signum) {
-   done = 1;
-}
-
+// these two called by Rust
 void initMem() {
-  for (int i=0; i<MAXNODE; i++) {
-    node[i] = malloc(sizeof(Branch) * memSize[i]);
-    if (node[i] == NULL) {
-      printf("Error allocating node mem");
-      exit(0);
-    }
-  }
   for (int i = 0; i<NUMBTHREAD; i++)
     args[i] = malloc(sizeof(struct arg_struct) * 1);
 }
 
 void freeMem() {
-  for (int i=0; i<MAXNODE; i++) {
-    free(node[i]);
-    nodeSize[i] = 0;
-  }
   for (int i=0; i<NUMBTHREAD; i++) {
     nodeSizeSMP[i] = 0;
     free(args[i]);
@@ -90,11 +73,7 @@ void dynapool(int numbThreads, int poolsize[MAXINPOOL - 1],
               Branch *ret, int retSize, 
               int *count,
               int pooltime[MAXINPOOL - 1]) {
-    // signal(SIGINT, handle_signal);
-    // signal(SIGTERM, handle_signal);
-    // signal(SIGABRT, handle_signal);
     printf("Orders: %d\nCabs: %d\n", ordersSize, cabsSize);
-    //initMem(); called by Rust
     
     distNumb = distSize;
     stopsNumb = stopsSize;
@@ -125,7 +104,6 @@ void dynapool(int numbThreads, int poolsize[MAXINPOOL - 1],
       }
     
     *count = retCount;
-    //freeMem();
 }
 
 inline short dis(short *dista, int dist_size, int row, int col) {

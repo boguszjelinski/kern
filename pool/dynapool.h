@@ -1,8 +1,9 @@
-#define NUMBTHREAD 17
+#define NUMBTHREAD 11 // one more than possibly configured
 #define MAXINPOOL 5
 #define MAXORDID MAXINPOOL*2
 #define MAXNODE MAXINPOOL+MAXINPOOL-1
 #define MAXTHREADMEM 15000000
+#define MAXNODEMEM 100000000
 
 #define MAXANGLE 120.0
 #define MAXANGLEDIST 1

@@ -11,11 +11,6 @@
 #include <pthread.h>
 #include "dynapool.h"
 
-// each thread has its own chunk of branches, they will be merged
-Branch nodeSMP[NUMBTHREAD][MAXTHREADMEM];
-pthread_t myThread[NUMBTHREAD];
-
-// thread arguments - which part of a task each gets
 struct arg_struct {
    int i;
    int chunk;
@@ -23,9 +18,11 @@ struct arg_struct {
    int inPool;
 } *args[NUMBTHREAD];
 
-extern int memSize[MAXNODE]; // sizes of statically allocated memory
-extern Branch *node[MAXNODE];  // main memory consumer 
-extern int nodeSize[MAXNODE]; // actual size of branches
+// each thread has its own chunk of branches, they will be merged
+pthread_t myThread[NUMBTHREAD];
+extern Branch node[MAXNODEMEM];
+extern int nodeSize; // actual size of mem, number of branches
+Branch nodeSMP[NUMBTHREAD][MAXTHREADMEM];
 extern int nodeSizeSMP[NUMBTHREAD]; // size of thread memory
 
 // pointers allocated and passed by Rust
@@ -44,7 +41,7 @@ extern int cabsNumb;
 extern Branch *retNode;
 extern int retCount, retNumb; // number of branches returned to Rust
 
-//inline - it causes linker problems while running 'cargo build'
+//inline would cause linker problems while running 'cargo build'
 short dist(int row, int col) {
   return *(distance + (row * distNumb) + col);
 }
@@ -116,7 +113,7 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
     // c IN has to have c OUT in level+1, and c IN cannot exist in level + 1
     // c OUT cannot have c OUT in level +1
     boolean outFound = false;
-    Branch *ptr = &node[lev+1][branch];
+    Branch *ptr = &node[branch];
     for (int i = 0; i < ptr->ordNumb; i++) {
       if (ptr->ordIDs[i] == ordId) {
         if (ptr->ordActions[i] == 'i') {
@@ -159,20 +156,18 @@ void iterate(void *arguments) {
   
   for (int ordId = ar->i * ar->chunk; ordId < stop; ordId++) 
    if (demand[ordId].id != -1) { // not allocated in previous search (inPool+1)
-    for (int b = 0; b < nodeSize[ar->lev + 1]; b++) 
-      //if (node[ar->lev + 1][b].cost != -1) {  we do not set the value any longer, an old check of duplicates
+    for (int b = 0; b < nodeSize; b++) 
         // we iterate over product of the stage further in the tree: +1
         storeBranchIfNotFoundDeeperAndNotTooLong(ar->i, ar->lev, ordId, b, ar->inPool);
-    //}
   }
 }
 
 void addBranch(int id1, int id2, char dir1, char dir2, int outs, int lev) {
-    if (nodeSize[lev] >= memSize[lev]) {
+    if (nodeSize >= MAXNODEMEM) {
       printf("addBranch: allocated mem too low, level: %d\n", lev);
       return;
     }
-    Branch *ptr = &node[lev][nodeSize[lev]];
+    Branch *ptr = &node[nodeSize];
 
     ptr->cost = dist(demand[id1].toStand, demand[id2].toStand) 
                 + (demand[id1].toStand == demand[id2].toStand ? 0 : STOP_WAIT);
@@ -182,7 +177,7 @@ void addBranch(int id1, int id2, char dir1, char dir2, int outs, int lev) {
     ptr->ordActions[0] = dir1;
     ptr->ordActions[1] = dir2;
     ptr->ordNumb = 2;
-    nodeSize[lev]++;
+    nodeSize++;
 }
 
 /// generate permutatations of leaves - last two stops (well, it might be one stop), we skip some checks here
@@ -231,6 +226,7 @@ void dive(int lev, int inPool, int numbThreads) {
   //printf("DIVE, inPool: %d, lev:%d\n", inPool, lev);
   if (lev > inPool + inPool - 3) { // lev >= 2*inPool-2, where -2 are last two levels
     storeLeaves(lev);
+    printf("Node: %d size: %d\n", lev + 1, nodeSize);
     return; // last two levels are "leaves"
   }
   dive(lev + 1, inPool, numbThreads);
@@ -262,19 +258,20 @@ void dive(int lev, int inPool, int numbThreads) {
   // there might be 'duplicates', 1-2-3 and 1-3-2 and so on, they will be filtered out later
   int idx = 0;
   for (int i = 0; i<numbThreads; i++) {
-      if (idx + nodeSizeSMP[i] >= memSize[lev]) {
+      if (idx + nodeSizeSMP[i] >= MAXNODEMEM) {
         printf("dive: allocated mem too low, level: %d\n", lev);
         break;
       }
-      memcpy(&node[lev][idx], nodeSMP[i], nodeSizeSMP[i] * sizeof(Branch));
+      memcpy(&node[idx], nodeSMP[i], nodeSizeSMP[i] * sizeof(Branch));
       idx += nodeSizeSMP[i];
   }
-  nodeSize[lev] = idx;
+  nodeSize = idx;
+  printf("Node: %d size: %d\n", lev, nodeSize);
   /*
   if (lev ==7) 
     for (int i=0; i<nodeSize[lev]; i++) {
-      for (int j=0; j<node[lev][i].ordNumb; j++) 
-        printf("%d,", node[lev][i].ordIDs[j]);
+      for (int j=0; j<node[i].ordNumb; j++) 
+        printf("%d,", node[i].ordIDs[j]);
       printf("\n");
     }
   */
@@ -308,8 +305,8 @@ int compareCostDetour(const void * a, const void * b) {
 
 int countNodeSize(int lev) {
   int count=0;
-  Branch *arr = node[lev];
-  for (int i=0; i<nodeSize[lev]; i++)
+  Branch *arr = node;
+  for (int i=0; i<nodeSize; i++)
     if (arr[i].cost != -1 ) count++;
   return count;
 }
@@ -340,10 +337,10 @@ void rmDuplicatesAndFindCab(int inPool) {
     int cabIdx = -1;
     int from;
     int distCab;
-    int size = nodeSize[lev];
-    Branch *arr = node[lev];
+    int size = nodeSize;
+    Branch *arr = node;
     register Branch *ptr;
-    if (nodeSize[lev] < 1) return;
+    if (nodeSize < 1) return;
 
     /* 
     for (int i = 0; i< size; i++) {
@@ -491,13 +488,10 @@ void findPool(int inPool, int numbThreads) {
     if (inPool > MAXINPOOL) {
       return;
     }
-    for (int i=0; i<MAXNODE; i++) nodeSize[i] = 0;
+    nodeSize = 0;
     for (int i=0; i<NUMBTHREAD; i++) nodeSizeSMP[i] = 0;
     dive(0, inPool, numbThreads);
 
-    // debug, to identify needed memory
-    for (int i = 0; i < inPool + inPool - 1; i++)
-        printf("node[%d].size: %d\n", i, countNodeSize(i));
     rmDuplicatesAndFindCab(inPool);
     printf("FINAL: inPool: %d, found pools: %d\n", inPool, countNodeSize(0));
 }

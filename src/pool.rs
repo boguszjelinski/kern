@@ -23,8 +23,8 @@ static mut ORDERS_LEN: usize = 0;
 static mut CABS: [Cab; MAXCABSNUMB] = [Cab {id:0, location:0, seats: 0}; MAXCABSNUMB];
 static mut CABS_LEN: usize = 0;
 
-const MAX_THREAD_NUMB:usize = 5; // this has to be +1 possible config value!!
-const MAX_BRANCH_SIZE:usize = 1000000;
+const MAX_THREAD_NUMB:usize = 9; // this has to be +1 possible config value!!
+const MAX_BRANCH_SIZE:usize = 1500000;
 static mut RETS: [[Branch; MAX_BRANCH_SIZE]; MAX_THREAD_NUMB] = [[Branch {
                   cost: 0, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 }; MAX_BRANCH_SIZE]; MAX_THREAD_NUMB];
 static mut RETS_SIZE: [usize; MAX_THREAD_NUMB] = [0; MAX_THREAD_NUMB];
@@ -128,6 +128,7 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16){
       ii += 1;
     }
     debug!("Level: {}, size: {}", lev, ret_size); // just for memory usage considerations
+    print!("Level: {}, size: {}\n", lev, ret_size);
     NODE_SIZE = ret_size;
     /*if lev == 7 {
       for i in 0 .. NODE_SIZE[lev as usize] {
