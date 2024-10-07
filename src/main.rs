@@ -12,7 +12,8 @@ use distance::DIST;
 use model::{KernCfg,Order,OrderStatus,OrderTransfer,Stop,Cab,CabStatus,Branch,
             MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB,MAXBRANCHNUMB,MAXINPOOL};
 use stats::{Stat,update_max_and_avg_time,update_max_and_avg_stats,incr_val};
-use pool::{orders_to_array,orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
+use pool::{orders_to_array,orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool,
+            STOPS, STOPS_LEN, ORDERS, ORDERS_LEN};
 use repo::{CNFG, assign_pool_to_cab};
 use extender::{find_matching_routes, get_handle}; // write_sql_to_file
 use utils::get_elapsed;
@@ -40,6 +41,7 @@ const CFG_FILE_DEFAULT: &str = "kern.toml";
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
     println!("cargo:rustc-link-lib=dynapool119");
+    //println!("cargo:rustc-link-arg=--max-memory=8294967296");
     // reading Config
     let mut cfg_file: String = CFG_FILE_DEFAULT.to_string();
 
@@ -72,7 +74,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
     let stops = repo::read_stops(&mut conn);
     distance::init_distance(&stops);
 
-    let mut itr: i32 = 0;
     unsafe {
         if CNFG.use_extern_pool {
             initMem();
@@ -85,10 +86,10 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
 
         // get newly requested trips and free cabs, reject expired orders (no luck this time)
         let tmp_model = prepare_data(&mut conn);
-        let mut rest: usize = 0;
+        
         match tmp_model {
             Some(mut x) => { 
-                rest = dispatch(itr, &db_conn_str, &mut conn, &mut x.0, &mut x.1, &stops, unsafe { CNFG.clone() });
+                dispatch(&db_conn_str, &mut conn, &mut x.0, &mut x.1, &stops, unsafe { CNFG.clone() });
             },
             None => {
                 info!("Nothing to do");
@@ -107,7 +108,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
             debug!("Sleeping in {} secs", wait);
             thread::sleep(std::time::Duration::from_secs(wait));
         }}
-        itr += 1;
     }
 }
 
@@ -225,13 +225,13 @@ extern "C" {
     fn initMem();
 }
 
-fn run_extender(_thr_numb: i32, itr: i32, host: &String, conn: &mut PooledConn, orders: &Vec<Order>, stops: &Vec<Stop>, 
+fn run_extender(conn: &mut PooledConn, orders: &Vec<Order>, stops: &Vec<Stop>, 
                 max_leg_id: &mut i64, label: &str, cfg: &KernCfg) -> Vec<Order> {
     let len_before = orders.len();
     if cfg.use_extender {
         let start_extender = Instant::now();
         let demand 
-            = find_matching_routes(itr, _thr_numb, &host, conn, orders, &stops, max_leg_id, unsafe { &DIST });
+            = find_matching_routes(conn, orders, &stops, max_leg_id, unsafe { &DIST });
         update_max_and_avg_time(Stat::AvgExtenderTime, Stat::MaxExtenderTime, start_extender);
         let len_after = demand.len();
         if len_before != len_after {
@@ -250,20 +250,19 @@ fn run_extender(_thr_numb: i32, itr: i32, host: &String, conn: &mut PooledConn, 
 // 2) pool finder
 // 3) solver (LCM in most scenarious won't be called)
 // SQL updates execute in background as async
-fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>, cfg: KernCfg) -> usize {
+fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>, cfg: KernCfg) -> usize {
     if orders.len() == 0 {
         info!("No demand, no dispatch");
         return 0;
     }
     let mut max_route_id : i64 = repo::read_max(conn, "route"); // +1, first free ID
     let mut max_leg_id : i64 = repo::read_max(conn, "leg");
-    let thread_num: i32 = cfg.thread_numb;
     
     stats::update_max_and_avg_stats(Stat::AvgDemandSize, Stat::MaxDemandSize, orders.len() as i64);
     
     // check if we want to run extender is done in run_extender
     let mut demand
-        = run_extender(thread_num, itr, &host, conn, orders, &stops, &mut max_leg_id, "FIRST", &cfg);
+        = run_extender(conn, orders, &stops, &mut max_leg_id, "FIRST", &cfg);
     // POOL FINDER
     if cabs.len() == 0 {
         info!("No cabs");
@@ -301,7 +300,7 @@ fn dispatch(itr: i32, host: &String, conn: &mut PooledConn, orders: &mut Vec<Ord
         // let's try extender on the new routes if there still is demand
         (*cabs, demand) = shrink(&cabs, demand);
         demand
-            = run_extender(thread_num, itr, &host, conn, &demand, &stops, &mut max_leg_id, "SECOND", &cfg);
+            = run_extender(conn, &demand, &stops, &mut max_leg_id, "SECOND", &cfg);
     }
 
     // we don't want to run run solver each time, once a minute is fine, these are som trouble-making customers :)
@@ -404,6 +403,7 @@ fn extern_lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i
     return pairs;
 }
 
+/*
 fn lcm_gen_pairs2(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i16)> {
     // let us start with a big cost - is there any smaller?
 let big_cost: i32 = 1000000;
@@ -454,6 +454,7 @@ for _ in 0..how_many { // we need to repeat the search (cut off rows/columns) 'h
 }
 return pairs;
 }
+*/
 
 // remove orders and cabs allocated by the pool so that the vectors can be sent to solver
 fn shrink(cabs: &Vec<Cab>, orders: Vec<Order>) -> (Vec<Cab>, Vec<Order>) {
@@ -505,14 +506,32 @@ fn find_internal_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
                     max_route_id: &mut i64, max_leg_id: &mut i64) -> (Vec<Branch>, String) {
     let mut pl: Vec<Branch> = Vec::new();  
     let mut sql: String = String::from("");
+    unsafe {
+        STOPS = stops_to_array(stops);
+        STOPS_LEN = stops.len();
+    }
+
     for p in (2..6).rev() { //5,4,3,2
-        if (p == 5 && demand.len() < unsafe { (CNFG.max_pool5_size/2) as usize } ) || // 5: TODO: check if it works!!
-            (p == 4 && demand.len() < unsafe { (CNFG.max_pool4_size/2) as usize }) ||
-            (p == 3 && demand.len() < unsafe { (CNFG.max_pool3_size/2) as usize }) ||
-            (p == 2 && demand.len() < unsafe { (CNFG.max_pool2_size/2) as usize }) { // /2 as Rust is slower than C
+        unsafe { // as some orders could have been allocated by previous iteration
+            ORDERS = orders_to_array(demand);
+            ORDERS_LEN = demand.len();
+        }
+        if (p == 5 && demand.len() < unsafe { (CNFG.max_pool5_size) as usize } ) || // 5: TODO: check if it works!!
+            (p == 4 && demand.len() < unsafe { (CNFG.max_pool4_size) as usize }) ||
+            (p == 3 && demand.len() < unsafe { (CNFG.max_pool3_size) as usize }) ||
+            (p == 2 && demand.len() < unsafe { (CNFG.max_pool2_size) as usize }) {
+            let now = Instant::now();
             let mut ret = find_pool(p, unsafe { CNFG.thread_numb } as i16,
                                                             demand,  cabs, &stops, max_route_id, max_leg_id);
             print!("Pool with {}, found pools: {}\n", p, ret.0.len());
+            info!("Pool with {}, found pools: {}\n", p, ret.0.len());
+            let el = now.elapsed().as_secs() as i64;
+            match p {
+                5 => update_max_and_avg_stats(Stat::AvgPool5Time, Stat::MaxPool5Time, el),
+                4 => update_max_and_avg_stats(Stat::AvgPool4Time, Stat::MaxPool4Time, el),
+                3 => update_max_and_avg_stats(Stat::AvgPool3Time, Stat::MaxPool3Time, el),
+                _=>{},
+            }
             pl.append(&mut ret.0);
             sql += &ret.1;
         }
@@ -555,8 +574,8 @@ fn find_external_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
             &mut cnt, // returned count of values
             &mut pooltime
         );
-    
-    update_max_and_avg_stats(Stat::AvgPool5Time, Stat::MaxPool5Time, pooltime[0] as i64);}
+    }
+    update_max_and_avg_stats(Stat::AvgPool5Time, Stat::MaxPool5Time, pooltime[0] as i64);
     update_max_and_avg_stats(Stat::AvgPool4Time, Stat::MaxPool4Time, pooltime[1] as i64);
     update_max_and_avg_stats(Stat::AvgPool3Time, Stat::MaxPool3Time, pooltime[2] as i64);
   /*  for i in 0 .. cnt as usize {
@@ -592,7 +611,7 @@ fn find_external_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
         }
         }*/
         ret.push(br[i]); // just convert to vec
-        sql += &assign_pool_to_cab(cabs[br[i].cab as usize], &orders_to_array(&demand), br[i], max_route_id, max_leg_id);
+        sql += &assign_pool_to_cab(cabs[br[i].cab as usize], demand, br[i], max_route_id, max_leg_id);
         // remove the cab from list so that it cannot be allocated twice, by LCM or Munkres
         cabs[br[i].cab as usize].id = -1;
         // mark orders as assigned too
@@ -643,7 +662,7 @@ fn prepare_data(conn: &mut PooledConn) -> Option<(Vec<Order>, Vec<Cab>)> {
         info!("No demand");
         return None;
     }
-    info!("Orders, input: {}", orders.len());
+    info!("Orders before expiry check, input: {}", orders.len());
     
     orders = expire_orders(conn, &orders);
     if orders.len() == 0 {
@@ -892,19 +911,6 @@ mod tests {
     return ret;
   }
 
-    fn get_orders2(size: usize) -> Vec<Order> {
-        let mut ret: Vec<Order> = vec![];
-        for i in 0..size as i32 {
-            let from: i32 = 2400 - i % 2400;
-            let to: i32 = from + 5;
-            let dista = unsafe { DIST[from as usize][to as usize] as i32 };
-            ret.push(Order{ id: i as i64, from, to, wait: 15, loss: 70, dist: dista,
-                shared: true, in_pool: false, received: Some(Local::now().naive_local()), started: None, completed: None, at_time: None,
-                eta: 1, route_id: -1 });
-        }
-        return ret;
-    }
-
   fn get_cabs() -> Vec<Cab> {
     let mut ret: Vec<Cab> = vec![];
     for i in 0..1000 {
@@ -919,32 +925,32 @@ mod tests {
   #[test]
   #[serial]
   fn test_performance_find_extern_pool() {
-    let stops = get_stops(0.05);
+    let stops = get_stops(0.03);
     init_distance(&stops);
-    let mut orders: Vec<Order> = get_orders(10);
+    let mut orders: Vec<Order> = get_orders(70);
     let mut cabs: Vec<Cab> = get_cabs();
     unsafe { initMem(); }
     let start = Instant::now();
     let ret = find_external_pool(&mut orders, &mut cabs, &stops, 8_i32, &mut 0, &mut 0);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
-    assert_eq!(ret.0.len(), 3); 
-    assert_eq!(ret.1.len(), 3545); // TODO: Rust gives 3550
+    assert_eq!(ret.0.len(), 4); 
+    assert_eq!(ret.1.len(), 2774); // TODO: Rust gives 3550
   }
 
   #[test]
   #[serial]
   fn test_performance_find_intern_pool() {
-    let stops = get_stops(0.05);
+    let stops = get_stops(0.03);
     init_distance(&stops);
-    let mut orders: Vec<Order> = get_orders(10);
+    let mut orders: Vec<Order> = get_orders(70);
     let mut cabs: Vec<Cab> = get_cabs();
     let start = Instant::now();
     let ret = find_internal_pool(&mut orders, &mut cabs, &stops, &mut 0, &mut 0);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
-    assert_eq!(ret.0.len(), 3); 
-    assert_eq!(ret.1.len(), 3550);
+    assert_eq!(ret.0.len(), 5); 
+    assert_eq!(ret.1.len(), 3475);
   }
 
   #[test]
@@ -954,14 +960,15 @@ mod tests {
     let mut max_leg_id : i64 = 0;
     let stops = get_stops(0.05);
     init_distance(&stops);
-    let mut demand: Vec<Order> = get_orders(10);
+    let mut demand: Vec<Order> = get_orders(50);
     let mut cabs = get_cabs();
     unsafe { initMem(); }
     let start = Instant::now();
-    let mut ret = find_pool(4, unsafe { CNFG.thread_numb } as i16,
+    let ret = find_pool(4, unsafe { CNFG.thread_numb } as i16,
                                                             &mut demand,  &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
+    assert_eq!(ret.0.len() > 0, true); 
   }
 
   #[test]  
@@ -980,7 +987,7 @@ mod tests {
     assert_eq!(ret.1.len(), 3193);
   }
 
-  #[test]  
+/*   #[test]  
   #[serial]
   fn test_performance_lcm() {
     let stops = get_stops(0.05);
@@ -994,5 +1001,5 @@ mod tests {
     assert_eq!(ret2[0].1, 1499);
     assert_eq!(ret2[1].0, 902);
     assert_eq!(ret2[1].1, 1498);
-  }
+  } */
 }

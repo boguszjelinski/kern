@@ -111,6 +111,7 @@ pub enum RouteStatus {
 //    COMPLETED = 6
 }
 
+/*
 impl RouteStatus {
     fn from_u32(value: u32) -> RouteStatus {
         match value {
@@ -125,6 +126,7 @@ impl RouteStatus {
         }
     }
 }
+*/
 
 #[derive(Clone)]
 pub struct Route {

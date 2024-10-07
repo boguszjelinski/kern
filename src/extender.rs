@@ -45,7 +45,7 @@ pub fn bearing_diff(a: i32, b: i32 ) -> f32 {
   return r.abs();
 }
 
-pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, conn: &mut PooledConn, demand: &Vec<Order>, stops: &Vec<Stop>, 
+pub fn find_matching_routes(conn: &mut PooledConn, demand: &Vec<Order>, stops: &Vec<Stop>, 
                             max_leg_id: &mut i64, dist: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB]) 
                             -> Vec<Order> {
     if demand.len() == 0 {
@@ -88,12 +88,13 @@ pub fn find_matching_routes(itr: i32, _thr_numb: i32, host: &String, conn: &mut 
     return ret;
 }
 
-pub fn write_sql_to_file(itr: i32, sql: &String, label: &str) {
+/*pub fn write_sql_to_file(itr: i32, sql: &String, label: &str) {
   let file_name = format!("{}-{}.sql", label.to_string(), itr);
   let msg = format!("SQL for {} failed", file_name);
   let mut _file = std::fs::File::create(&file_name).expect(&("Create ".to_string() + &msg));
   //file.write_all(sql.as_bytes()).expect(&("Write ".to_string() + &msg));
 }
+*/
 
 pub fn count_legs(legs: &Vec<Leg>) -> HashMap<i64, i8> {
   let mut counts = HashMap::new();

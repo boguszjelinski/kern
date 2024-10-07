@@ -17,15 +17,15 @@ pub static mut CNFG: KernCfg = KernCfg {
     max_angle: 120,
     max_angle_dist: 3, 
     use_pool: true,
-    use_extern_pool: true,
+    use_extern_pool: false,
     use_extender: false,
     thread_numb: 8,
     stop_wait: 1,
-    cab_speed: 60,
-    max_pool5_size: 20,
-    max_pool4_size: 120,
-    max_pool3_size: 300,
-    max_pool2_size: 600,
+    cab_speed: 30,
+    max_pool5_size: 40,
+    max_pool4_size: 130,
+    max_pool3_size: 350,
+    max_pool2_size: 1000,
     solver_delay: 60,
 };
 
@@ -236,7 +236,7 @@ pub fn update_reserves_in_legs_before_and_including2(route_id: i64, place: i32, 
     return sql;
 }
 
-pub fn assign_pool_to_cab(cab: Cab, orders: &[Order; MAXORDERSNUMB], pool: Branch, max_route_id: &mut i64, 
+pub fn assign_pool_to_cab(cab: Cab, orders: &Vec<Order>, pool: Branch, max_route_id: &mut i64, 
                         mut max_leg_id: &mut i64) -> String {
     let order = orders[pool.ord_ids[0] as usize];
     let mut place = 0;
@@ -278,7 +278,7 @@ fn update_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16
 // count reserves on legs
 // reserves have to obey max_wait and max_loss
 // returnes reserves for legs in Branch as well as in the leg for cab (if needed)
-fn count_reserves(cab_dist: i16, br: Branch, orders: &[Order; MAXORDERSNUMB]) -> (i32, [i32; MAXORDID]) {
+fn count_reserves(cab_dist: i16, br: Branch, orders: &Vec<Order>) -> (i32, [i32; MAXORDID]) {
     // not all "c" values will produce legs below in "assign...", but we will use it as index for values -> res[c]
     let mut res: [i32; MAXORDID] = [16000; MAXORDID]; // we will decreas value
     // first max_wait
@@ -340,7 +340,7 @@ fn count_reserves(cab_dist: i16, br: Branch, orders: &[Order; MAXORDERSNUMB]) ->
     return (cab_reserve, res);
 }
 
-fn log_pool(cab_id: i64, route_id: i64, e: Branch, orders: &[Order; MAXORDERSNUMB]) {
+fn log_pool(cab_id: i64, route_id: i64, e: Branch, orders: &Vec<Order>) {
     let mut branch:String = String::from("");
     for i in 0..e.ord_numb as usize {
         branch += &format!("{}{},", orders[e.ord_ids[i] as usize].id, (e.ord_actions[i] as u8) as char).to_string();
@@ -349,7 +349,7 @@ fn log_pool(cab_id: i64, route_id: i64, e: Branch, orders: &[Order; MAXORDERSNUM
 }
 
 fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Branch, mut eta: i16,
-                                max_leg_id: &mut i64, orders: &[Order; MAXORDERSNUMB], reserve: [i32; MAXORDID]) -> String {
+                                max_leg_id: &mut i64, orders: &Vec<Order>, reserve: [i32; MAXORDID]) -> String {
     log_pool(cab_id, route_id, e, orders);
     let mut sql: String = String::from("");
     let mut passengers: i8 = 0;
@@ -543,7 +543,7 @@ mod tests {
     let orders = init_test_data(order_count);
     let cab = Cab { id:0, location:0, seats: 10 };
     let reserves: [i32; MAXORDID] = [0; MAXORDID];
-    let sql = assign_orders_and_save_legs(cab.id, 0, place, br, eta, &mut max_leg_id, &orders, reserves);
+    let sql = assign_orders_and_save_legs(cab.id, 0, place, br, eta, &mut max_leg_id, &orders.to_vec(), reserves);
     //println!("{}", sql);
     assert_eq!(sql, "INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (0,0,1,0,2,1,0,0,1);\nUPDATE taxi_order SET route_id=0, leg_id=0, cab_id=0, status=1, eta=0, in_pool=true WHERE id=0 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (1,1,2,1,2,1,0,0,2);\nUPDATE taxi_order SET route_id=0, leg_id=1, cab_id=0, status=1, eta=2, in_pool=true WHERE id=1 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (2,2,3,2,2,1,0,0,3);\nUPDATE taxi_order SET route_id=0, leg_id=2, cab_id=0, status=1, eta=4, in_pool=true WHERE id=2 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (3,3,0,3,0,1,0,0,4);\nUPDATE taxi_order SET route_id=0, leg_id=3, cab_id=0, status=1, eta=6, in_pool=true WHERE id=3 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (4,0,7,4,14,1,0,0,5);\nUPDATE taxi_order SET route_id=0, leg_id=4, cab_id=0, status=1, eta=6, in_pool=true WHERE id=0 AND status=0;\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (5,7,4,5,0,1,0,0,4);\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (6,4,5,6,2,1,0,0,3);\n");
   }

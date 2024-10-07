@@ -342,6 +342,7 @@ void rmDuplicatesAndFindCab(int inPool) {
     register Branch *ptr;
     if (nodeSize < 1) return;
 
+    // TODO: check if adding distance to nearest cab here would improve results!!!
     /* 
     for (int i = 0; i< size; i++) {
       ptr = arr + i;

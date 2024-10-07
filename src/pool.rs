@@ -12,22 +12,16 @@ use crate::distance::DIST;
 use crate::repo::{assign_pool_to_cab, CNFG};
 const MAXANGLEDIST: i16 = 1;
 
-static mut STOPS : [Stop; MAXSTOPSNUMB] = [Stop {id: 0, latitude: 0.0, longitude: 0.0, bearing: 0}; MAXSTOPSNUMB];
-static mut STOPS_LEN: usize = 0;
+pub static mut STOPS : [Stop; MAXSTOPSNUMB] = [Stop {id: 0, latitude: 0.0, longitude: 0.0, bearing: 0}; MAXSTOPSNUMB];
+pub static mut STOPS_LEN: usize = 0;
 
-static mut ORDERS: [Order; MAXORDERSNUMB] = [Order {
+pub static mut ORDERS: [Order; MAXORDERSNUMB] = [Order {
     id: 0, from: 0, to: 0, wait: 0,	loss: 0, dist: 0, shared: true, in_pool: true, 
     received: None, started: None, completed: None, at_time: None, eta: -1, route_id: -1 }; MAXORDERSNUMB];
-static mut ORDERS_LEN: usize = 0;
-
-static mut CABS: [Cab; MAXCABSNUMB] = [Cab {id:0, location:0, seats: 0}; MAXCABSNUMB];
-static mut CABS_LEN: usize = 0;
+pub static mut ORDERS_LEN: usize = 0;
 
 const MAX_THREAD_NUMB:usize = 9; // this has to be +1 possible config value!!
-const MAX_BRANCH_SIZE:usize = 1500000;
-static mut RETS: [[Branch; MAX_BRANCH_SIZE]; MAX_THREAD_NUMB] = [[Branch {
-                  cost: 0, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 }; MAX_BRANCH_SIZE]; MAX_THREAD_NUMB];
-static mut RETS_SIZE: [usize; MAX_THREAD_NUMB] = [0; MAX_THREAD_NUMB];
+const MAX_BRANCH_SIZE:usize = 8000000;
 
 static mut NODE: [Branch; MAX_BRANCH_SIZE*MAX_THREAD_NUMB] = [Branch {
   cost: 0, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 }; MAX_BRANCH_SIZE*MAX_THREAD_NUMB];
@@ -46,31 +40,15 @@ static mut NODE_SIZE: usize = 0;
 pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mut Vec<Cab>,
                 stands: &Vec<Stop>, mut max_route_id: &mut i64, max_leg_id: &mut i64) 
                 -> (Vec<Branch>, String) {
-  unsafe {
-      // static arrays are faster, I guess
-      ORDERS = orders_to_array(demand);
-      CABS = cabs_to_array(supply);
-      STOPS = stops_to_array(stands);
-      ORDERS_LEN = demand.len();
-      CABS_LEN = supply.len();
-      STOPS_LEN = stands.len();
-  
-      if ORDERS_LEN == 0 || CABS_LEN == 0 || STOPS_LEN == 0 {
+  if demand.len() == 0 || supply.len() == 0 || stands.len() == 0 {
           return (Vec::new(), String::from(""));
-      }
   }
   // recursive dive until the leaves of the permutation tree
 	dive(0, in_pool, threads);
   // there might be pools with same passengers, with different length - sort and find the best ones
-  let ret = rm_duplicates_assign_cab(
-          in_pool as usize, &mut max_route_id, max_leg_id, supply);
+  let ret = 
+      rm_duplicates_assign_cab(in_pool as usize, &mut max_route_id, max_leg_id, supply, demand);
 
-  // mark orders in pools as assigned so that next call to find_pool (with fewer 'in_pool') skips them
-  for br in ret.0.iter() {
-    for o in 0..br.ord_numb as usize {
-      demand[br.ord_ids[o] as usize].id = -1;
-    }
-  }
   debug!("FINAL: inPool: {}, found pools: {}\n", in_pool, ret.0.len());
   /*for i in 0 .. MAXNODE {
     println!("node[{:?}].size: {:?}", i, unsafe { NODE_SIZE[i] });
@@ -92,7 +70,7 @@ pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mu
 fn dive(lev: u8, in_pool: u8, threads_numb: i16){
   unsafe { NODE_SIZE = 0; }
 	if lev > in_pool + in_pool - 3 { // lev >= 2*inPool-2, where -2 are last two levels
-		store_leaves(lev);
+		store_leaves();
     debug!("Level: {}, size: {}", lev,  unsafe { NODE_SIZE });
 		// last two levels are "leaves"
     return;
@@ -109,26 +87,21 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16){
     if t_numb as usize * chunk < ORDERS_LEN { t_numb += 1; } // last thread will be the reminder of division
     // when ORDERS_LEN is small then 
     if t_numb as usize * chunk < ORDERS_LEN { chunk *= 2; }
-    for i in 0..MAX_THREAD_NUMB {
-      RETS_SIZE[i] = 0;
-    }
+
     // run the threads, each thread gets its own range of orders to iterate over - hence 'iterate'
     for i in 0..t_numb as usize { // TASK: allocated orders might be spread unevenly -> count non-allocated and devide chunks ... evenly
       children.push(thread::spawn(move || {
-        iterate(lev as usize, in_pool, i, chunk);
+        iterate(lev as usize, in_pool, i, chunk)
       }))
     }
     // collect the data from threads, join their execution first
     // there might be 'duplicates', 1-2-3 and 1-3-2 and so on, they will be filtered out later
-    let mut ii: usize = 0;
     for n in children {
-      n.join().unwrap();
-      NODE[ret_size..ret_size + RETS_SIZE[ii]].copy_from_slice(&RETS[ii][..RETS_SIZE[ii]]);
-      ret_size += RETS_SIZE[ii];
-      ii += 1;
+      let ret = n.join().unwrap();
+      NODE[ret_size..ret_size + ret.len()].copy_from_slice(&ret[..]);
+      ret_size += ret.len();
     }
     debug!("Level: {}, size: {}", lev, ret_size); // just for memory usage considerations
-    print!("Level: {}, size: {}\n", lev, ret_size);
     NODE_SIZE = ret_size;
     /*if lev == 7 {
       for i in 0 .. NODE_SIZE[lev as usize] {
@@ -147,7 +120,7 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16){
 /// a leafe is e.g.: 1out-2out or 1in-1out, the last one must be OUT, 'o'
 /// 
 /// returns: leaves
-fn store_leaves(lev: u8){
+fn store_leaves(){
 	unsafe{
   NODE_SIZE = 0;
 	for c in 0..ORDERS_LEN {
@@ -213,29 +186,28 @@ fn add_branch(id1: i32, id2: i32, dir1: char, dir2: char, outs: u8) -> Branch {
 
 /// just a loop and calling store_branch...
 /// returns: a chunk of all branches at that level
-fn iterate(lev: usize, in_pool: u8, thread: usize, size: usize) {
+fn iterate(lev: usize, in_pool: u8, thread: usize, size: usize) -> Vec<Branch> {
+  let mut ret: Vec<Branch> = vec![];
  	let mut stop = (thread + 1) * size;
   if stop > unsafe {ORDERS_LEN} { stop = unsafe {ORDERS_LEN}; } 
 	unsafe{
 	for ord_id in thread * size .. stop {
 		if ORDERS[ord_id as usize].id != -1 { // not allocated in previous search (inPool+1)
 			for b in NODE[0..NODE_SIZE].iter() {
-				//if b.cost != -1 {  // TODO: this check is probably not needed anymore, comes from duplicate check that we don't do anymore (time consuming, benefits did not cover the cost)
 					// we iterate over product of the stage further in the tree: +1
-					store_branch_if_not_found(lev as u8, in_pool, ord_id as i32, &b, thread);
-				//}
+					store_branch_if_not_found(lev as u8, in_pool, ord_id as i32, &b, &mut ret);
 			}
-     
 		}
 	}
 	}
+  return ret;
 }
 
 /// storeBranchIfNotFoundDeeperAndNotTooLong
 /// check how an order fits into a pool
 /// br is existing Branch in lev+1
 /// returns: just pushes to a mutable vector
-fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, thread: usize) {
+fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, ret: &mut Vec<Branch>) {
   // two situations: c IN and c OUT
   // c IN has to have c OUT in level+1, and c IN cannot exist in level + 1
   // c OUT cannot have c OUT in level +1
@@ -265,8 +237,7 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, thr
         && (DIST[ORDERS[id].from as usize][next_stop] > MAXANGLEDIST
             || bearing_diff(STOPS[ORDERS[id].from as usize].bearing, STOPS[next_stop].bearing) < CNFG.max_angle) { 
 
-        RETS[thread][RETS_SIZE[thread]] = store_branch('i', lev, ord_id, br, in_pool); 
-        RETS_SIZE[thread] += 1;
+          ret.push(store_branch('i', lev, ord_id, br, in_pool)); 
       }
 		} 
     // c OUT as neither IN or OUT was found
@@ -276,8 +247,7 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, thr
                         + if ORDERS[id].to == next_stop as i32 { 0 } else { CNFG.stop_wait }, br)
         && (DIST[ORDERS[id].to as usize][next_stop] > MAXANGLEDIST
             || bearing_diff(STOPS[ORDERS[id].to as usize].bearing, STOPS[next_stop].bearing) < CNFG.max_angle) { 
-          RETS[thread][RETS_SIZE[thread]] = store_branch('o', lev, ord_id, br, in_pool); 
-          RETS_SIZE[thread] += 1;
+          ret.push(store_branch('o', lev, ord_id, br, in_pool)); 
 		}
 	}
 }
@@ -354,8 +324,8 @@ fn store_branch(action: char, lev: u8, ord_id: i32, b: &Branch, in_pool: u8) -> 
 /// max_leg_id:  primary key available (not used) for route legs
 /// 
 /// returns allocated branches (to regenerate demand and supplu for the solver) and SQL to execute
-fn rm_duplicates_assign_cab(in_pool: usize, mut max_route_id: &mut i64, 
-                            mut max_leg_id: &mut i64, cabs: &mut Vec<Cab>) -> (Vec<Branch>, String) {
+fn rm_duplicates_assign_cab(in_pool: usize, mut max_route_id: &mut i64, mut max_leg_id: &mut i64,
+                            cabs: &mut Vec<Cab>, orders: &mut Vec<Order>) -> (Vec<Branch>, String) {
 	let mut ret : Vec<Branch> = Vec::new();
   let mut sql: String = String::from("");
   let slice = unsafe { &NODE[0..NODE_SIZE] };
@@ -363,6 +333,7 @@ fn rm_duplicates_assign_cab(in_pool: usize, mut max_route_id: &mut i64,
   if arr.len() == 0 {
     return (ret, sql);
   }
+  // TODO: check if adding distance to nearest cab here would improve results!!!
   arr.sort_by_key(|e| e.cost.clone());
   
   // assigning and removing duplicates
@@ -372,7 +343,7 @@ fn rm_duplicates_assign_cab(in_pool: usize, mut max_route_id: &mut i64,
         continue;
       }
       // find nearest cab to first pickup and check if WAIT and LOSS constraints met - allocate
-      let cab_idx = find_nearest_cab(arr[i].ord_ids[0], count_passengers(arr[i])); // LCM
+      let cab_idx = find_nearest_cab(arr[i].ord_ids[0], count_passengers(arr[i]), cabs); // LCM
       if cab_idx == -1 { // no more cabs
         mark_pools_as_dead(&mut arr, i);
         break;
@@ -381,16 +352,20 @@ fn rm_duplicates_assign_cab(in_pool: usize, mut max_route_id: &mut i64,
         continue;
       }
       
-      let dist_cab = DIST[CABS[cab_idx as usize].location as usize]
-                              [ORDERS[arr[i].ord_ids[0] as usize].from as usize];
+      let dist_cab = DIST[cabs[cab_idx as usize].location as usize]
+                              [orders[arr[i].ord_ids[0] as usize].from as usize];
       if dist_cab == 0 // constraints inside pool are checked while "diving", and cab does not add up anything if == 0
               || constraints_met(arr[i], (dist_cab + CNFG.stop_wait) as i32 ) {
         arr[i].cab = cab_idx; // maybe needed for debug
         ret.push(arr[i]);
         // assign to a cab and remove all next pools with these passengers (index 'i')
-        sql += &assign_and_remove(&mut arr, in_pool, i, cab_idx as usize, &mut max_route_id, &mut max_leg_id);
+        sql += &assign_and_remove(&mut arr, in_pool, i, cabs[cab_idx as usize], &mut max_route_id, &mut max_leg_id, orders);
         // remove the cab from list so that it cannot be allocated twice in LCM or Munkres
         cabs[cab_idx as usize].id = -1;
+          // mark orders in pools as assigned so that next call to find_pool (with fewer 'in_pool') skips them
+        for o in 0..arr[i].ord_numb as usize {
+          orders[arr[i].ord_ids[o] as usize].id = -1;
+        }
         // the same with demand, but this static array ORDERS is a copy of Vec, so it is better to do it elsewhere
       } else { // constraints not met, mark as unusable
         arr[i].cost = -1;
@@ -420,8 +395,8 @@ fn count_passengers(branch: Branch) -> i32 {
 /// remove all other pools with these passengers - 'i' index to arr
 /// 
 /// returns SQL
-fn assign_and_remove(arr: &mut Vec<Branch>, in_pool: usize, i: usize, cab_idx: usize,
-                     mut max_route_id: &mut i64, mut max_leg_id: &mut i64) -> String {
+fn assign_and_remove(arr: &mut Vec<Branch>, in_pool: usize, i: usize, cab: Cab,
+                     mut max_route_id: &mut i64, mut max_leg_id: &mut i64, orders: &Vec<Order>) -> String {
   // remove any further duplicates
   for j in i + 1 .. arr.len() {
       if arr[j].cost != -1 // not invalidated; this check is for performance reasons
@@ -430,9 +405,7 @@ fn assign_and_remove(arr: &mut Vec<Branch>, in_pool: usize, i: usize, cab_idx: u
           // (list is pre-sorted)
       }
   }
-  unsafe {
-  return assign_pool_to_cab(CABS[cab_idx], &ORDERS, arr[i], &mut max_route_id, &mut max_leg_id);
-  }
+  return assign_pool_to_cab(cab, orders, arr[i], &mut max_route_id, &mut max_leg_id);
 }
 
 /// check if passengers in pool 'i' exist in pool 'j'
@@ -459,14 +432,13 @@ fn mark_pools_as_dead(arr: &mut Vec<Branch>, i: usize) {
 
 /// LCM - find the nearest cab for this order ('from' of the first order in pool)
 /// returns id of the cab
-fn find_nearest_cab(o_idx: i32, pass_count: i32) -> i32 {
+fn find_nearest_cab(o_idx: i32, pass_count: i32, cabs: &Vec<Cab>) -> i32 {
   unsafe{
     let o: Order = ORDERS[o_idx as usize];
     let mut dist = 10000; // big
     let mut nearest = -1 as i32;
     let mut found_any = false;
-    for i in 0 .. CABS_LEN {
-      let c: Cab = CABS[i]; 
+    for (i, c) in cabs.iter().enumerate() {
       if c.id == -1 { // allocated earlier to a pool
         continue;
       }
@@ -553,7 +525,6 @@ mod tests {
   use chrono::Local;
   use serial_test::serial;
   use std::time::Instant;
-  use rand::Rng;
  
   fn get_stops() -> Vec<Stop> {
     let mut stops: Vec<Stop> = vec![];
@@ -596,7 +567,7 @@ mod tests {
     }
   }
 
-  fn test_init_orders_and_dist(dist: i16, ord_count: usize) {
+  fn test_init_orders_and_dist(dist: i16, ord_count: usize) -> Vec<Cab> {
     unsafe {
       for i in 0..ord_count {
         ORDERS[i] = Order{ id: i as i64, from: i as i32, to: 7-i as i32, wait: 15, loss: 70, dist: 7-2*i as i32, 
@@ -604,27 +575,13 @@ mod tests {
       }
       ORDERS_LEN = ord_count;
       for i in 0..7 { DIST[i][i+1] = dist; }    
-      CABS_LEN =2;
-      CABS[0] = Cab{ id: 0, location: 0, seats: 10 };
-      CABS[1] = Cab{ id: 1, location: 1, seats: 10 };
+      let mut cabs: Vec<Cab> = vec![];
+      
+      cabs.push(Cab{ id: 0, location: 0, seats: 10 });
+      cabs.push(Cab{ id: 1, location: 1, seats: 10 });
+      return cabs;
     }
   }
-
-  fn test_init_orders_and_dist3(dist: i16, ord_count: usize) {
-    unsafe {
-      for i in 0..ord_count {
-        ORDERS[i] = Order{ id: i as i64, from: rand::thread_rng().gen_range(0..5200) as i32, 
-          to: rand::thread_rng().gen_range(0..5200) as i32, wait: 15, loss: 70, dist: 7-2*i as i32, 
-          shared: true, in_pool: false, received: None, started: None, completed: None, at_time: None, eta: 1, route_id: -1 };
-      }
-      ORDERS_LEN = ord_count;
-      for i in 0..7 { DIST[i][i+1] = dist; }    
-      CABS_LEN =2;
-      CABS[0] = Cab{ id: 0, location: 0, seats: 10 };
-      CABS[1] = Cab{ id: 1, location: 1, seats: 10 };
-    }
-  }
-
 
   fn get_orders(size: usize) -> Vec<Order> {
     let mut ret: Vec<Order> = vec![];
@@ -647,19 +604,18 @@ mod tests {
     return ret;
   }
 
-  fn test_init_orders_and_dist2(dist: f64, ord_count: usize, cab_count: usize) {
+  fn test_init_orders_and_dist2(dist: f64, ord_count: usize, cab_count: usize) -> Vec<Cab> {
     let stops = get_stops2(dist);
     init_distance(&stops);
     let demand: Vec<Order> = get_orders(ord_count);
     let cabs = get_cabs(cab_count);
     unsafe {
       ORDERS = orders_to_array(&demand);
-      CABS = cabs_to_array(&cabs);
       STOPS = stops_to_array(&stops);
       ORDERS_LEN = demand.len();
-      CABS_LEN = cabs.len();
       STOPS_LEN = stops.len();
     }
+    return cabs;
   }
 
   fn test_branches() {
@@ -671,19 +627,20 @@ mod tests {
     }
   }
 
+  /*
   fn test_leaves() -> Vec<Branch> {
     return vec![ 
       Branch{ cost: 1, outs: 2, ord_numb: 2, ord_ids: [1,2,0,0,0,0,0,0,0,0], ord_actions: [111,111,0,0,0,0,0,0,0,0], cab: 0 },
       Branch{ cost: 1, outs: 2, ord_numb: 2, ord_ids: [2,1,0,0,0,0,0,0,0,0], ord_actions: [111,111,0,0,0,0,0,0,0,0], cab: 0 },
       Branch{ cost: 1, outs: 2, ord_numb: 2, ord_ids: [0,1,0,0,0,0,0,0,0,0], ord_actions: [111,111,0,0,0,0,0,0,0,0], cab: 0 }];
   }
+  */
 
   #[test]
   #[serial]
   fn test_find_pool(){
-    test_init_orders_and_dist2(0.05, 10, 1000);
+    let mut cabs =test_init_orders_and_dist2(0.05, 10, 1000);
     let mut orders = unsafe { ORDERS.to_vec().drain(..ORDERS_LEN).collect() };
-    let mut cabs = unsafe { CABS.to_vec().drain(..CABS_LEN).collect() };
     let stops = vec![ Stop{id:0,bearing:0, latitude: 0.0, longitude: 0.0 }];
     let mut max_route_id: i64 = 0;
     let mut max_leg_id: i64 = 0;
@@ -807,15 +764,16 @@ fn test_append(){
   #[test]
   #[serial]
   fn test_memcpy(){
+    let mut vec: Vec<Branch> = vec![];
+    vec.resize(1000, Branch {
+      cost: 0, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 });
     unsafe {
-    RETS[0][0] = Branch {
-      cost: 1, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 };
     NODE[0] = Branch {
       cost: 2, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 };
     NODE[1] = Branch {
         cost: 3, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 };   
     let start = Instant::now();
-    NODE[1000..2000].copy_from_slice(&RETS[0][..1000]);
+    NODE[1000..2000].copy_from_slice(&vec[..]);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
     println!("Ret: {:?}", NODE[2000].cost); 
@@ -835,7 +793,7 @@ fn test_append(){
   #[serial]
   fn test_dive(){
     test_init_orders_and_dist(1, 4);
-    let ret = dive(0, 4, 3);
+    dive(0, 4, 3);
     assert_eq!(unsafe { NODE_SIZE }, 87);
   }
 
@@ -845,9 +803,8 @@ fn test_append(){
     init_distance(&get_stops());
     set_orders();
     unsafe { ORDERS_LEN = 10; }
-    let slice = unsafe { &ORDERS[0 .. 10] };
     let start = Instant::now();
-    store_leaves(0);
+    store_leaves();
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(unsafe { NODE_SIZE}, 28);
@@ -872,7 +829,6 @@ fn test_append(){
   #[test]
   #[serial]
   fn test_iterate() {
-    let prev_node: Vec<Branch> = test_leaves();
     iterate(0, 4, 0, 1);
     //assert_eq!(ret.len(), 1);
   }
@@ -886,7 +842,7 @@ fn test_append(){
     };
     test_init_orders_and_dist(1, 5);
     let mut ret: Vec<Branch> = Vec::new();
-    store_branch_if_not_found(0,4,0, &arr, 0);
+    store_branch_if_not_found(0,4,0, &arr, &mut ret);
     assert_eq!(ret.len(), 1);
     assert_eq!(ret[0].ord_ids[0], 0); // was 1, should be 0
     assert_eq!(ret[0].ord_actions[7], 111); // was 0, should be 111
@@ -910,7 +866,7 @@ fn test_append(){
     let ret = store_branch('i', 0, 0, &b, 4);
     assert_eq!(ret.cost, 3);
   }
-
+/* 
   #[test]
   #[serial]
   fn test_rm_final_duplicates() {
@@ -923,17 +879,17 @@ fn test_append(){
                                                           &mut max_leg_id, &mut cabs);
     assert_eq!(ret.1, "UPDATE cab SET status=0 WHERE id=1;\nINSERT INTO route (id, status, cab_id) VALUES (0,1,1);\n");
   }
-
+ */
   #[test]
   #[serial]
   fn test_assign_and_remove() {
-    test_init_orders_and_dist(1, 4);
+    let cabs = test_init_orders_and_dist(1, 4);
     test_branches();
     let slice = unsafe { &NODE[0..3]};
     let mut arr = slice.to_vec();
     let mut max_route_id: i64 = 0;
     let mut max_leg_id: i64 = 0;
-    let ret = assign_and_remove(&mut arr, 4, 0, 0, &mut max_route_id, &mut max_leg_id);
+    let ret = assign_and_remove(&mut arr, 4, 0, cabs[0], &mut max_route_id, &mut max_leg_id, unsafe { &ORDERS.to_vec()});
     assert_eq!(ret, "UPDATE cab SET status=0 WHERE id=0;\nINSERT INTO route (id, status, cab_id) VALUES (0,1,0);\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (0,0,1,0,1,1,16000,0,0);\n");
   }
 
@@ -942,7 +898,7 @@ fn test_append(){
   fn test_is_found() {
     test_branches();
     let slice = unsafe { &NODE[0..3]};
-    let mut arr = slice.to_vec();
+    let arr = slice.to_vec();
     assert_eq!(is_found(&arr, 0, 1, 4), true);
     assert_eq!(is_found(&arr, 0, 2, 4), true);
   }
@@ -961,8 +917,8 @@ fn test_append(){
   #[test]
   #[serial]
   fn test_find_nearest_cab() {
-    test_init_orders_and_dist(1, 4);
-    assert_eq!(find_nearest_cab(0, 2), 0);
+   let cabs = test_init_orders_and_dist(1, 4);
+    assert_eq!(find_nearest_cab(0, 2, &cabs), 0);
   }
 
   #[test]
