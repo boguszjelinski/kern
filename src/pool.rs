@@ -21,7 +21,7 @@ pub static mut ORDERS: [Order; MAXORDERSNUMB] = [Order {
 pub static mut ORDERS_LEN: usize = 0;
 
 const MAX_THREAD_NUMB:usize = 9; // this has to be +1 possible config value!!
-const MAX_BRANCH_SIZE:usize = 8000000;
+const MAX_BRANCH_SIZE:usize = 1000000;
 
 static mut NODE: [Branch; MAX_BRANCH_SIZE*MAX_THREAD_NUMB] = [Branch {
   cost: 0, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 }; MAX_BRANCH_SIZE*MAX_THREAD_NUMB];
@@ -333,7 +333,11 @@ fn rm_duplicates_assign_cab(in_pool: usize, mut max_route_id: &mut i64, mut max_
   if arr.len() == 0 {
     return (ret, sql);
   }
-  // TODO: check if adding distance to nearest cab here would improve results!!!
+  // 4 next lines is a check if the distance to the cab helps 
+  for i in 0..arr.len()  {
+    let cab_idx = find_nearest_cab(arr[i].ord_ids[0], count_passengers(arr[i]), cabs);
+    arr[i].cost += unsafe { DIST[cabs[cab_idx as usize].location as usize][ORDERS[arr[i].ord_ids[0] as usize].from as usize] };
+  }
   arr.sort_by_key(|e| e.cost.clone());
   
   // assigning and removing duplicates

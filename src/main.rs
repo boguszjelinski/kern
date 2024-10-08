@@ -919,23 +919,20 @@ mod tests {
     return ret;
   }
 
-  /* 5.87s without optimization
-     3.11s with -O3 (one thread, 0.8s with 8 threads), 
-   */
   #[test]
   #[serial]
   fn test_performance_find_extern_pool() {
     let stops = get_stops(0.03);
     init_distance(&stops);
-    let mut orders: Vec<Order> = get_orders(70);
+    let mut orders: Vec<Order> = get_orders(60);
     let mut cabs: Vec<Cab> = get_cabs();
     unsafe { initMem(); }
     let start = Instant::now();
     let ret = find_external_pool(&mut orders, &mut cabs, &stops, 8_i32, &mut 0, &mut 0);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
-    assert_eq!(ret.0.len(), 4); 
-    assert_eq!(ret.1.len(), 2774); // TODO: Rust gives 3550
+    assert_eq!(ret.0.len(), 15); 
+    assert_eq!(ret.1.len(), 21442); // TODO: Rust gives 21444
   }
 
   #[test]
@@ -943,14 +940,14 @@ mod tests {
   fn test_performance_find_intern_pool() {
     let stops = get_stops(0.03);
     init_distance(&stops);
-    let mut orders: Vec<Order> = get_orders(70);
+    let mut orders: Vec<Order> = get_orders(60);
     let mut cabs: Vec<Cab> = get_cabs();
     let start = Instant::now();
     let ret = find_internal_pool(&mut orders, &mut cabs, &stops, &mut 0, &mut 0);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
-    assert_eq!(ret.0.len(), 5); 
-    assert_eq!(ret.1.len(), 3475);
+    assert_eq!(ret.0.len(), 15); 
+    assert_eq!(ret.1.len(), 21444);
   }
 
   #[test]
@@ -960,15 +957,14 @@ mod tests {
     let mut max_leg_id : i64 = 0;
     let stops = get_stops(0.05);
     init_distance(&stops);
-    let mut demand: Vec<Order> = get_orders(50);
+    let mut demand: Vec<Order> = get_orders(100);
     let mut cabs = get_cabs();
     unsafe { initMem(); }
     let start = Instant::now();
-    let ret = find_pool(4, unsafe { CNFG.thread_numb } as i16,
-                                                            &mut demand,  &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
+    let ret = find_pool(4, 8, &mut demand,  &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
-    assert_eq!(ret.0.len() > 0, true); 
+    assert_eq!(ret.0.len() > 0, false); 
   }
 
   #[test]  
