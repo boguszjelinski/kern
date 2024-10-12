@@ -72,7 +72,7 @@ void storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inP
     //sprintf (ptr->key, "%d%c%s", ordId, action, b->key);
     short from = action == 'i' ? demand[ordId].fromStand : demand[ordId].toStand;
     short to = b->ordActions[0] == 'i' ? demand[b->ordIDs[0]].fromStand : demand[b->ordIDs[0]].toStand;
-    ptr->cost = dist(from, to) + (b->cost + from == to ? 0 : STOP_WAIT);
+    ptr->cost = b->cost + dist(from, to) + (from == to ? 0 : STOP_WAIT);
     ptr->outs = action == 'o' ? b->outs + 1: b->outs;
     nodeSizeSMP[thread]++;
 }
@@ -82,11 +82,11 @@ void storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inP
 //    between ID-s ("if there is movement" takes more time than taking ZERO from DIST)
 //    We only need to check max_loss once when we put 'i' 
 // 2) while iterating if you encounter any 'i' check wait of that ID
-boolean isTooLong(int ordId, char oper, int start_wait, Branch *b) {
-  int from, to, wait;
-  wait = start_wait;
+boolean isTooLong(int ordId, char oper, int wait, Branch *b) {
+  int from, to;
   for (int i = 0; i < b->ordNumb - 1; i++) {
-      if (b->ordActions[i] == 'o' && oper == 'i' && ordId == b->ordIDs[i] &&
+      // max loss check
+      if (ordId == b->ordIDs[i] && b->ordActions[i] == 'o' && oper == 'i' && 
           wait >  //distance[demand[b->ordIDs[i]].fromStand][demand[b->ordIDs[i]].toStand] 
               demand[ordId].distance * (100.0 + demand[ordId].maxLoss) / 100.0) // this value could be stored, do not calculate each time
                 // max loss of the new order (which we are trying to put in) is violated
@@ -99,8 +99,8 @@ boolean isTooLong(int ordId, char oper, int start_wait, Branch *b) {
       to = b->ordActions[i + 1] == 'i' ? demand[b->ordIDs[i + 1]].fromStand : demand[b->ordIDs[i + 1]].toStand;
       if (from != to) wait += dist(from, to) + STOP_WAIT;
   }
-  // just check the last 'o', if it is the OUT of the order that we are checking now (with IN)
-  if (oper == 'i' && ordId == b->ordIDs[b->ordNumb - 1] &&
+  // just check the last 'o', if it is the OUT of the order that we are checking now (with IN) we have to check max loss
+  if (ordId == b->ordIDs[b->ordNumb - 1] && oper == 'i' &&
       wait > demand[ordId].distance * (100.0 + demand[ordId].maxLoss) / 100.0) // this value could be stored, do not calculate each time
           return true;
   return false;
@@ -117,7 +117,7 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
     for (int i = 0; i < ptr->ordNumb; i++) {
       if (ptr->ordIDs[i] == ordId) {
         if (ptr->ordActions[i] == 'i') {
-          //inFound = true; what was I thinking - if IN is found it must be also OUT, we cannot proceed
+          // there is IN in one of next legs, and of course there must by OUT deeper in the tree
           return;
         } else {
           outFound = true;
@@ -145,7 +145,8 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
                                 + (demand[ordId].toStand != nextStop ? STOP_WAIT : 0), ptr)
         && (dist(demand[ordId].toStand, nextStop) > MAXANGLEDIST 
            || bearingDiff(stops[demand[ordId].toStand].bearing, stops[nextStop].bearing) < MAXANGLE)
-        ) storeBranch(thread, 'o', lev, ordId, ptr, inPool);
+        ) 
+        storeBranch(thread, 'o', lev, ordId, ptr, inPool);
 }
 
 /// just a loop and calling store_branch...
@@ -162,20 +163,19 @@ void iterate(void *arguments) {
   }
 }
 
-void addBranch(int id1, int id2, char dir1, char dir2, int outs, int lev) {
+void addLeaf(int id1, int id2, char dir1, int outs, int lev) {
     if (nodeSize >= MAXNODEMEM) {
       printf("addBranch: allocated mem too low, level: %d\n", lev);
       return;
     }
     Branch *ptr = &node[nodeSize];
-
-    ptr->cost = dist(demand[id1].toStand, demand[id2].toStand) 
-                + (demand[id1].toStand == demand[id2].toStand ? 0 : STOP_WAIT);
+    int from_stand = dir1 == 'i' ? demand[id1].fromStand : demand[id1].toStand;
+    ptr->cost = dist(from_stand, demand[id2].toStand) + (from_stand == demand[id2].toStand ? 0 : STOP_WAIT);
     ptr->outs = outs;
     ptr->ordIDs[0] = id1;
     ptr->ordIDs[1] = id2;
     ptr->ordActions[0] = dir1;
-    ptr->ordActions[1] = dir2;
+    ptr->ordActions[1] = 'o'; // the second is always OUT in a leaf 
     ptr->ordNumb = 2;
     nodeSize++;
 }
@@ -194,7 +194,7 @@ void storeLeaves(int lev) {
               // !! we might not check bearing here as they are probably distant stops
               if (dist(demand[c].fromStand, demand[d].toStand) > MAXANGLEDIST || bearingDiff(stops[demand[c].fromStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)  {
                 // IN and OUT of the same passenger
-                addBranch(c, d, 'i', 'o', 1, lev);
+                addLeaf(c, d, 'i', 1, lev);
               }
             } 
             // now <1out, 2out>
@@ -203,7 +203,7 @@ void storeLeaves(int lev) {
                     && (dist(demand[c].toStand, demand[d].toStand) > MAXANGLEDIST || bearingDiff(stops[demand[c].toStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)
             ) {
               // TASK - this calculation above should be replaced by a redundant value in taxi_order - distance * loss
-              addBranch(c, d, 'o', 'o', 2, lev);
+              addLeaf(c, d, 'o', 2, lev);
               /*printf("c=%d d=%d c.id=%d d.id=%d c.to=%d d.from=%d d.to=%d d.loss=%d c.to.bearing=%d d.to.bearing=%d dist_c_d=%d dist_d_d=%d\n",
                   c, d, demand[c].id, demand[d].id, demand[c].toStand, demand[d].fromStand, demand[d].toStand,
                   demand[d].maxLoss, stops[demand[c].toStand].bearing, stops[demand[d].toStand].bearing,
@@ -329,6 +329,19 @@ int countPassengers(Branch *ptr) {
   return max_count;
 }
 
+boolean waitTimeExceeded(int wait, Branch *b) {
+  int from, to;
+  for (int i = 0; i < b->ordNumb - 1; i++) {
+      if (b->ordActions[i] == 'i' && wait > demand[b->ordIDs[i]].maxWait) 
+        // wait time of an already existing order (in the pool; lev+1) is violated
+        return true;
+      from = b->ordActions[i] == 'i' ? demand[b->ordIDs[i]].fromStand : demand[b->ordIDs[i]].toStand;
+      to = b->ordActions[i + 1] == 'i' ? demand[b->ordIDs[i + 1]].fromStand : demand[b->ordIDs[i + 1]].toStand;
+      if (from != to) wait += dist(from, to) + STOP_WAIT;
+  }
+  return false;
+}
+
 /// there might be pools with same passengers (orders) but in different ... order (sequence of INs and OUTs) 
 /// the list will be sorted by total length of the pool, worse pools with same passengers will be removed
 /// cabs will be assigned with greedy method 
@@ -351,6 +364,19 @@ void rmDuplicatesAndFindCab(int inPool) {
     }
     qsort(arr, size, sizeof(Branch), compareCostDetour);
     */
+    // the distance from cab's location matters
+    for (int i = 0; i< size; i++) {
+      ptr = arr + i;
+      if (ptr->cost == -1) continue; // not dropped earlier, but was there any such possibility? TODO: check it
+      from = demand[ptr->ordIDs[0]].fromStand;
+      cabIdx = findNearestCab(from, countPassengers(ptr));
+      distCab = dist(supply[cabIdx].location, from);
+      if (distCab > 0 && waitTimeExceeded(distCab, ptr))  {
+        ptr->cost == -1; // maybe a big value would be better, -1 will come first after sort, TODO
+        continue;
+      }
+      ptr->cost += distCab;
+    }
     qsort(arr, size, sizeof(Branch), compareCost);
 
     for (int i = 0; i < size; i++) {

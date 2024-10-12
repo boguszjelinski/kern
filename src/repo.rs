@@ -3,7 +3,8 @@ use mysql::*;
 use mysql::prelude::*;
 use chrono::NaiveDateTime;
 use std::cmp;
-use crate::model::{KernCfg,Order, OrderStatus, Stop, Cab, CabStatus, Leg, RouteStatus, Branch,MAXORDERSNUMB,MAXORDID};
+use crate::extender::STOP_WAIT;
+use crate::model::{KernCfg,Order, OrderStatus, Stop, Cab, CabStatus, Leg, RouteStatus, Branch, MAXORDID};
 use crate::distance::DIST;
 use crate::stats::{STATS, Stat, add_avg_element, update_val, count_average};
 use crate::utils::get_elapsed;
@@ -236,12 +237,10 @@ pub fn update_reserves_in_legs_before_and_including2(route_id: i64, place: i32, 
     return sql;
 }
 
-pub fn assign_pool_to_cab(cab: Cab, orders: &Vec<Order>, pool: Branch, max_route_id: &mut i64, 
-                        mut max_leg_id: &mut i64) -> String {
+pub fn assign_pool_to_cab(cab: Cab, orders: &Vec<Order>, pool: Branch, max_route_id: &mut i64, mut max_leg_id: &mut i64) -> String {
     let order = orders[pool.ord_ids[0] as usize];
     let mut place = 0;
     let mut eta = 0; // expected time of arrival
-    
     let cab_dist = unsafe { DIST[cab.location as usize][orders[pool.ord_ids[0] as usize].from as usize] };
     let res = count_reserves(cab_dist, pool, orders);
 
@@ -385,7 +384,7 @@ fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Br
             add_avg_element(Stat::AvgOrderAssignTime, get_elapsed(order.received));
         }
         if stand1 != stand2 {
-            eta += dist;
+            eta += dist + STOP_WAIT;
         }
       }
     }
@@ -497,6 +496,7 @@ fn get_i64(row: &Row, index: usize) -> i64 {
 mod tests {
   use super::*;
   use serial_test::serial;
+  use crate::model::MAXORDERSNUMB;
 
   fn init_test_data(order_count: u8) -> [Order; MAXORDERSNUMB] {
     let stop_count = 8;

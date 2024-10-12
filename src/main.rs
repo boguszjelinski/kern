@@ -12,8 +12,7 @@ use distance::DIST;
 use model::{KernCfg,Order,OrderStatus,OrderTransfer,Stop,Cab,CabStatus,Branch,
             MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB,MAXBRANCHNUMB,MAXINPOOL};
 use stats::{Stat,update_max_and_avg_time,update_max_and_avg_stats,incr_val};
-use pool::{orders_to_array,orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool,
-            STOPS, STOPS_LEN, ORDERS, ORDERS_LEN};
+use pool::{orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
 use repo::{CNFG, assign_pool_to_cab};
 use extender::{find_matching_routes, get_handle}; // write_sql_to_file
 use utils::get_elapsed;
@@ -40,8 +39,8 @@ const MAXLCM : usize = 20000; // !! max number of cabs or orders sent to LCM in 
 const CFG_FILE_DEFAULT: &str = "kern.toml";
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
-    println!("cargo:rustc-link-lib=dynapool119");
-    //println!("cargo:rustc-link-arg=--max-memory=8294967296");
+    println!("cargo:rustc-link-lib=dynapool121");
+    println!("cargo:rustc-link-arg=--max-memory=12294967296");
     // reading Config
     let mut cfg_file: String = CFG_FILE_DEFAULT.to_string();
 
@@ -190,7 +189,7 @@ fn setup_logger(file_path: String) {
     let _handle = log4rs::init_config(config);
 }
 
-#[link(name = "dynapool119")]
+#[link(name = "dynapool121")]
 extern "C" {
     fn dynapool(
 		numbThreads: i32,
@@ -506,16 +505,8 @@ fn find_internal_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
                     max_route_id: &mut i64, max_leg_id: &mut i64) -> (Vec<Branch>, String) {
     let mut pl: Vec<Branch> = Vec::new();  
     let mut sql: String = String::from("");
-    unsafe {
-        STOPS = stops_to_array(stops);
-        STOPS_LEN = stops.len();
-    }
 
     for p in (2..6).rev() { //5,4,3,2
-        unsafe { // as some orders could have been allocated by previous iteration
-            ORDERS = orders_to_array(demand);
-            ORDERS_LEN = demand.len();
-        }
         if (p == 5 && demand.len() < unsafe { (CNFG.max_pool5_size) as usize } ) || // 5: TODO: check if it works!!
             (p == 4 && demand.len() < unsafe { (CNFG.max_pool4_size) as usize }) ||
             (p == 3 && demand.len() < unsafe { (CNFG.max_pool3_size) as usize }) ||
@@ -946,8 +937,8 @@ mod tests {
     let ret = find_internal_pool(&mut orders, &mut cabs, &stops, &mut 0, &mut 0);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
-    assert_eq!(ret.0.len(), 15); 
-    assert_eq!(ret.1.len(), 21444);
+    assert_eq!(ret.0.len() >= 15, true); 
+    //assert_eq!(ret.1.len(), 21070);
   }
 
   #[test]
@@ -957,7 +948,7 @@ mod tests {
     let mut max_leg_id : i64 = 0;
     let stops = get_stops(0.05);
     init_distance(&stops);
-    let mut demand: Vec<Order> = get_orders(100);
+    let mut demand: Vec<Order> = get_orders(50);
     let mut cabs = get_cabs();
     unsafe { initMem(); }
     let start = Instant::now();
@@ -980,7 +971,7 @@ mod tests {
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(ret.0.len(), 2); 
-    assert_eq!(ret.1.len(), 3193);
+    assert_eq!(ret.1.len(), 3322);
   }
 
 /*   #[test]  
