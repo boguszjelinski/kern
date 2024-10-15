@@ -20,6 +20,7 @@ use mysql::*;
 use mysql::prelude::*;
 use chrono::{Local, Duration};
 use std::collections::HashMap;
+use std::ptr::addr_of;
 use std::time::Instant;
 use std::thread;
 use std::env;
@@ -40,7 +41,7 @@ const CFG_FILE_DEFAULT: &str = "kern.toml";
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
     println!("cargo:rustc-link-lib=dynapool121");
-    println!("cargo:rustc-link-arg=--max-memory=12294967296");
+    println!("cargo:rustc-link-arg=--max-memory=15294967296");
     // reading Config
     let mut cfg_file: String = CFG_FILE_DEFAULT.to_string();
 
@@ -194,7 +195,7 @@ extern "C" {
     fn dynapool(
 		numbThreads: i32,
         poolsize: &[i32; MAXINPOOL - 1], // max sizes
-		distance: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB], 
+		distance: *const [[i16; 5200]; 5200], 
 		distSize: i32,
 		stops: &[Stop; MAXSTOPSNUMB],
 		stopsSize: i32,
@@ -209,7 +210,7 @@ extern "C" {
     );
 
     fn c_lcm(
-        distance: &[[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB],
+        distance: *const [[i16; 5200]; 5200],
         distSize: i32,
         orders: &[OrderTransfer; MAXORDERSNUMB],
         ordersSize: i32,
@@ -230,7 +231,7 @@ fn run_extender(conn: &mut PooledConn, orders: &Vec<Order>, stops: &Vec<Stop>,
     if cfg.use_extender {
         let start_extender = Instant::now();
         let demand 
-            = find_matching_routes(conn, orders, &stops, max_leg_id, unsafe { &DIST });
+            = find_matching_routes(conn, orders, &stops, max_leg_id);
         update_max_and_avg_time(Stat::AvgExtenderTime, Stat::MaxExtenderTime, start_extender);
         let len_after = demand.len();
         if len_before != len_after {
@@ -384,7 +385,7 @@ fn extern_lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i
     let mut count: i32 = 0;
 
     unsafe { c_lcm(
-        &DIST,
+        addr_of!(DIST),
         MAXSTOPSNUMB as i32,
         &orders_to_transfer_array(&orders_cpy),
         orders_cpy.len() as i32,
@@ -552,7 +553,7 @@ fn find_external_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
         dynapool(
             threads,
             &poolsize,
-            &DIST,
+            addr_of!(DIST),
             MAXSTOPSNUMB as i32,
             &stops_to_array(&stops),
             stops.len() as i32,
@@ -773,19 +774,19 @@ mod tests {
 
   fn test_orders_invalid() -> Vec<Order> {
     return vec![
-        Order{ id: 1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
-            received: None,started: None,completed: None,at_time: None,eta: 0, route_id: -1},
-        Order{ id: -1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
-            received: None,started: None,completed: None,at_time: None,eta: 0, route_id: -1}
+        Order{ id: 1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, 
+            received: None,at_time: None, route_id: -1},
+        Order{ id: -1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, 
+            received: None,at_time: None,route_id: -1}
     ];
   }
 
   fn test_orders() -> Vec<Order> {
     return vec![
-        Order{ id: 0, from: 0, to: 1, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
-            received: None,started: None,completed: None,at_time: None,eta: 0, route_id: -1},
-        Order{ id: 1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, shared: true, in_pool: false,
-            received: None,started: None,completed: None,at_time: None,eta: 0, route_id: -1}
+        Order{ id: 0, from: 0, to: 1, wait: 10, loss: 50, dist: 2, 
+            received: None,at_time: None, route_id: -1},
+        Order{ id: 1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, 
+            received: None,at_time: None, route_id: -1}
     ];
   }
 
@@ -896,8 +897,8 @@ mod tests {
         let to: i32 = from + 5;
         let dista = unsafe { DIST[from as usize][to as usize] as i32 };
         ret.push(Order{ id: i as i64, from, to, wait: 15, loss: 70, dist: dista, 
-                    shared: true, in_pool: false, received: Some(Local::now().naive_local()), started: None, completed: None, at_time: None, 
-                    eta: 1, route_id: -1 });
+                    received: Some(Local::now().naive_local()), at_time: None, 
+                    route_id: -1 });
     }
     return ret;
   }
@@ -923,7 +924,7 @@ mod tests {
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(ret.0.len(), 15); 
-    assert_eq!(ret.1.len(), 21442); // TODO: Rust gives 21444
+    assert_eq!(ret.1.len(), 20344); // TODO: Rust gives 21444
   }
 
   #[test]

@@ -25,13 +25,13 @@ pub struct Order {
 	pub wait: i32, // expected pick up time
 	pub loss: i32, // allowed loss of time in detour
 	pub dist: i32, // distance without pool
-    pub shared: bool, // agreed to be in pool
-    pub in_pool: bool, // actually in pool
+ //   pub shared: bool, // agreed to be in pool
+ //   pub in_pool: bool, // actually in pool
     pub received: Option<NaiveDateTime>,
-    pub started: Option<NaiveDateTime>,
-    pub completed: Option<NaiveDateTime>,
+ //   pub started: Option<NaiveDateTime>,
+ //   pub completed: Option<NaiveDateTime>,
     pub at_time: Option<NaiveDateTime>,
-    pub eta: i32, // proposed wait time
+ //   pub eta: i32, // proposed wait time
     pub route_id: i64,
   //  cab: Cab,
   //  customer: Customer
@@ -67,7 +67,7 @@ pub struct Leg {
     pub dist: i32,
     pub reserve: i32, // to match constraints - wait, loss
     pub started: Option<NaiveDateTime>,
-    pub completed: Option<NaiveDateTime>,
+ //   pub completed: Option<NaiveDateTime>,
     pub status: RouteStatus,
     pub passengers: i32, // to meet cab's capacity
     pub seats: i32,
@@ -128,11 +128,12 @@ impl RouteStatus {
 }
 */
 
-#[derive(Clone)]
+/*#[derive(Clone)]
 pub struct Route {
 	pub id: i64,
 //    pub reserve: i32
 }
+*/
 
 #[repr(C)]
 #[derive(Copy, Clone)]
