@@ -232,12 +232,12 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &Has
   let mut ret: Option<LegIndicesWithDistance2> = None;
   let mut i: usize = 1; // index of pickup TODO: i=0 has to be considered one day
   let mut total_dist: i32;
-  if legs[i].status == RouteStatus::STARTED {
+  if legs[0].status == RouteStatus::STARTED {
     let mut on_the_way = get_elapsed(legs[0].started) as i32;
     if on_the_way == -1 { on_the_way = 0; }
     total_dist = cmp::max(0, legs[0].dist - on_the_way/60) + STOP_WAIT as i32;
   } else {
-   total_dist = legs[0].dist + STOP_WAIT as i32; // distance from the begining of a route; well, only the remaining legs
+    total_dist = legs[0].dist + 2*STOP_WAIT as i32; // distance from the begining of a route; well, only the remaining legs
   }
   let mut min_cost: i32 = MAXCOST; // added cost of the winner, we are starting with a looser
   let mut is_short = leg_is_short(leg_count.get(&legs[i].route_id));
@@ -259,7 +259,8 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &Has
          && dist1 < min_cost
          && (dist1 > max_angle_dist || bearing_diff(stops[prev_leg_to].bearing, stops[order_from].bearing) <  max_angle) { // well, we have to compare to something; there still might be a better plan with lesser wait time
         min_cost = dist1;
-        ret = get_some(i, i, legs[i-1].route_id, dist1, total_dist + dist1+ extra_wait(wait_legs), 
+        ret = get_some(i, i, legs[i-1].route_id, STOP_WAIT as i32 + dist1, 
+                      total_dist + dist1+ extra_wait(wait_legs), 
                       order.dist, 0, order);
         debug!("DEBUG3C find_route: order_id={}, route_id={}, total_dist={}, dist1={}, wait_legs={}", 
                       order.id, legs[i-1].route_id, total_dist, dist1, wait_legs +1);
@@ -277,7 +278,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &Has
       }
       // if there is too many non-pickedup customers, uncomment the below, which mean do not assign a leg which is about to start soon
       if leg.status == RouteStatus::ASSIGNED {
-        total_dist += leg.dist + STOP_WAIT as i32;
+        total_dist += leg.dist + 2*STOP_WAIT as i32;
         wait_legs += 1;
         i += 1;
         continue; 

@@ -12,7 +12,7 @@ use crate::distance::DIST;
 use crate::repo::{assign_pool_to_cab, CNFG};
 const MAXANGLEDIST: i16 = 1;
 const MAX_THREAD_NUMB:usize = 9; // this has to be +1 possible config value!!
-const MAX_BRANCH_SIZE:usize = 2000000;
+const MAX_BRANCH_SIZE:usize = 3000000;
 
 static mut NODE: [Branch; MAX_BRANCH_SIZE*MAX_THREAD_NUMB] = [Branch {
                 cost: 0, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 }; 
@@ -71,8 +71,6 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Ve
 	// dive more
 	dive(lev + 1, in_pool, threads_numb, orders, stops);
 
-  let mut ret_size = 0;
-	let mut children = vec![];
   let mut t_numb = threads_numb; // mut: there might be one more thread, rest of division
   let mut chunk = orders.len() / t_numb as usize;
   if chunk == 0 { chunk = 1; }
@@ -81,6 +79,8 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Ve
   if t_numb as usize * chunk < orders.len() { chunk *= 2; }
 
   // run the threads, each thread gets its own range of orders to iterate over - hence 'iterate'
+
+  let mut children = vec![];
   for i in 0..t_numb as usize { // TASK: allocated orders might be spread unevenly -> count non-allocated and devide chunks ... evenly
     let ords = orders.clone();
     let stps = stops.clone();
@@ -90,11 +90,19 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Ve
   }
   // collect the data from threads, join their execution first
   // there might be 'duplicates', 1-2-3 and 1-3-2 and so on, they will be filtered out later
+  let mut vecs: [Vec<Branch>; MAX_THREAD_NUMB] = [const { Vec::new() }; MAX_THREAD_NUMB];
+  let mut count: usize = 0;
+  let mut ret_size = 0;
+
   for n in children {
-    let ret = n.join().unwrap();
-    unsafe { NODE[ret_size..ret_size + ret.len()].copy_from_slice(&ret[..]) };
-    ret_size += ret.len();
+    vecs[count] = n.join().unwrap();
+    count += 1;
   }
+  for i in 0..count {
+    unsafe { NODE[ret_size..ret_size + vecs[i].len()].copy_from_slice(&vecs[i][..]) };
+    ret_size += vecs[i].len();
+  }
+  
   debug!("Level: {}, size: {}", lev, ret_size); // just for memory usage considerations
   unsafe { NODE_SIZE = ret_size; }
   /*if lev == 7 {
@@ -203,7 +211,7 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, ret
   // two situations: c IN and c OUT
   // c IN has to have c OUT in level+1, and c IN cannot exist in level + 1
   // c OUT cannot have c OUT in level +1
-  let mut out_found : bool = false;
+   let mut out_found : bool = false;
   for i in 0 .. (br.ord_numb as usize) {
     if br.ord_ids[i] == ord_id {
       if br.ord_actions[i] == 'i' as i8 {
@@ -227,8 +235,7 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, ret
                         + if orders[id].from == next_stop as i32 { 0 } else { CNFG.stop_wait }, br, orders)
         // TASK? if the next stop is OUT of passenger 'c' - we might allow bigger angle
         && (DIST[orders[id].from as usize][next_stop] > MAXANGLEDIST
-            || bearing_diff(stops[orders[id].from as usize].bearing, stops[next_stop].bearing) < CNFG.max_angle) { 
-
+            || bearing_diff(stops[orders[id].from as usize].bearing, stops[next_stop].bearing) < CNFG.max_angle) {
           ret.push(store_branch('i', lev, ord_id, br, in_pool, orders)); 
       }
 		} 
@@ -1006,5 +1013,20 @@ fn test_append(){
     let arr = stops_to_array(&vec);
     assert_eq!(arr.len(), MAXSTOPSNUMB);
     assert_eq!(arr[0].id, 0);
+  }
+
+  #[test]
+  #[serial]
+  fn test_array_cpy() {
+    let vec0: Vec<i8> = vec![0,1,2];
+    let vec1: Vec<i8> = vec![3,4];
+    let mut node: [i8; 8] = [-1; 8];
+    let mut size =0;
+    node[size..size + vec0.len()].copy_from_slice(&vec0[..]);
+    size += vec0.len();
+    node[size..size + vec1.len()].copy_from_slice(&vec1[..]);
+    size += vec1.len();
+    println!("Size: {}", size);
+    println!("Content: {:?}", node);
   }
 }

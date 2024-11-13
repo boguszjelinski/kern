@@ -403,7 +403,7 @@ fn extern_lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i
     return pairs;
 }
 
-/*
+
 fn lcm_gen_pairs2(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i16)> {
     // let us start with a big cost - is there any smaller?
 let big_cost: i32 = 1000000;
@@ -454,7 +454,7 @@ for _ in 0..how_many { // we need to repeat the search (cut off rows/columns) 'h
 }
 return pairs;
 }
-*/
+
 
 // remove orders and cabs allocated by the pool so that the vectors can be sent to solver
 fn shrink(cabs: &Vec<Cab>, orders: Vec<Order>) -> (Vec<Cab>, Vec<Order>) {
@@ -524,6 +524,12 @@ fn find_internal_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
                 3 => update_max_and_avg_stats(Stat::AvgPool3Time, Stat::MaxPool3Time, el),
                 _=>{},
             }
+            /*for b in ret.0.iter() {
+                for c in 0..b.ord_numb as usize {
+                    print!("{}{:?},", b.ord_ids[c], char::from_u32(b.ord_actions[c] as u32).unwrap());
+                }
+                println!("");
+            }*/
             pl.append(&mut ret.0);
             sql += &ret.1;
         }
@@ -593,7 +599,9 @@ fn find_external_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
                 error!("Wrong order index: {}", br[i].ord_ids[c]);
                 continue 'outer;
             }
+            //print!("{}{:?},", br[i].ord_ids[c], char::from_u32(br[i].ord_actions[c] as u32).unwrap());
         }
+        //println!("");
         /*unsafe {
         if !wait_constraints_met(&br[i], 
                             DIST[cabs[br[i].cab as usize].location as usize][demand[br[i].ord_ids[0] as usize].from as usize],
@@ -768,7 +776,8 @@ fn munkres(cabs: &Vec<Cab>, orders: &Vec<Order>) -> Vec<i16> {
 mod tests {
   use std::vec;
   use super::*;
-  use serial_test::serial;
+  use chrono::format::InternalNumeric;
+use serial_test::serial;
   use crate::distance::init_distance;
   use distance::DIST;
 
@@ -876,11 +885,11 @@ mod tests {
         */
   }
 
-  fn get_stops(step: f64) -> Vec<Stop> {
+  fn get_stops(step: f64, size: usize) -> Vec<Stop> {
     let mut stops: Vec<Stop> = vec![];
     let mut c: i64 = 0;
-    for i in 0..49 {
-      for j in 0..49 {
+    for i in 0..size {
+      for j in 0..size {
         stops.push(
           Stop{ id: c, bearing: 0, latitude: 49.0 + step * i as f64, longitude: 19.000 + step * j as f64}
         );
@@ -890,11 +899,11 @@ mod tests {
     return stops;
   }
 
-  fn get_orders(size: usize) -> Vec<Order> {
+  fn get_orders(size: usize, stops: i32) -> Vec<Order> {
     let mut ret: Vec<Order> = vec![];
     for i in 0..size as i32 {     
-        let from: i32 = i % 2400;
-        let to: i32 = from + 5;
+        let from: i32 = i % stops;
+        let to: i32 = if from + 5 >= stops { from - 5} else { from + 5} ;
         let dista = unsafe { DIST[from as usize][to as usize] as i32 };
         ret.push(Order{ id: i as i64, from, to, wait: 15, loss: 70, dist: dista, 
                     received: Some(Local::now().naive_local()), at_time: None, 
@@ -903,10 +912,10 @@ mod tests {
     return ret;
   }
 
-  fn get_cabs() -> Vec<Cab> {
+  fn get_cabs(size: usize) -> Vec<Cab> {
     let mut ret: Vec<Cab> = vec![];
-    for i in 0..1000 {
-        ret.push(Cab{ id: i, location: (i % 2400) as i32, seats: 10});
+    for i in 0..size {
+        ret.push(Cab{ id: i as i64, location: (i % 2400) as i32, seats: 10});
     }
     return ret;
   }
@@ -914,32 +923,32 @@ mod tests {
   #[test]
   #[serial]
   fn test_performance_find_extern_pool() {
-    let stops = get_stops(0.03);
+    let stops = get_stops(0.03, 49);
     init_distance(&stops);
-    let mut orders: Vec<Order> = get_orders(60);
-    let mut cabs: Vec<Cab> = get_cabs();
+    let mut orders: Vec<Order> = get_orders(60, 49);
+    let mut cabs: Vec<Cab> = get_cabs(1000);
     unsafe { initMem(); }
     let start = Instant::now();
     let ret = find_external_pool(&mut orders, &mut cabs, &stops, 8_i32, &mut 0, &mut 0);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(ret.0.len(), 15); 
-    assert_eq!(ret.1.len(), 20344); // TODO: Rust gives 21444
+    assert_eq!(ret.1.len(), 18127); // TODO: Rust gives 21444
   }
 
   #[test]
   #[serial]
   fn test_performance_find_intern_pool() {
-    let stops = get_stops(0.03);
+    let stops = get_stops(0.03, 49);
     init_distance(&stops);
-    let mut orders: Vec<Order> = get_orders(60);
-    let mut cabs: Vec<Cab> = get_cabs();
+    let mut orders: Vec<Order> = get_orders(60, 49);
+    let mut cabs: Vec<Cab> = get_cabs(1000);
     let start = Instant::now();
     let ret = find_internal_pool(&mut orders, &mut cabs, &stops, &mut 0, &mut 0);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
-    assert_eq!(ret.0.len() >= 15, true); 
-    //assert_eq!(ret.1.len(), 21070);
+    assert_eq!(ret.0.len(), 15); 
+    assert_eq!(ret.1.len(), 19112);
   }
 
   #[test]
@@ -947,10 +956,10 @@ mod tests {
   fn test_performance_find_intern_pool_4in() {
     let mut max_route_id : i64 = 0;
     let mut max_leg_id : i64 = 0;
-    let stops = get_stops(0.05);
+    let stops = get_stops(0.05, 49);
     init_distance(&stops);
-    let mut demand: Vec<Order> = get_orders(50);
-    let mut cabs = get_cabs();
+    let mut demand: Vec<Order> = get_orders(50, 49);
+    let mut cabs = get_cabs(1000);
     unsafe { initMem(); }
     let start = Instant::now();
     let ret = find_pool(4, 8, &mut demand,  &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
@@ -962,10 +971,10 @@ mod tests {
   #[test]  
   #[serial]
   fn test_performance_find_extern_pool5() {
-    let stops = get_stops(0.01);
+    let stops = get_stops(0.01, 49);
     init_distance(&stops);
-    let mut orders: Vec<Order> = get_orders(10);
-    let mut cabs: Vec<Cab> = get_cabs();
+    let mut orders: Vec<Order> = get_orders(10, 49);
+    let mut cabs: Vec<Cab> = get_cabs(1000);
     unsafe { initMem(); }
     let start = Instant::now();
     let ret = find_external_pool(&mut orders, &mut cabs, &stops, 8_i32, &mut 0, &mut 0);
@@ -975,19 +984,21 @@ mod tests {
     assert_eq!(ret.1.len(), 3322);
   }
 
-/*   #[test]  
+  #[test]  
   #[serial]
   fn test_performance_lcm() {
-    let stops = get_stops(0.05);
+    let stops = get_stops(0.05, 49);
     init_distance(&stops);
-    let mut orders: Vec<Order> = get_orders2(1500);
-    let mut cabs: Vec<Cab> = get_cabs();
+    let mut orders: Vec<Order> = get_orders(2000, 49);
+    let mut cabs: Vec<Cab> = get_cabs(2000);
     //let ret = lcm_gen_pairs(&mut cabs, &mut orders, 100);
-    let ret2 = lcm_gen_pairs2(&mut cabs, &mut orders, 100);
-    assert_eq!(ret2.len(), 100);
-    assert_eq!(ret2[0].0, 901);
-    assert_eq!(ret2[0].1, 1499);
-    assert_eq!(ret2[1].0, 902);
-    assert_eq!(ret2[1].1, 1498);
-  } */
+    let start = Instant::now();
+    let ret2 = lcm_gen_pairs2(&mut cabs, &mut orders, 2000);
+    println!("Elapsed: {}", start.elapsed().as_millis());
+    assert_eq!(ret2.len(), 2000);
+    // assert_eq!(ret2[0].0, 901);
+    // assert_eq!(ret2[0].1, 1499);
+    // assert_eq!(ret2[1].0, 902);
+    // assert_eq!(ret2[1].1, 1498);
+  } 
 }
