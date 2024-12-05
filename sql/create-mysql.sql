@@ -31,6 +31,49 @@ INSERT INTO customer (id) with digit as (
     from digit a cross join digit b cross join digit c cross join digit d cross join digit e order by 1        
 ) select seq.num from seq where seq.num<200000;
 
+-- ORDER
+DROP TABLE taxi_order CASCADE;
+CREATE TABLE taxi_order (
+    id bigint NOT NULL auto_increment,
+    at_time timestamp,
+    completed timestamp,
+    distance integer NOT NULL,
+    eta integer,
+    from_stand integer NOT NULL,
+    in_pool boolean,
+    max_loss integer NOT NULL,
+    max_wait integer NOT NULL,
+    received timestamp,
+    shared boolean NOT NULL,
+    started timestamp,
+    status integer,
+    to_stand integer NOT NULL,
+    cab_id bigint,
+    customer_id bigint,
+    leg_id bigint,
+    route_id bigint,
+    PRIMARY KEY (id),
+    FOREIGN KEY (cab_id) REFERENCES cab(id),
+    FOREIGN KEY (customer_id) REFERENCES customer(id),
+    FOREIGN KEY (leg_id) REFERENCES leg(id),
+    FOREIGN KEY (route_id) REFERENCES route(id)
+);
+
+-- ORDER FROM FREE CAB
+-- TODO: number of passengers missing !!
+DROP TABLE freetaxi_order CASCADE;
+CREATE TABLE freetaxi_order (
+    id bigint NOT NULL auto_increment,
+    from_stand integer NOT NULL,
+    to_stand integer NOT NULL,
+    max_loss integer NOT NULL,
+    received timestamp,
+    shared boolean NOT NULL,
+    cab_id bigint,
+    customer_id bigint,
+    PRIMARY KEY (id)
+);
+
 -- ROUTE
 DROP TABLE route CASCADE;
 CREATE TABLE route (
@@ -112,34 +155,6 @@ CREATE TABLE stop (
 -- INTO TABLE stop (id, no, name, latitude, longitude, bearing) FIELDS TERMINATED BY ',' LINES TERMINATED BY '\n'
 -- IGNORE 1 LINES;
 -- [Code: 3948, SQL State: 42000]  Loading local data is disabled; this must be enabled on both the client and server sides
-
--- ORDER
-DROP TABLE taxi_order CASCADE;
-CREATE TABLE taxi_order (
-    id bigint NOT NULL auto_increment,
-    at_time timestamp,
-    completed timestamp,
-    distance integer NOT NULL,
-    eta integer,
-    from_stand integer NOT NULL,
-    in_pool boolean,
-    max_loss integer NOT NULL,
-    max_wait integer NOT NULL,
-    received timestamp,
-    shared boolean NOT NULL,
-    started timestamp,
-    status integer,
-    to_stand integer NOT NULL,
-    cab_id bigint,
-    customer_id bigint,
-    leg_id bigint,
-    route_id bigint,
-    PRIMARY KEY (id),
-    FOREIGN KEY (cab_id) REFERENCES cab(id),
-    FOREIGN KEY (customer_id) REFERENCES customer(id),
-    FOREIGN KEY (leg_id) REFERENCES leg(id),
-    FOREIGN KEY (route_id) REFERENCES route(id)
-);
 
 INSERT INTO stop (id, bearing, latitude, longitude, name, no, type) VALUES (0, 180, 47.507803, 19.235276, 'Erdei bekötőút', 'F03337', NULL);
 INSERT INTO stop (id, bearing, latitude, longitude, name, no, type) VALUES (1, -180, 47.49069, 19.10891, 'Hidegkuti Nándor Stadion', '8262', NULL);

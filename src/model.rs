@@ -49,6 +49,17 @@ pub struct OrderTransfer {
 	pub dist: i32
 }
 
+pub struct CabAssign {
+    pub id: i64,
+    pub cust_id: i64,
+    pub cab_id: i64,
+	pub from: i32,
+    pub to: i32,
+    pub loss: i32,
+    pub shared: bool,
+    pub received: Option<NaiveDateTime>
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Cab {

@@ -9,11 +9,11 @@ mod pool;
 mod stats;
 mod utils;
 use distance::DIST;
-use model::{KernCfg,Order,OrderStatus,OrderTransfer,Stop,Cab,CabStatus,Branch,
-            MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB,MAXBRANCHNUMB,MAXINPOOL};
+use model::{KernCfg, Order, OrderStatus, OrderTransfer, Stop, Cab, CabStatus, Branch,
+            MAXSTOPSNUMB, MAXCABSNUMB, MAXORDERSNUMB, MAXBRANCHNUMB, MAXINPOOL};
 use stats::{Stat,update_max_and_avg_time,update_max_and_avg_stats,incr_val};
 use pool::{orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
-use repo::{CNFG, assign_pool_to_cab};
+use repo::{CNFG, assign_pool_to_cab, assign_requests_for_free_cabs, run_sql};
 use extender::{find_matching_routes, get_handle}; // write_sql_to_file
 use utils::get_elapsed;
 use mysql::*;
@@ -83,7 +83,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
     // Kern main, infinite loop
     loop {
         let start = Instant::now();
-
         // get newly requested trips and free cabs, reject expired orders (no luck this time)
         let tmp_model = prepare_data(&mut conn);
         
@@ -251,25 +250,26 @@ fn run_extender(conn: &mut PooledConn, orders: &Vec<Order>, stops: &Vec<Stop>,
 // 3) solver (LCM in most scenarious won't be called)
 // SQL updates execute in background as async
 fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>, cfg: KernCfg) -> usize {
-    if orders.len() == 0 {
-        info!("No demand, no dispatch");
-        return 0;
-    }
     let mut max_route_id : i64 = repo::read_max(conn, "route"); // +1, first free ID
     let mut max_leg_id : i64 = repo::read_max(conn, "leg");
-    
+
+    if orders.len() == 0 {
+        info!("No demand, no dispatch");
+        // but check orders from free cabs
+        assign_requests_for_free_cabs(conn, &mut max_route_id, &mut max_leg_id);
+        return 0;
+    }
     stats::update_max_and_avg_stats(Stat::AvgDemandSize, Stat::MaxDemandSize, orders.len() as i64);
     
     // check if we want to run extender is done in run_extender
     let mut demand
         = run_extender(conn, orders, &stops, &mut max_leg_id, "FIRST", &cfg);
-    // POOL FINDER
     if cabs.len() == 0 {
         info!("No cabs");
         return 0;
     }
-
-    if cfg.use_pool {
+    // POOL FINDER
+    if cfg.use_pool && orders.len() > 0 {
         let start_pool = Instant::now();
         stats::update_max_and_avg_stats(Stat::AvgPoolDemandSize, Stat::MaxPoolDemandSize, demand.len() as i64);
         let pl: Vec<Branch>;
@@ -285,14 +285,7 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
         //for s in split_sql(sql, 150) {
         //    client.batch_execute(&s).unwrap();
         //}
-        if sql.len() > 0 {
-            match conn.query_iter(sql) {
-              Ok(_) => {} 
-              Err(err) => {
-                warn!("Pool SQL error: {}", err);
-              }
-            }
-        }
+        run_sql(conn, sql);
         // marking assigned orders to get rid of them; cabs are marked in find_pool 
         let numb = count_orders(pl, &demand);
         info!("Pool finder - number of assigned orders: {}", numb);
@@ -346,21 +339,16 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
         
         update_max_and_avg_time(Stat::AvgSolverTime, Stat::MaxSolverTime, start_solver);
         //write_sql_to_file(itr, &sql, "munkres");
-        if sql.len() > 0 {
-            match conn.query_iter(sql) { // here SYNC execution
-                Ok(_) => {}
-                Err(err) => {
-                    warn!("Solver SQL output failed to run, err: {}", err);
-                }
-            }
-        }
+        run_sql(conn, sql);
         lcm_handle.join().expect("LCM SQL thread being joined has panicked");
         info!("Dispatch completed, solver assigned: {}", max_route_id - before_solver);
     }
     // we have to join so that the next run of dispatcher gets updated orders
-
     let status_handle = get_handle(host.clone(), repo::save_status(), "stats".to_string());
     status_handle.join().expect("Status SQL thread being joined has panicked");
+
+    assign_requests_for_free_cabs(conn, &mut max_route_id, &mut max_leg_id); // someone went into and took this cab
+
     return 0; // 0: all orders served
 }
 
@@ -1001,4 +989,15 @@ use serial_test::serial;
     // assert_eq!(ret2[1].0, 902);
     // assert_eq!(ret2[1].1, 1498);
   } 
+
+  #[test]
+  fn a() {
+    let mut cabs: Vec<i64> = vec![];
+    cabs.push(1);
+    cabs.push(2);
+    for i in &mut cabs {
+        if *i == 1 { *i = -1; }
+    }
+    print!("{:?}", cabs[0]);
+  }
 }

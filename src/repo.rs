@@ -1,10 +1,10 @@
 use log::{debug, warn};
 use mysql::*;
 use mysql::prelude::*;
-use chrono::NaiveDateTime;
+use chrono::{Local, NaiveDateTime};
 use std::cmp;
 use crate::extender::STOP_WAIT;
-use crate::model::{KernCfg,Order, OrderStatus, Stop, Cab, CabStatus, Leg, RouteStatus, Branch, MAXORDID};
+use crate::model::{Branch, Cab, CabAssign, CabStatus, KernCfg, Leg, Order, OrderStatus, RouteStatus, Stop, MAXORDID};
 use crate::distance::DIST;
 use crate::stats::{STATS, Stat, add_avg_element, update_val, count_average};
 use crate::utils::get_elapsed;
@@ -65,12 +65,20 @@ pub fn find_orders_by_status_and_time(conn: &mut PooledConn, status: OrderStatus
     return ret;
 }
 
-
 pub fn read_stops(conn: &mut PooledConn) -> Vec<Stop> {
     return conn.query_map(
         "SELECT id, latitude, longitude, bearing FROM stop",
         |(id, latitude, longitude, bearing)| {
             Stop { id, latitude, longitude, bearing }
+        },
+    ).unwrap();
+}
+
+pub fn read_free_taxi_orders(conn: &mut PooledConn) -> Vec<CabAssign> {
+    return conn.query_map(
+        "SELECT id, customer_id, cab_id, from_stand, to_stand, max_loss, shared, received FROM freetaxi_order",
+        |(id, cust_id, cab_id, from, to, loss, shared, received)| {
+            CabAssign { id, cust_id, cab_id, from, to, loss, shared, received }
         },
     ).unwrap();
 }
@@ -96,6 +104,16 @@ pub fn find_cab_by_status(conn: &mut PooledConn, status: CabStatus) -> Vec<Cab>{
         "SELECT id, location, seats FROM cab WHERE status=".to_string() + &(status as u8).to_string(),
         |(id, location, seats)| { Cab { id, location, seats } },
     ).unwrap();
+}
+
+pub fn get_list_of_free_cabs(conn: &mut PooledConn) -> Vec<i32>{
+    let mut ret: Vec<i32> = Vec::new();
+    let selected: Result<Vec<Row>>  = conn.query("SELECT id FROM cab WHERE status=1");
+    match selected {
+        Ok(sel) => { for r in sel { ret.push(r.get(0).unwrap()); }},
+        Err(error) => warn!("Problem reading row: {:?}", error),
+    }
+    return ret;
 }
 
 pub fn find_legs(conn: &mut PooledConn) -> Vec<Leg> {
@@ -251,8 +269,14 @@ pub fn assign_pool_to_cab(cab: Cab, orders: &Vec<Order>, pool: Branch, max_route
     return sql;
 }
 
+// TODO: assign to free cab can make this assignment invalid, cab update and route & legs inserts must be atomic
+// or protected - cab with status=1, route with conditional INSERT:
+// INSERT INTO x_table (instance, user, item) SELECT 919191, 123, 456 
+// WHERE (SELECT COUNT(*) FROM x_table WHERE user=123 AND item=456) = 0 
+// 
 // !! KEX does not have 'reserve' here, creat_leg get ZERO as a reserve
-fn update_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16, reserve: i32,  max_route_id: &mut i64, max_leg_id: &mut i64) -> String {
+fn update_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16, reserve: i32,  
+                        max_route_id: &mut i64, max_leg_id: &mut i64) -> String {
     // 0: CabStatus.ASSIGNED TODO: hardcoded status
     let mut sql: String = String::from("UPDATE cab SET status=0 WHERE id=");
     sql += &(cab.id.to_string() + &";\n".to_string());
@@ -266,7 +290,8 @@ fn update_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16
         unsafe {
             *eta = DIST[cab.location as usize][order.from as usize];
         }
-        sql += &create_leg(order.id, cab.location, order.from, *place, RouteStatus::ASSIGNED, *eta, reserve,
+        sql += &create_leg(order.id, cab.location, order.from, *place, 
+                    RouteStatus::ASSIGNED, *eta, reserve,
                             *max_route_id, max_leg_id, 0, "assignCab");
         *place += 1;
         //TODO: statSrvc.addToIntVal("total_pickup_distance", Math.abs(cab.getLocation() - order.fromStand));
@@ -431,6 +456,7 @@ fn assign_order_to_cab(order: Order, cab: Cab, place: i32, eta: i16, reserve: i3
 pub fn assign_cust_to_cab_munkres(sol: Vec<i16>, cabs: &Vec<Cab>, demand: &Vec<Order>, max_route_id: &mut i64, 
                             max_leg_id: &mut i64) -> String {
     let mut sql: String = String::from("");
+    
     for (cab_idx, ord_idx) in sol.iter().enumerate() {
         if *ord_idx == -1 {
             continue; // cab not assigned
@@ -463,6 +489,111 @@ pub fn save_status() -> String {
     }}
     return sql;
 }
+
+pub fn assign_requests_for_free_cabs(conn: &mut PooledConn, max_route_id: &mut i64, max_leg_id: &mut i64) {
+    // list free cabs
+    // retrieve requests from free cabs
+    // in a loop over freetaxi_order
+    // a) set cab status assigned but if assigned by e.g. pool - do nothing, it will be deleted
+    // b) create route and assign to cab
+    // c) generate taxi_order and assign to cab and route
+    // d) generate one leg and assign to route
+    // after the loop - delete all retreived requests (new might have come)
+    let orders = read_free_taxi_orders(conn);
+    let cabs = find_cab_by_status(conn, CabStatus::FREE);
+    if orders.len() == 0 {
+        return;
+    }
+    if cabs.len() == 0 {
+        warn!("No cabs available");
+        delete_req_for_free_cabs(orders);
+        return;
+    }
+    let mut ids: Vec<i64> = vec![];
+    for c in &cabs {
+        ids.push(c.id);
+    }
+    let mut sql: String = "".to_string();
+    for o in &orders {
+        if !ids.contains(&o.cab_id) { //this cab is not free any longer, assigned by pool e.g.
+            continue;
+        }
+        let loc = cab_location(&cabs, o.cab_id);
+        if loc != o.from {
+            warn!("Requested free cab had other location, DB: {}, reuqested: {}", loc, o.from);
+        }
+        let reserve = ((o.loss as f32 / 100.0) * unsafe {DIST[o.from as usize][o.to as usize]} as f32).round() as i32;
+        sql += &format!("UPDATE cab SET status=0 WHERE id={};\n", o.cab_id);
+        sql += &insert_route(*max_route_id, o.cab_id);
+        sql += &insert_leg(*max_leg_id, *max_route_id, o, reserve);
+        sql += &insert_order(*max_leg_id, *max_route_id, o);
+        *max_route_id += 1;
+        *max_leg_id += 1;
+    }
+    sql += &delete_req_for_free_cabs(orders);
+    run_sql(conn, sql);
+}
+
+fn cab_location(cabs: &Vec<Cab>, cab_id: i64) -> i32 {
+    return match cabs.into_iter().find(|x| x.id == cab_id) {
+        Some(x) => { x.location }
+        None => -1
+    };
+}
+
+pub fn run_sql(conn: &mut PooledConn, sql: String) {
+    if sql.len() > 0 {
+        match conn.query_iter(sql) { // here SYNC execution
+            Ok(_) => {}
+            Err(err) => {
+                warn!("Solver SQL output failed to run, err: {}", err);
+            }
+        }
+    }
+}
+
+fn delete_req_for_free_cabs(list: Vec<CabAssign>) -> String {
+    if list.len() == 0 {
+        return "".to_string();
+    }
+    let mut ids: String = "".to_string();
+    for i in 0 .. list.len() -1 {
+        ids += &format!("{},", list[i].id);
+    }
+    ids += &list[list.len() - 1].id.to_string();
+    return format!("DELETE FROM freetaxi_order WHERE id IN ({});\n", ids);
+}
+
+fn insert_order(route_id: i64, leg_id: i64, o: &CabAssign) -> String {
+    return format!("INSERT INTO taxi_order (from_stand, to_stand, max_loss, max_wait, shared, in_pool, eta,\
+                     status, received, distance, customer_id, cab_id, leg_id, route_id) VALUES (\
+                    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
+            o.from, o.to, o.loss, -1, o.shared, false, 0, OrderStatus::ASSIGNED as i32,
+            naive_to_string(o.received), unsafe {DIST[o.from as usize][o.to as usize]}, o.cust_id, o.cab_id, leg_id, route_id);
+}
+
+fn naive_to_string(time: Option<NaiveDateTime>) -> NaiveDateTime {
+    return match time {
+        Some(x) => { x }
+        None => Local::now().naive_local()
+    };
+}
+
+fn insert_route(route_id: i64, cab_id: i64) -> String {
+    return format!("INSERT INTO route (id, status, cab_id) VALUES ({},{},{});\n", // 0 will be updated soon
+                    route_id, RouteStatus::ASSIGNED as i32, cab_id).to_string();
+}
+
+// TODO: number of passengers requested
+fn insert_leg(leg_id: i64, route_id: i64, o: &CabAssign, reserve: i32) -> String {
+    let ret = format!("\
+    INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES \
+    ({},{},{},{},{},{},{},{},{});\n", leg_id, o.from, o.to, 0, unsafe {DIST[o.from as usize][o.to as usize]}, RouteStatus::ASSIGNED as i32, 
+        reserve, route_id, 1);
+    return format!("INSERT INTO route (id, status, cab_id) VALUES ({},{},{});\n", // 0 will be updated soon
+                    route_id, RouteStatus::ASSIGNED as i32, o.cab_id).to_string();
+}
+
 
 fn get_naivedate(row: &Row, index: usize) -> Option<NaiveDateTime> {
     let val: Option<mysql::Value> = row.get(index);
