@@ -17,6 +17,8 @@
 // MAC: cc -c -Wno-implicit-function-declaration poold.c dynapool.c -w -O3
 // ar -cvq libdynapool.a poold.o dynapool.o
 // sudo cp libdynapool.a /Library/Developer/CommandLineTools/SDKs/MacOSX11.1.sdk/usr/lib/
+// SHARED:
+// gcc -Wno-implicit-function-declaration -shared -o libdynapool.so -fPIC -w poold.c dynapool.c
 
 time_t rawtime;
 struct tm * timeinfo;
@@ -36,7 +38,6 @@ int cabsNumb;
 extern struct Branch;
 typedef struct Branch Branch;
 
-Branch node[MAXNODEMEM];
 int nodeSize;
 int nodeSizeSMP[NUMBTHREAD];
 
@@ -52,11 +53,32 @@ extern struct arg_struct {
 
 // these two called by Rust
 void initMem() {
+  pthread_t myThread[NUMBTHREAD];
+  printf("Init mem start\n");
   for (int i = 0; i<NUMBTHREAD; i++)
     args[i] = malloc(sizeof(struct arg_struct) * 1);
+    
+  for (int i = 0; i < NUMBTHREAD; i++) { // TASK: allocated orders might be spread unevenly -> count non-allocated and devide chunks ... evenly
+    args[i]->i = i; 
+    if (pthread_create(&myThread[i], NULL, &allocMem, args[i]) != 0) {
+        printf("Err creating thread %d!\n", i);
+    }
+  }
+  for (int i = 0; i<NUMBTHREAD; i++) 
+    pthread_join(myThread[i], NULL);
+  printf("Init mem stop\n");
 }
 
 void freeMem() {
+  pthread_t myThread[NUMBTHREAD];
+  for (int i = 0; i < NUMBTHREAD; i++) { // TASK: allocated orders might be spread unevenly -> count non-allocated and devide chunks ... evenly
+    args[i]->i = i; 
+    if (pthread_create(&myThread[i], NULL, &deallocMem, args[i]) != 0) {
+        printf("Err creating thread %d!\n", i);
+    }
+  }
+  for (int i = 0; i<NUMBTHREAD; i++) 
+    pthread_join(myThread[i], NULL);
   for (int i=0; i<NUMBTHREAD; i++) {
     nodeSizeSMP[i] = 0;
     free(args[i]);
@@ -90,7 +112,7 @@ void dynapool(int numbThreads, int poolsize[MAXINPOOL - 1],
 
     retCount = 0; // surprise - static variables keep value between calls, like a daemon
     struct timeval begin, end;
-
+    printf("stops=%d orders=%d cabs=%d\n", stopsSize, ordersSize, cabsSize);
     for (int i=0; i<MAXINPOOL - 1; i++)
       if (demandNumb < poolsize[i]) {
         gettimeofday(&begin, 0);
@@ -99,14 +121,13 @@ void dynapool(int numbThreads, int poolsize[MAXINPOOL - 1],
         long seconds = end.tv_sec - begin.tv_sec;
         long microseconds = end.tv_usec - begin.tv_usec;
         double elapsed = seconds + microseconds*1e-6;
-        printf("Pool with %d took %f seconds\n", MAXINPOOL - i, elapsed);
+        printf("Pool with %d took %f seconds\n\n", MAXINPOOL - i, elapsed);
         pooltime[i] = elapsed;
       }
-    
     *count = retCount;
 }
 
-inline short dis(short *dista, int dist_size, int row, int col) {
+short dis(short *dista, int dist_size, int row, int col) {
   return *(dista + (row * dist_size) + col);
 }
 

@@ -9,11 +9,11 @@ use std::{thread, vec};
 use log::debug;
 use crate::model::{Order,OrderTransfer,Stop,Cab,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB,MAXORDID};
 use crate::distance::DIST;
-use crate::repo::{assign_pool_to_cab, CNFG};
+use crate::repo::assign_pool_to_cab;
 
 const MAXANGLEDIST: i16 = 1;
-const MAX_THREAD_NUMB:usize = 9; // this has to be +1 possible config value!!
-const MAX_BRANCH_SIZE:usize = 3000000;
+const MAX_THREAD_NUMB:usize = 12; // this has to be +1 possible config value!!
+const MAX_BRANCH_SIZE:usize = 5000;
 
 static mut NODE: [Branch; MAX_BRANCH_SIZE*MAX_THREAD_NUMB] = [Branch {
                 cost: 0, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 }; 
@@ -31,17 +31,17 @@ static mut NODE_SIZE: usize = 0;
 /// 
 /// returns: vector of pools and SQL
 pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mut Vec<Cab>,
-                stands: &Vec<Stop>, mut max_route_id: &mut i64, max_leg_id: &mut i64) 
+                stands: &Vec<Stop>, mut max_route_id: &mut i64, max_leg_id: &mut i64, max_angle: i16, stop_wait: i16) 
                 -> (Vec<Branch>, String) {
   if demand.len() == 0 || supply.len() == 0 || stands.len() == 0 {
           return (Vec::new(), String::from(""));
   }
   // recursive dive until the leaves of the permutation tree
-	dive(0, in_pool, threads, demand, stands);
+	dive(0, in_pool, threads, demand, stands, max_angle, stop_wait);
 
   // there might be pools with same passengers, with different length - sort and find the best ones
   let ret = 
-      rm_duplicates_assign_cab(in_pool as usize, &mut max_route_id, max_leg_id, supply, demand);
+      rm_duplicates_assign_cab(in_pool as usize, &mut max_route_id, max_leg_id, supply, demand, stop_wait);
 
   debug!("FINAL: inPool: {}, found pools: {}\n", in_pool, ret.0.len());
   /*for i in 0 .. MAXNODE {
@@ -61,16 +61,16 @@ pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mu
 /// lev: starting always with zero
 /// in_pool: number of passengers going together
 /// threads_numb: 
-fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Vec<Stop>){
+fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Vec<Stop>, max_angle: i16, stop_wait: i16){
   unsafe { NODE_SIZE = 0; }
 	if lev > in_pool + in_pool - 3 { // lev >= 2*inPool-2, where -2 are last two levels
-		store_leaves(orders, stops);
+		store_leaves(orders, stops, max_angle, stop_wait);
     debug!("Level: {}, size: {}", lev,  unsafe { NODE_SIZE });
 		// last two levels are "leaves"
     return;
 	}
 	// dive more
-	dive(lev + 1, in_pool, threads_numb, orders, stops);
+	dive(lev + 1, in_pool, threads_numb, orders, stops, max_angle, stop_wait);
 
   let mut t_numb = threads_numb; // mut: there might be one more thread, rest of division
   let mut chunk = orders.len() / t_numb as usize;
@@ -86,7 +86,7 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Ve
     let ords = orders.clone();
     let stps = stops.clone();
     children.push(thread::spawn(move || {
-      iterate(lev as usize, in_pool, i, chunk, &ords, &stps)
+      iterate(lev as usize, in_pool, i, chunk, &ords, &stps, max_angle, stop_wait)
     }))
   }
   // collect the data from threads, join their execution first
@@ -122,7 +122,7 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Ve
 /// a leafe is e.g.: 1out-2out or 1in-1out, the last one must be OUT, 'o'
 /// 
 /// returns: leaves
-fn store_leaves(orders: &Vec<Order>, stops: &Vec<Stop>){
+fn store_leaves(orders: &Vec<Order>, stops: &Vec<Stop>, max_angle: i16, stop_wait: i16) {
 	unsafe{
   NODE_SIZE = 0;
 	for (c_idx, c) in orders.iter().enumerate() {
@@ -133,17 +133,17 @@ fn store_leaves(orders: &Vec<Order>, stops: &Vec<Stop>){
 		 	if c_idx == d_idx {
         // 'bearing' checks if stops are in line, it promotes straight paths to avoid unlife solutions
         // !! we might not check bearing here as they are probably distant stops
-        if bearing_diff(stops[c.from as usize].bearing, stops[d.to as usize].bearing) < CNFG.max_angle {
-		 		  NODE[NODE_SIZE] = add_leaf(c_idx as i32, d_idx as i32, 'i', 1, orders);
+        if bearing_diff(stops[c.from as usize].bearing, stops[d.to as usize].bearing) < max_angle {
+		 		  NODE[NODE_SIZE] = add_leaf(c_idx as i16, d_idx as i16, 'i', 1, orders, stop_wait);
           NODE_SIZE += 1;
         }
 		 	} 
       // now <1out, 2out>
       else if (DIST[c.to as usize][d.to as usize] as f32)	<
                             DIST[d.from as usize][d.to as usize] as f32 * (100.0 + d.loss as f32) / 100.0
-		 			    && bearing_diff(stops[c.to as usize].bearing, stops[d.to as usize].bearing) < CNFG.max_angle {
+		 			    && bearing_diff(stops[c.to as usize].bearing, stops[d.to as usize].bearing) < max_angle {
 		 		// TASK - this calculation above should be replaced by a redundant value in taxi_order - distance * loss
-		 		NODE[NODE_SIZE] = add_leaf(c_idx as i32, d_idx as i32, 'o', 2, orders);
+		 		NODE[NODE_SIZE] = add_leaf(c_idx as i16, d_idx as i16, 'o', 2, orders, stop_wait);
         NODE_SIZE += 1;
         /*  debug!("c={} d={} c.id={} d.id={} c.to={} d.from={} d.to={} d.loss={} c.to.bearing={} d.to.bearing={} dist_c_d={} dist_d_d={}",
                   c, d, ORDERS[c].id, ORDERS[d].id, ORDERS[c].to, ORDERS[d].from, ORDERS[d].to,
@@ -169,12 +169,12 @@ pub fn bearing_diff(a: i32, b: i32 ) -> i16 {
     return r.abs() as i16;
 }
 
-fn add_leaf(id1: i32, id2: i32, dir1: char, outs: u8, orders: &Vec<Order>) -> Branch {
+fn add_leaf(id1: i16, id2: i16, dir1: char, outs: u8, orders: &Vec<Order>, stop_wait: i16) -> Branch {
   let mut br : Branch = Branch::new();
 	unsafe {
       let from = if dir1 == 'o' { orders[id1 as usize].from as usize } else { orders[id1 as usize].to as usize };
       let to = orders[id2 as usize].to as usize;
-    	br.cost = DIST[from][to] + if from == to { 0 } else { CNFG.stop_wait };
+    	br.cost = DIST[from][to] + if from == to { 0 } else { stop_wait };
 	}
   br.outs = outs;
   br.ord_ids[0] = id1;
@@ -187,7 +187,8 @@ fn add_leaf(id1: i32, id2: i32, dir1: char, outs: u8, orders: &Vec<Order>) -> Br
 
 /// just a loop and calling store_branch...
 /// returns: a chunk of all branches at that level
-fn iterate(lev: usize, in_pool: u8, thread: usize, size: usize, orders: &Vec<Order>, stops: &Vec<Stop>) -> Vec<Branch> {
+fn iterate(lev: usize, in_pool: u8, thread: usize, size: usize, orders: &Vec<Order>, stops: &Vec<Stop>,
+           max_angle: i16, stop_wait: i16) -> Vec<Branch> {
   let mut ret: Vec<Branch> = vec![];
  	let mut stop = (thread + 1) * size;
   if stop > orders.len() { stop = orders.len(); } 
@@ -196,7 +197,7 @@ fn iterate(lev: usize, in_pool: u8, thread: usize, size: usize, orders: &Vec<Ord
 		if orders[ord_id as usize].id != -1 { // not allocated in previous search (inPool+1)
 			for b in NODE[0..NODE_SIZE].iter() {
 					// we iterate over product of the stage further in the tree: +1
-					store_branch_if_not_found(lev as u8, in_pool, ord_id as i32, &b, &mut ret, orders, stops);
+					store_branch_if_not_found(lev as u8, in_pool, ord_id as i16, &b, &mut ret, orders, stops, max_angle, stop_wait);
 			}
 		}
 	}
@@ -208,7 +209,8 @@ fn iterate(lev: usize, in_pool: u8, thread: usize, size: usize, orders: &Vec<Ord
 /// check how an order fits into a pool
 /// br is existing Branch in lev+1
 /// returns: just pushes to a mutable vector
-fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, ret: &mut Vec<Branch>, orders: &Vec<Order>, stops: &Vec<Stop>) {
+fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i16, br: &Branch, ret: &mut Vec<Branch>, 
+                              orders: &Vec<Order>, stops: &Vec<Stop>, max_angle: i16, stop_wait: i16) {
   // two situations: c IN and c OUT
   // c IN has to have c OUT in level+1, and c IN cannot exist in level + 1
   // c OUT cannot have c OUT in level +1
@@ -233,21 +235,21 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, ret
 	
     if out_found { // IN was not found, we would have called 'return'
       if !is_too_long('i', ord_id, DIST[orders[id].from as usize][next_stop]
-                        + if orders[id].from == next_stop as i32 { 0 } else { CNFG.stop_wait }, br, orders)
+                        + if orders[id].from == next_stop as i32 { 0 } else { stop_wait }, br, orders, stop_wait)
         // TASK? if the next stop is OUT of passenger 'c' - we might allow bigger angle
         && (DIST[orders[id].from as usize][next_stop] > MAXANGLEDIST
-            || bearing_diff(stops[orders[id].from as usize].bearing, stops[next_stop].bearing) < CNFG.max_angle) {
-          ret.push(store_branch('i', lev, ord_id, br, in_pool, orders)); 
+            || bearing_diff(stops[orders[id].from as usize].bearing, stops[next_stop].bearing) < max_angle) {
+          ret.push(store_branch('i', lev, ord_id, br, in_pool, orders, stop_wait)); 
       }
 		} 
     // c OUT as neither IN or OUT was found
     else if lev > 0 // the first stop cannot be OUT
         && br.outs < in_pool // numb OUT must be numb IN
         && !is_too_long('o', ord_id, DIST[orders[id].to as usize][next_stop]
-                        + if orders[id].to == next_stop as i32 { 0 } else { CNFG.stop_wait }, br, orders)
+                        + if orders[id].to == next_stop as i32 { 0 } else { stop_wait }, br, orders, stop_wait)
         && (DIST[orders[id].to as usize][next_stop] > MAXANGLEDIST
-            || bearing_diff(stops[orders[id].to as usize].bearing, stops[next_stop].bearing) < CNFG.max_angle) { 
-          ret.push(store_branch('o', lev, ord_id, br, in_pool, orders)); 
+            || bearing_diff(stops[orders[id].to as usize].bearing, stops[next_stop].bearing) < max_angle) { 
+          ret.push(store_branch('o', lev, ord_id, br, in_pool, orders, stop_wait)); 
 		}
 	}
 }
@@ -256,7 +258,7 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i32, br: &Branch, ret
 /// dist: is the distance added to the pool
 /// br: is the branch in level+1
 /// returns if the order fits in
-fn is_too_long(action: char, ord_id: i32, dist: i16, br: &Branch, orders: &Vec<Order>) -> bool {
+fn is_too_long(action: char, ord_id: i16, dist: i16, br: &Branch, orders: &Vec<Order>, stop_wait: i16) -> bool {
 	unsafe {
 	  let mut wait = dist;
     // iterate over all previous orders, 
@@ -278,7 +280,7 @@ fn is_too_long(action: char, ord_id: i32, dist: i16, br: &Branch, orders: &Vec<O
                         else { orders[id].to as usize };
       let to = if br.ord_actions[i + 1] == 'i' as i8 { orders[br.ord_ids[i + 1] as usize].from as usize }
                       else { orders[br.ord_ids[i + 1] as usize].to as usize };
-      if from != to { wait += DIST[from][to] + CNFG.stop_wait; }
+      if from != to { wait += DIST[from][to] + stop_wait; }
     }
     // we have to repeat the check in the loop for the last element in array (max loss)
     if action == 'i' && ord_id == br.ord_ids[br.ord_numb as usize -1] &&
@@ -294,7 +296,7 @@ fn is_too_long(action: char, ord_id: i32, dist: i16, br: &Branch, orders: &Vec<O
 ///  b is existing Branch in lev+1
 /// 
 /// returns an extended pool
-fn store_branch(action: char, lev: u8, ord_id: i32, b: &Branch, in_pool: u8, orders: &Vec<Order>) -> Branch  {
+fn store_branch(action: char, lev: u8, ord_id: i16, b: &Branch, in_pool: u8, orders: &Vec<Order>, stop_wait: i16) -> Branch  {
 	let mut br : Branch = Branch::new();
 
   br.ord_numb = (in_pool + in_pool - lev) as i16;
@@ -311,13 +313,13 @@ fn store_branch(action: char, lev: u8, ord_id: i32, b: &Branch, in_pool: u8, ord
                       else { orders[ord_id as usize].to as usize };
     let to = if b.ord_actions[0] == 'i' as i8 { orders[b.ord_ids[0] as usize].from as usize} 
                     else { orders[b.ord_ids[0]as usize].to as usize};
-    br.cost = b.cost + DIST[from][to] + if from == to { 0 } else { CNFG.stop_wait };
+    br.cost = b.cost + DIST[from][to] + if from == to { 0 } else { stop_wait };
 	}
   br.outs = if action == 'o' { b.outs + 1 } else { b.outs };
   return br;
 }
 
-fn max_wait_exceeded(dist: i16, br: &Branch, orders: &Vec<Order>) -> bool {
+fn max_wait_exceeded(dist: i16, br: &Branch, orders: &Vec<Order>, stop_wait: i16) -> bool {
 	unsafe {
 	  let mut wait = dist;
     // iterate over all previous orders, 
@@ -331,7 +333,7 @@ fn max_wait_exceeded(dist: i16, br: &Branch, orders: &Vec<Order>) -> bool {
                         else { orders[id].to as usize };
       let to = if br.ord_actions[i + 1] == 'i' as i8 { orders[br.ord_ids[i + 1] as usize].from as usize }
                       else { orders[br.ord_ids[i + 1] as usize].to as usize };
-      if from != to { wait += DIST[from][to] + CNFG.stop_wait; }
+      if from != to { wait += DIST[from][to] + stop_wait; }
     }
     // no time constraint is violated
     return false;
@@ -346,7 +348,7 @@ fn max_wait_exceeded(dist: i16, br: &Branch, orders: &Vec<Order>) -> bool {
 /// 
 /// returns allocated branches (to regenerate demand and supplu for the solver) and SQL to execute
 fn rm_duplicates_assign_cab(in_pool: usize, mut max_route_id: &mut i64, mut max_leg_id: &mut i64,
-                            cabs: &mut Vec<Cab>, orders: &mut Vec<Order>) -> (Vec<Branch>, String) {
+                            cabs: &mut Vec<Cab>, orders: &mut Vec<Order>, stop_wait: i16) -> (Vec<Branch>, String) {
 	let mut ret : Vec<Branch> = Vec::new();
   let mut sql: String = String::from("");
   let slice = unsafe { &NODE[0..NODE_SIZE] };
@@ -359,7 +361,7 @@ fn rm_duplicates_assign_cab(in_pool: usize, mut max_route_id: &mut i64, mut max_
   for i in 0..arr.len()  {
     let cab_idx = find_nearest_cab(arr[i].ord_ids[0], count_passengers(arr[i]), cabs, orders);
     let cab_dist = unsafe { DIST[cabs[cab_idx as usize].location as usize][orders[arr[i].ord_ids[0] as usize].from as usize] };
-    if cab_dist > 0 && max_wait_exceeded(cab_dist, &arr[i], orders) {
+    if cab_dist > 0 && max_wait_exceeded(cab_dist, &arr[i], orders, stop_wait) {
       arr[i].cost = -1;
       continue;
     }
@@ -386,11 +388,11 @@ fn rm_duplicates_assign_cab(in_pool: usize, mut max_route_id: &mut i64, mut max_
       let dist_cab = DIST[cabs[cab_idx as usize].location as usize]
                               [orders[arr[i].ord_ids[0] as usize].from as usize];
       if dist_cab == 0 // constraints inside pool are checked while "diving", and cab does not add up anything if == 0
-              || constraints_met(arr[i], (dist_cab + CNFG.stop_wait) as i32, orders) {
+              || constraints_met(arr[i], (dist_cab + stop_wait) as i32, orders, stop_wait) {
         arr[i].cab = cab_idx; // maybe needed for debug
         ret.push(arr[i]);
         // assign to a cab and remove all next pools with these passengers (index 'i')
-        sql += &assign_and_remove(&mut arr, in_pool, i, cabs[cab_idx as usize], &mut max_route_id, &mut max_leg_id, orders);
+        sql += &assign_and_remove(&mut arr, in_pool, i, cabs[cab_idx as usize], &mut max_route_id, &mut max_leg_id, orders, stop_wait);
         // remove the cab from list so that it cannot be allocated twice in LCM or Munkres
         cabs[cab_idx as usize].id = -1;
           // mark orders in pools as assigned so that next call to find_pool (with fewer 'in_pool') skips them
@@ -427,7 +429,7 @@ fn count_passengers(branch: Branch) -> i32 {
 /// 
 /// returns SQL
 fn assign_and_remove(arr: &mut Vec<Branch>, in_pool: usize, i: usize, cab: Cab,
-                     mut max_route_id: &mut i64, mut max_leg_id: &mut i64, orders: &Vec<Order>) -> String {
+                     mut max_route_id: &mut i64, mut max_leg_id: &mut i64, orders: &Vec<Order>, stop_wait: i16) -> String {
   // remove any further duplicates
   for j in i + 1 .. arr.len() {
       if arr[j].cost != -1 // not invalidated; this check is for performance reasons
@@ -436,7 +438,7 @@ fn assign_and_remove(arr: &mut Vec<Branch>, in_pool: usize, i: usize, cab: Cab,
           // (list is pre-sorted)
       }
   }
-  return assign_pool_to_cab(cab, orders, arr[i], &mut max_route_id, &mut max_leg_id);
+  return assign_pool_to_cab(cab, orders, arr[i], &mut max_route_id, &mut max_leg_id, stop_wait);
 }
 
 /// check if passengers in pool 'i' exist in pool 'j'
@@ -463,11 +465,11 @@ fn mark_pools_as_dead(arr: &mut Vec<Branch>, i: usize) {
 
 /// LCM - find the nearest cab for this order ('from' of the first order in pool)
 /// returns id of the cab
-fn find_nearest_cab(o_idx: i32, pass_count: i32, cabs: &Vec<Cab>, orders: &Vec<Order>) -> i32 {
+fn find_nearest_cab(o_idx: i16, pass_count: i32, cabs: &Vec<Cab>, orders: &Vec<Order>) -> i16 {
   unsafe{
     let o: Order = orders[o_idx as usize];
     let mut dist = 10000; // big
-    let mut nearest = -1 as i32;
+    let mut nearest = -1 as i16;
     let mut found_any = false;
     for (i, c) in cabs.iter().enumerate() {
       if c.id == -1 { // allocated earlier to a pool
@@ -476,7 +478,7 @@ fn find_nearest_cab(o_idx: i32, pass_count: i32, cabs: &Vec<Cab>, orders: &Vec<O
       found_any = true;
       if DIST[c.location as usize][o.from as usize] < dist && c.seats >= pass_count {
         dist = DIST[c.location as usize][o.from as usize];
-        nearest = i as i32;
+        nearest = i as i16;
       }
     }
     if !found_any { 
@@ -490,7 +492,7 @@ fn find_nearest_cab(o_idx: i32, pass_count: i32, cabs: &Vec<Cab>, orders: &Vec<O
 
 /// checking max wait of all orders
 ///  
-fn constraints_met(el: Branch, dist_cab: i32, orders: &Vec<Order>) -> bool {
+fn constraints_met(el: Branch, dist_cab: i32, orders: &Vec<Order>, stop_wait: i16) -> bool {
     // TASK: distances in pool should be stored to speed-up this check
     let mut dist = dist_cab;
     unsafe {
@@ -503,7 +505,7 @@ fn constraints_met(el: Branch, dist_cab: i32, orders: &Vec<Order>) -> bool {
       let from = if el.ord_actions[i] == ('i' as i8) { o.from as usize } else { o.to as usize };
       let to = if el.ord_actions[i + 1] == 'i' as i8 { o2.from as usize } else { o2.to as usize};
       if from != to {
-        dist += (DIST[from][to] + CNFG.stop_wait) as i32;
+        dist += (DIST[from][to] + stop_wait) as i32;
       }
     }
     // we don't need to check the last leg as it does not concern "loss", this has been check earlier 
@@ -552,7 +554,7 @@ pub fn stops_to_array(vec: &Vec<Stop>) -> [Stop; MAXSTOPSNUMB] {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::distance::init_distance;
+  use crate::{distance::init_distance, model::KernCfg};
   use chrono::Local;
   use serial_test::serial;
   use std::time::Instant;
@@ -646,15 +648,15 @@ mod tests {
 
   fn test_init_orders_and_dist2(dist: f64, ord_count: usize, cab_count: usize) -> (Vec<Order>, Vec<Cab>, Vec<Stop>) {
     let stops = get_stops2(dist);
-    init_distance(&stops);
+    init_distance(&stops, 30);
     return (get_orders(ord_count), get_cabs(cab_count), stops);
   }
 
   fn test_branches() {
     unsafe {
-      NODE[0] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,2,3,4,5,5,4,3,2,1], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
-      NODE[1] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [5,6,7,8,9,9,8,7,6,5], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
-      NODE[2] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,6,7,8,9,9,8,7,6,1], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
+      NODE[0] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+      NODE[1] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [5,6,7,8,8,7,6,5], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+      NODE[2] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,6,7,8,8,7,6,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
       NODE_SIZE = 3;
     }
   }
@@ -675,7 +677,9 @@ mod tests {
     let stops =  get_pool_stops(0.03);
     let mut max_route_id: i64 = 0;
     let mut max_leg_id: i64 = 0;
-    let ret = find_pool(4, 3, &mut orders, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
+    let cfg = KernCfg::new();
+    let ret = find_pool(4, 3, &mut orders, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id,
+                                                cfg.max_angle, cfg.stop_wait);
     assert_eq!(ret.0.len()>0, true);
   }
 
@@ -739,14 +743,16 @@ mod tests {
   #[serial]
   fn test_performance_find_pool(){
     let stops = get_pool_stops(0.03);
-    init_distance(&stops);
+    init_distance(&stops, 30);
     let mut orders: Vec<Order> = get_pool_orders();
     let mut cabs: Vec<Cab> = get_pool_cabs();
     let mut max_route_id: i64 = 0;
     let mut max_leg_id: i64 = 0;
     let start = Instant::now();
+    let cfg = KernCfg::new();
     let ret = find_pool(4, 4, &mut orders, &mut cabs, 
-                                                &stops, &mut max_route_id, &mut max_leg_id);
+                                                &stops, &mut max_route_id, &mut max_leg_id,
+                                                cfg.max_angle, cfg.stop_wait);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(ret.0.len(), 12);
@@ -795,6 +801,7 @@ fn test_append(){
   assert_eq!(v.len(), 5000000);
 }
 
+/*
   #[test]
   #[serial]
   fn test_memcpy(){
@@ -813,13 +820,15 @@ fn test_append(){
     println!("Ret: {:?}", NODE[2000].cost); 
     }
   }  
+*/
 
   #[test]
   #[ignore]
   fn test_dive_4(){
     let (orders, _, stops) = test_init_orders_and_dist2(0.003, 10, 1000);
     let start = Instant::now();
-    dive(0, 4, 3, &orders, &stops);
+    let cfg = KernCfg::new();
+    dive(0, 4, 3, &orders, &stops, cfg.max_angle, cfg.stop_wait);
     println!("Elapsed: {:?}", start.elapsed()); 
     assert_eq!(unsafe { NODE_SIZE } , 866);
   }
@@ -829,8 +838,9 @@ fn test_append(){
   fn test_dive(){
     let (orders, _) = test_init_orders_and_dist(1, 7);
     let stops = get_pool_stops(0.003);
-    init_distance(&stops);
-    dive(0, 4, 3, &orders, &stops);
+    init_distance(&stops, 30);
+    let cfg = KernCfg::new();
+    dive(0, 4, 3, &orders, &stops, cfg.max_angle, cfg.stop_wait);
     assert_eq!(unsafe { NODE_SIZE }, 152);
   }
 
@@ -838,10 +848,11 @@ fn test_append(){
   #[serial]
   fn test_store_leaves222(){
     let stops = get_stops();
-    init_distance(&stops);
+    init_distance(&stops, 30);
     let orders = set_orders();
     let start = Instant::now();
-    store_leaves(&orders, &stops);
+    let cfg = KernCfg::new();
+    store_leaves(&orders, &stops, cfg.max_angle, cfg.stop_wait);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(unsafe { NODE_SIZE}, 354470);
@@ -860,7 +871,8 @@ fn test_append(){
   #[ignore]
   fn test_add_branch(){
     let (orders, _) = test_init_orders_and_dist(1, 4);
-    let ret = add_leaf(0, 1,'i', 2, &orders);
+    let cfg = KernCfg::new();
+    let ret = add_leaf(0, 1,'i', 2, &orders, cfg.stop_wait);
     assert_eq!(ret.cost, 1);
   }
 
@@ -868,9 +880,10 @@ fn test_append(){
   #[serial]
   fn test_iterate() {
     let stops = get_stops();
-    init_distance(&stops);
+    init_distance(&stops, 30);
     let orders = set_orders();
-    iterate(0, 4, 0, 1, &orders, &stops);
+    let cfg = KernCfg::new();
+    iterate(0, 4, 0, 1, &orders, &stops, cfg.max_angle, cfg.stop_wait);
     //assert_eq!(ret.len(), 1);
   }
   //lev: usize, in_pool: u8, start: i16, size: f32, prev_node: &Vec<Branch>) -> Vec<Branch>
@@ -879,13 +892,14 @@ fn test_append(){
   #[serial]
   fn test_store_branch_if_not_found(){
     let arr = 
-      Branch{ cost: 1, outs: 4, ord_numb: 7, ord_ids: [1,2,3,3,4,4,2,1,0,0], ord_actions: [105,105,105,105,111,111,111,111,111,0], cab: 0 
+      Branch{ cost: 1, outs: 4, ord_numb: 7, ord_ids: [1,2,3,3,2,1,0,0], ord_actions: [105,105,105,111,111,111,111,0], cab: 0 
     };
     let (orders, _) = test_init_orders_and_dist(1, 5);
     let stops = get_stops();
-    init_distance(&stops);
+    init_distance(&stops, 30);
     let mut ret: Vec<Branch> = Vec::new();
-    store_branch_if_not_found(0,4,0, &arr, &mut ret, &orders, &stops);
+    let cfg = KernCfg::new();
+    store_branch_if_not_found(0,4,0, &arr, &mut ret, &orders, &stops, cfg.max_angle, cfg.stop_wait);
     assert_eq!(ret.len(), 0);
     //assert_eq!(ret[0].ord_ids[0], 0); // was 1, should be 0
     //assert_eq!(ret[0].ord_actions[7], 111); // was 0, should be 111
@@ -896,8 +910,9 @@ fn test_append(){
   #[serial]
   fn test_is_not_too_long() {
     let (orders, _) = test_init_orders_and_dist(1, 6);
-    let b =  Branch{ cost: 1, outs: 1, ord_numb: 7, ord_ids: [1,2,3,4,5,5,4,3,2,1], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
-    let ret = is_too_long('i', 0, 1, &b, &orders);
+    let b =  Branch{ cost: 1, outs: 1, ord_numb: 7, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+    let cfg = KernCfg::new();
+    let ret = is_too_long('i', 0, 1, &b, &orders, cfg.stop_wait);
     assert_eq!(ret, false);
   }
 
@@ -905,8 +920,9 @@ fn test_append(){
   #[serial]
   fn test_store_branch() {
     let (orders, _) = test_init_orders_and_dist(1, 6);
-    let b =  Branch{ cost: 1, outs: 1, ord_numb: 1, ord_ids: [1,2,3,4,5,5,4,3,2,1], ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
-    let ret = store_branch('i', 0, 0, &b, 4, &orders);
+    let b =  Branch{ cost: 1, outs: 1, ord_numb: 1, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+    let cfg = KernCfg::new();
+    let ret = store_branch('i', 0, 0, &b, 4, &orders, cfg.stop_wait);
     assert_eq!(ret.cost, 3);
   }
 /* 
@@ -932,7 +948,8 @@ fn test_append(){
     let mut arr = slice.to_vec();
     let mut max_route_id: i64 = 0;
     let mut max_leg_id: i64 = 0;
-    let ret = assign_and_remove(&mut arr, 4, 0, cabs[0], &mut max_route_id, &mut max_leg_id, &orders);
+    let cfg = KernCfg::new();
+    let ret = assign_and_remove(&mut arr, 4, 0, cabs[0], &mut max_route_id, &mut max_leg_id, &orders, cfg.stop_wait);
     assert_eq!(ret, "UPDATE cab SET status=0 WHERE id=0;\nINSERT INTO route (id, status, cab_id) VALUES (0,1,0);\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (0,0,1,0,1,1,16000,0,0);\n");
   }
 
@@ -969,18 +986,20 @@ fn test_append(){
   #[serial]
   fn test_constraints_met() {
     let (orders, _) = test_init_orders_and_dist(1, 5);
-    let br = Branch{ cost: 1, outs: 4, ord_numb: 8, ord_ids: [0,1,2,3,4,4,3,2,1,0], 
-            ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
-    assert_eq!(constraints_met(br, 1, &orders), true);
+    let br = Branch{ cost: 1, outs: 4, ord_numb: 8, ord_ids: [0,1,2,3,3,2,1,0], 
+            ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+    let cfg = KernCfg::new();
+    assert_eq!(constraints_met(br, 1, &orders, cfg.stop_wait), true);
   }
 
   #[test]
   #[serial]
   fn test_constraints_not_met() {
     let (orders, _)= test_init_orders_and_dist(10, 4);
-    let br = Branch{ cost: 1, outs: 4, ord_numb: 8, ord_ids: [0,1,2,3,4,4,3,2,1,0], 
-            ord_actions: [105,105,105,105,105,111,111,111,111,111], cab: 0 };
-    assert_eq!(constraints_met(br, 1, &orders), false);
+    let br = Branch{ cost: 1, outs: 4, ord_numb: 8, ord_ids: [0,1,2,3,3,2,1,0], 
+            ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+    let cfg = KernCfg::new();
+    assert_eq!(constraints_met(br, 1, &orders, cfg.stop_wait), false);
   }
  
   #[test]

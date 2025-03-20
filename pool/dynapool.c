@@ -20,9 +20,13 @@ struct arg_struct {
 
 // each thread has its own chunk of branches, they will be merged
 pthread_t myThread[NUMBTHREAD];
-extern Branch node[MAXNODEMEM];
+Branch * node[MAXNODEMEM];
 extern int nodeSize; // actual size of mem, number of branches
-Branch nodeSMP[NUMBTHREAD][MAXTHREADMEM];
+// we need memory for two arrays - the current one and the previous one in the tree of search
+// these two will be copied to nodeSMP in turns, and nodeSMP is copied to 'node' 
+Branch * nodeSMP1[NUMBTHREAD][MAXTHREADMEM]; 
+Branch * nodeSMP2[NUMBTHREAD][MAXTHREADMEM];
+Branch * (*nodeSMP)[MAXTHREADMEM]; //[NUMBTHREAD][MAXTHREADMEM]; 
 extern int nodeSizeSMP[NUMBTHREAD]; // size of thread memory
 
 // pointers allocated and passed by Rust
@@ -55,7 +59,7 @@ void storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inP
       printf("storeBranch: allocated mem too low, level: %d, inPool: %d\n", lev, inPool);
       return;
     }
-    Branch *ptr = &nodeSMP[thread][nodeSizeSMP[thread]];
+    Branch *ptr = nodeSMP[thread][nodeSizeSMP[thread]];
     ptr->ordNumb = inPool + inPool - lev;
     ptr->ordIDs[0] = ordId;
     ptr->ordActions[0] = action;
@@ -65,9 +69,8 @@ void storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inP
       ptr->ordIDs[j + 1]      = b->ordIDs[j];
       ptr->ordActions[j + 1]  = b->ordActions[j];
     }*/
-    size_t size = (ptr->ordNumb - 1) * sizeof(int);
-    memcpy(&ptr->ordIDs[1], &b->ordIDs[0], size);
-    memcpy(&ptr->ordActions[1], &b->ordActions[0], size);
+    memcpy(&ptr->ordIDs[1], &b->ordIDs[0], (ptr->ordNumb - 1) * sizeof(short));
+    memcpy(&ptr->ordActions[1], &b->ordActions[0], (ptr->ordNumb - 1) * sizeof(char));
 
     //sprintf (ptr->key, "%d%c%s", ordId, action, b->key);
     short from = action == 'i' ? demand[ordId].fromStand : demand[ordId].toStand;
@@ -113,7 +116,7 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
     // c IN has to have c OUT in level+1, and c IN cannot exist in level + 1
     // c OUT cannot have c OUT in level +1
     boolean outFound = false;
-    Branch *ptr = &node[branch];
+    Branch *ptr = node[branch];
     for (int i = 0; i < ptr->ordNumb; i++) {
       if (ptr->ordIDs[i] == ordId) {
         if (ptr->ordActions[i] == 'i') {
@@ -145,16 +148,32 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
                                 + (demand[ordId].toStand != nextStop ? STOP_WAIT : 0), ptr)
         && (dist(demand[ordId].toStand, nextStop) > MAXANGLEDIST 
            || bearingDiff(stops[demand[ordId].toStand].bearing, stops[nextStop].bearing) < MAXANGLE)
-        ) 
+        )
         storeBranch(thread, 'o', lev, ordId, ptr, inPool);
 }
 
+void *allocMem(void *arguments) {
+  struct arg_struct *ar = arguments;
+  for (int i = 0; i<MAXTHREADMEM; i++)
+    nodeSMP1[ar->i][i] = malloc(sizeof(struct Branch));
+  // two same loops as it seeam to matter for the optimizer
+  for (int i = 0; i<MAXTHREADMEM; i++) {
+    nodeSMP2[ar->i][i] = malloc(sizeof(struct Branch));
+    if (nodeSMP2[ar->i][i] == NULL) printf("malloc failed\n");
+  }
+}
+
+void *deallocMem(void *arguments) {
+  struct arg_struct *ar = arguments;
+  for (int i = 0; i<MAXTHREADMEM; i++) free(nodeSMP1[ar->i][i]);
+  for (int i = 0; i<MAXTHREADMEM; i++) free(nodeSMP2[ar->i][i]);
+}
+
 /// just a loop and calling store_branch...
-void iterate(void *arguments) {
+void *iterate(void *arguments) {
   struct arg_struct *ar = arguments;
   int stop = (ar->i + 1) * ar->chunk;
   if (stop > demandNumb) stop = demandNumb;
-  
   for (int ordId = ar->i * ar->chunk; ordId < stop; ordId++) 
    if (demand[ordId].id != -1) { // not allocated in previous search (inPool+1)
     for (int b = 0; b < nodeSize; b++) 
@@ -164,11 +183,11 @@ void iterate(void *arguments) {
 }
 
 void addLeaf(int id1, int id2, char dir1, int outs, int lev) {
-    if (nodeSize >= MAXNODEMEM) {
+    if (nodeSize >= MAXTHREADMEM) {
       printf("addBranch: allocated mem too low, level: %d\n", lev);
       return;
     }
-    Branch *ptr = &node[nodeSize];
+    Branch *ptr = node[nodeSize];
     int from_stand = dir1 == 'i' ? demand[id1].fromStand : demand[id1].toStand;
     ptr->cost = dist(from_stand, demand[id2].toStand) + (from_stand == demand[id2].toStand ? 0 : STOP_WAIT);
     ptr->outs = outs;
@@ -184,33 +203,34 @@ void addLeaf(int id1, int id2, char dir1, int outs, int lev) {
 /// just two nested loops
 /// a leafe is e.g.: 1out-2out or 1in-1out, the last one must be OUT, 'o'
 void storeLeaves(int lev) {
-    for (int c = 0; c < demandNumb; c++)
-      if (demand[c].id != -1) // assigned in inPool=4 while looking for inPool=3
-        for (int d = 0; d < demandNumb; d++)
-          if (demand[d].id != -1) {
-            // to situations: <1in, 1out>, <1out, 2out>
-            if (c == d) {
-              // 'bearing' checks if stops are in line, it promotes straight paths to avoid unlife solutions
-              // !! we might not check bearing here as they are probably distant stops
-              if (dist(demand[c].fromStand, demand[d].toStand) > MAXANGLEDIST || bearingDiff(stops[demand[c].fromStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)  {
-                // IN and OUT of the same passenger
-                addLeaf(c, d, 'i', 1, lev);
-              }
-            } 
-            // now <1out, 2out>
-            else if (dist(demand[c].toStand, demand[d].toStand)
-                        < dist(demand[d].fromStand, demand[d].toStand) * (100.0 + demand[d].maxLoss) / 100.0
-                    && (dist(demand[c].toStand, demand[d].toStand) > MAXANGLEDIST || bearingDiff(stops[demand[c].toStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)
-            ) {
-              // TASK - this calculation above should be replaced by a redundant value in taxi_order - distance * loss
-              addLeaf(c, d, 'o', 2, lev);
-              /*printf("c=%d d=%d c.id=%d d.id=%d c.to=%d d.from=%d d.to=%d d.loss=%d c.to.bearing=%d d.to.bearing=%d dist_c_d=%d dist_d_d=%d\n",
-                  c, d, demand[c].id, demand[d].id, demand[c].toStand, demand[d].fromStand, demand[d].toStand,
-                  demand[d].maxLoss, stops[demand[c].toStand].bearing, stops[demand[d].toStand].bearing,
-                  dist(demand[c].toStand, demand[d].toStand), dist(demand[d].fromStand, demand[d].toStand));
-                  */
+  nodeSize = 0;
+  for (int c = 0; c < demandNumb; c++)
+    if (demand[c].id != -1) // assigned in inPool=4 while looking for inPool=3
+      for (int d = 0; d < demandNumb; d++)
+        if (demand[d].id != -1) {
+          // to situations: <1in, 1out>, <1out, 2out>
+          if (c == d) {
+            // 'bearing' checks if stops are in line, it promotes straight paths to avoid unlife solutions
+            // !! we might not check bearing here as they are probably distant stops
+            if (dist(demand[c].fromStand, demand[d].toStand) > MAXANGLEDIST || bearingDiff(stops[demand[c].fromStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)  {
+              // IN and OUT of the same passenger
+              addLeaf(c, d, 'i', 1, lev);
             }
+          } 
+          // now <1out, 2out>
+          else if (dist(demand[c].toStand, demand[d].toStand)
+                      < dist(demand[d].fromStand, demand[d].toStand) * (100.0 + demand[d].maxLoss) / 100.0
+                  && (dist(demand[c].toStand, demand[d].toStand) > MAXANGLEDIST || bearingDiff(stops[demand[c].toStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)
+          ) {
+            // TASK - this calculation above should be replaced by a redundant value in taxi_order - distance * loss
+            addLeaf(c, d, 'o', 2, lev);
+            /*printf("c=%d d=%d c.id=%d d.id=%d c.to=%d d.from=%d d.to=%d d.loss=%d c.to.bearing=%d d.to.bearing=%d dist_c_d=%d dist_d_d=%d\n",
+                c, d, demand[c].id, demand[d].id, demand[c].toStand, demand[d].fromStand, demand[d].toStand,
+                demand[d].maxLoss, stops[demand[c].toStand].bearing, stops[demand[d].toStand].bearing,
+                dist(demand[c].toStand, demand[d].toStand), dist(demand[d].fromStand, demand[d].toStand));
+                */
           }
+        }
 }
 
 /// finding all feasible pools - sequences of passengers' pick-ups and drop-offs 
@@ -225,11 +245,19 @@ void storeLeaves(int lev) {
 void dive(int lev, int inPool, int numbThreads) {
   //printf("DIVE, inPool: %d, lev:%d\n", inPool, lev);
   if (lev > inPool + inPool - 3) { // lev >= 2*inPool-2, where -2 are last two levels
+    // leaf level is always an even number
+    // leaves need only one-thread memory
+    memcpy(node, nodeSMP1[0], MAXTHREADMEM * sizeof(Branch *)); // [0] - take pointers from the first thread, storeLeaves is not SMP
     storeLeaves(lev);
-    printf("Node: %d size: %d\n", lev + 1, nodeSize);
+    printf("Node: %d size: %d\n", lev, nodeSize);
     return; // last two levels are "leaves"
   }
   dive(lev + 1, inPool, numbThreads);
+
+  // we have to give some memory to nodeSMP, and not that that was used in the previous level, parity is a good distinction
+  if (lev % 2 == 0) nodeSMP = nodeSMP1; //, NUMBTHREAD * MAXTHREADMEM * sizeof(Branch *));
+  else nodeSMP = nodeSMP2; //, NUMBTHREAD * MAXTHREADMEM * sizeof(Branch *));
+
   int chunk = demandNumb / numbThreads;
   if (chunk == 0) chunk = 1;
   if (numbThreads * chunk < demandNumb) numbThreads++; // last thread will be the reminder of division
@@ -262,7 +290,7 @@ void dive(int lev, int inPool, int numbThreads) {
         printf("dive: allocated mem too low, level: %d\n", lev);
         break;
       }
-      memcpy(&node[idx], nodeSMP[i], nodeSizeSMP[i] * sizeof(Branch));
+      memcpy(node + idx, nodeSMP[i], nodeSizeSMP[i] * sizeof(Branch *));
       idx += nodeSizeSMP[i];
   }
   nodeSize = idx;
@@ -288,9 +316,9 @@ int bearingDiff(int a, int b) {
 }
 
 int compareCost(const void * a, const void * b) {
-  Branch *brA = (Branch *)a;
-  Branch *brB = (Branch *)b;
-  return brA->cost - brB->cost;
+  Branch **brA = (Branch **)a;
+  Branch **brB = (Branch **)b;
+  return (*brA)->cost - (*brB)->cost;
 }
 
 int compareCostDetour(const void * a, const void * b) {
@@ -305,9 +333,8 @@ int compareCostDetour(const void * a, const void * b) {
 
 int countNodeSize(int lev) {
   int count=0;
-  Branch *arr = node;
   for (int i=0; i<nodeSize; i++)
-    if (arr[i].cost != -1 ) count++;
+    if (node[i]->cost != -1 ) count++;
   return count;
 }
 
@@ -351,8 +378,7 @@ void rmDuplicatesAndFindCab(int inPool) {
     int from;
     int distCab;
     int size = nodeSize;
-    Branch *arr = node;
-    register Branch *ptr;
+    Branch *ptr;
     if (nodeSize < 1) return;
 
     // TODO: check if adding distance to nearest cab here would improve results!!!
@@ -366,7 +392,7 @@ void rmDuplicatesAndFindCab(int inPool) {
     */
     // the distance from cab's location matters
     for (int i = 0; i< size; i++) {
-      ptr = arr + i;
+      ptr = node[i];
       if (ptr->cost == -1) continue; // not dropped earlier, but was there any such possibility? TODO: check it
       from = demand[ptr->ordIDs[0]].fromStand;
       cabIdx = findNearestCab(from, countPassengers(ptr));
@@ -377,10 +403,10 @@ void rmDuplicatesAndFindCab(int inPool) {
       }
       ptr->cost += distCab;
     }
-    qsort(arr, size, sizeof(Branch), compareCost);
+    qsort(node, size, sizeof(Branch *), compareCost);
 
     for (int i = 0; i < size; i++) {
-      ptr = arr + i;
+      ptr = node[i];
       if (ptr->cost == -1) continue; // not dropped earlier or (!) later below
       from = demand[ptr->ordIDs[0]].fromStand;
       cabIdx = findNearestCab(from, countPassengers(ptr));
@@ -388,7 +414,7 @@ void rmDuplicatesAndFindCab(int inPool) {
         // mark th rest of pools as dead
         // TASK: why? we won't use this information, node[0] will be garbage-collected
         printf("NO CAB\n");
-        for (int j = i + 1; j < size; j++) arr[j].cost = -1;
+        for (int j = i + 1; j < size; j++) node[j]->cost = -1;
         break;
       } else if (cabIdx == -2) { // there is no cab for so many passengers
         ptr->cost = -1;
@@ -410,8 +436,8 @@ void rmDuplicatesAndFindCab(int inPool) {
         }
         // remove any further duplicates
         for (int j = i + 1; j < size; j++)
-          if (arr[j].cost != -1 && isFound(ptr, arr+j, inPool+inPool-1)) // -1 as last action is always OUT
-            arr[j].cost = -1; // duplicated; we remove an element with greater costs (list is pre-sorted)      
+          if (node[j]->cost != -1 && isFound(ptr, node[j], inPool+inPool-1)) // -1 as last action is always OUT
+            node[j]->cost = -1; // duplicated; we remove an element with greater costs (list is pre-sorted)      
       } else ptr->cost = -1; // constraints not met, mark as unusable
     } 
 }
@@ -517,6 +543,7 @@ void findPool(int inPool, int numbThreads) {
     }
     nodeSize = 0;
     for (int i=0; i<NUMBTHREAD; i++) nodeSizeSMP[i] = 0;
+    printf("Find pool: inPool: %d, threads: %d\n", inPool, numbThreads);
     dive(0, inPool, numbThreads);
 
     rmDuplicatesAndFindCab(inPool);

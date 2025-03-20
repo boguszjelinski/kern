@@ -1,11 +1,12 @@
 use chrono::NaiveDateTime;
+use std::sync::{Mutex, MutexGuard};
 
 pub const MAXSTOPSNUMB : usize = 5200;
 pub const MAXORDERSNUMB: usize = 4000; // max not assigned
 pub const MAXCABSNUMB: usize = 18000;
 pub const MAXBRANCHNUMB: usize = 1000; // size of pool finder's response
 
-pub const MAXINPOOL : usize = 5;
+pub const MAXINPOOL : usize = 4;
 pub const MAXORDID : usize = MAXINPOOL * 2;
 
 #[repr(C)]
@@ -152,9 +153,9 @@ pub struct Branch {
 	pub cost: i16, // the length of the route
 	pub outs: u8, // BYTE, number of OUT nodes, so that we can guarantee enough IN nodes
 	pub ord_numb: i16, // it is in fact ord number *2; length of vectors below - INs & OUTs
-	pub ord_ids : [i32; MAXORDID], // we could get rid of it to gain on memory (key stores this too); but we would lose time on parsing
+	pub ord_ids : [i16; MAXORDID],
 	pub ord_actions: [i8; MAXORDID],
-	pub cab :i32
+	pub cab :i16
 }
 
 impl Branch {
@@ -190,4 +191,54 @@ pub struct KernCfg {
     pub max_pool3_size: i32,
     pub max_pool2_size: i32,
     pub solver_delay: i32,
+}
+
+impl KernCfg {
+    pub const fn new() -> Self {
+        KernCfg { 
+            max_assign_time: 3, // min
+            max_solver_size: 500, // count
+            run_after: 15, // secs
+            max_legs: 8,
+            max_angle: 120,
+            max_angle_dist: 3, 
+            use_pool: true,
+            use_extern_pool: false,
+            use_extender: false,
+            thread_numb: 11,
+            stop_wait: 1,
+            cab_speed: 30,
+            max_pool5_size: 40,
+            max_pool4_size: 130,
+            max_pool3_size: 350,
+            max_pool2_size: 1000,
+            solver_delay: 60,
+        }
+    }
+
+    pub fn access() -> MutexGuard<'static, KernCfg> {
+        static GLOBSTATE: Mutex<KernCfg> = Mutex::new(KernCfg::new());
+        GLOBSTATE.lock().unwrap()
+    }
+
+    pub fn put(val: KernCfg) {
+        let mut s = Self::access();
+        s.max_assign_time = val.max_assign_time; // min
+        s.max_solver_size = val.max_solver_size; // count
+        s.run_after = val.run_after; // secs
+        s.max_legs = val.max_legs;
+        s.max_angle = val.max_angle;
+        s.max_angle_dist = val.max_angle_dist;
+        s.use_pool = val.use_pool;
+        s.use_extern_pool = val.use_extern_pool;
+        s.use_extender = val.use_extender;
+        s.thread_numb = val.thread_numb;
+        s.stop_wait = val.stop_wait;
+        s.cab_speed = val.cab_speed;
+        s.max_pool5_size = val.max_pool5_size;
+        s.max_pool4_size = val.max_pool4_size;
+        s.max_pool3_size = val.max_pool3_size;
+        s.max_pool2_size = val.max_pool2_size;
+        s.solver_delay = val.solver_delay;
+    }
 }

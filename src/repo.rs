@@ -4,31 +4,10 @@ use mysql::prelude::*;
 use chrono::{Local, NaiveDateTime};
 use std::cmp;
 use crate::extender::STOP_WAIT;
-use crate::model::{Branch, Cab, CabAssign, CabStatus, KernCfg, Leg, Order, OrderStatus, RouteStatus, Stop, MAXORDID};
+use crate::model::{Branch, Cab, CabAssign, CabStatus, Leg, Order, OrderStatus, RouteStatus, Stop, MAXINPOOL, MAXORDID};
 use crate::distance::DIST;
 use crate::stats::{STATS, Stat, add_avg_element, update_val, count_average};
 use crate::utils::get_elapsed;
-
-// default config, overwritten by cfg file
-pub static mut CNFG: KernCfg = KernCfg { 
-    max_assign_time: 3, // min
-    max_solver_size: 500, // count
-    run_after: 15, // secs
-    max_legs: 8,
-    max_angle: 120,
-    max_angle_dist: 3, 
-    use_pool: true,
-    use_extern_pool: false,
-    use_extender: false,
-    thread_numb: 8,
-    stop_wait: 1,
-    cab_speed: 30,
-    max_pool5_size: 40,
-    max_pool4_size: 130,
-    max_pool3_size: 350,
-    max_pool2_size: 1000,
-    solver_delay: 60,
-};
 
 pub fn find_orders_by_status_and_time(conn: &mut PooledConn, status: OrderStatus, at_time: NaiveDateTime) -> Vec<Order> {
     let mut ret : Vec<Order> = Vec::new();
@@ -106,6 +85,7 @@ pub fn find_cab_by_status(conn: &mut PooledConn, status: CabStatus) -> Vec<Cab>{
     ).unwrap();
 }
 
+/*
 pub fn get_list_of_free_cabs(conn: &mut PooledConn) -> Vec<i32>{
     let mut ret: Vec<i32> = Vec::new();
     let selected: Result<Vec<Row>>  = conn.query("SELECT id FROM cab WHERE status=1");
@@ -115,6 +95,7 @@ pub fn get_list_of_free_cabs(conn: &mut PooledConn) -> Vec<i32>{
     }
     return ret;
 }
+*/
 
 pub fn find_legs(conn: &mut PooledConn) -> Vec<Leg> {
     let mut ret: Vec<Leg> = Vec::new();
@@ -255,12 +236,12 @@ pub fn update_reserves_in_legs_before_and_including2(route_id: i64, place: i32, 
     return sql;
 }
 
-pub fn assign_pool_to_cab(cab: Cab, orders: &Vec<Order>, pool: Branch, max_route_id: &mut i64, mut max_leg_id: &mut i64) -> String {
+pub fn assign_pool_to_cab(cab: Cab, orders: &Vec<Order>, pool: Branch, max_route_id: &mut i64, mut max_leg_id: &mut i64, stop_wait: i16) -> String {
     let order = orders[pool.ord_ids[0] as usize];
     let mut place = 0;
     let mut eta = 0; // expected time of arrival
     let cab_dist = unsafe { DIST[cab.location as usize][orders[pool.ord_ids[0] as usize].from as usize] };
-    let res = count_reserves(cab_dist, pool, orders);
+    let res = count_reserves(cab_dist, pool, orders, stop_wait);
 
     let mut sql: String = update_cab_add_route(&cab, &order, &mut place, &mut eta, res.0, max_route_id, &mut max_leg_id);
     // legs & routes are assigned to customers in Pool
@@ -302,7 +283,7 @@ fn update_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16
 // count reserves on legs
 // reserves have to obey max_wait and max_loss
 // returnes reserves for legs in Branch as well as in the leg for cab (if needed)
-fn count_reserves(cab_dist: i16, br: Branch, orders: &Vec<Order>) -> (i32, [i32; MAXORDID]) {
+fn count_reserves(cab_dist: i16, br: Branch, orders: &Vec<Order>, stop_wait: i16) -> (i32, [i32; MAXORDID]) {
     // not all "c" values will produce legs below in "assign...", but we will use it as index for values -> res[c]
     let mut res: [i32; MAXORDID] = [16000; MAXORDID]; // we will decreas value
     // first max_wait
@@ -321,12 +302,16 @@ fn count_reserves(cab_dist: i16, br: Branch, orders: &Vec<Order>) -> (i32, [i32;
                 }
             }
         }
+        /*if c > MAXINPOOL * 2 - 1 { // this should never happen: ..(br.ord_numb - 1) should always give max 6
+            warn!("Strange index: {}", c);
+            break;
+        }*/
         let stand1: i32 = if br.ord_actions[c] == 'i' as i8 
                             { orders[br.ord_ids[c] as usize].from } else { orders[br.ord_ids[c] as usize].to };
         let stand2: i32 = if br.ord_actions[c + 1] == 'i' as i8
                           { orders[br.ord_ids[c + 1] as usize].from } else { orders[br.ord_ids[c + 1] as usize ].to };
         if stand1 != stand2 {
-            unsafe { dist += (DIST[stand1 as usize][stand2 as usize] + CNFG.stop_wait) as i32; }
+            unsafe { dist += (DIST[stand1 as usize][stand2 as usize] + stop_wait) as i32; }
         }
     }    
     cab_reserve = res[0]; // "wait" reserve for all legs before last 'i' will be the same, [0] is as good as any of them
@@ -341,7 +326,7 @@ fn count_reserves(cab_dist: i16, br: Branch, orders: &Vec<Order>) -> (i32, [i32;
                 let stand2: i32 = if br.ord_actions[d] == 'i' as i8
                           { orders[br.ord_ids[d] as usize].from } else { orders[br.ord_ids[d] as usize ].to };
                 if stand1 != stand2 {
-                    unsafe { dist +=(DIST[stand1 as usize][stand2 as usize] + CNFG.stop_wait) as i32; }
+                    unsafe { dist +=(DIST[stand1 as usize][stand2 as usize] + stop_wait) as i32; }
                 }
                 if br.ord_actions[d] == 'o' as i8 && br.ord_ids[d] == br.ord_ids[c] {
                     // TODO: this should not be counted each time, store it!!
@@ -585,11 +570,12 @@ fn insert_route(route_id: i64, cab_id: i64) -> String {
 }
 
 // TODO: number of passengers requested
-fn insert_leg(leg_id: i64, route_id: i64, o: &CabAssign, reserve: i32) -> String {
-    let ret = format!("\
+fn insert_leg(_leg_id: i64, route_id: i64, o: &CabAssign, _reserve: i32) -> String {
+    /*let ret = format!("\
     INSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES \
     ({},{},{},{},{},{},{},{},{});\n", leg_id, o.from, o.to, 0, unsafe {DIST[o.from as usize][o.to as usize]}, RouteStatus::ASSIGNED as i32, 
         reserve, route_id, 1);
+    */
     return format!("INSERT INTO route (id, status, cab_id) VALUES ({},{},{});\n", // 0 will be updated soon
                     route_id, RouteStatus::ASSIGNED as i32, o.cab_id).to_string();
 }
@@ -665,8 +651,8 @@ mod tests {
     br.cost = 1;
     br.outs = order_count;
     br.ord_numb = (order_count * 2) as i16;
-    br.ord_ids = [0,1,2,3,4,4,3,2,1,0];
-    br.ord_actions = ['i' as i8, 'i' as i8, 'i' as i8, 'i' as i8, 'i' as i8, 'o' as i8, 'o' as i8, 'o' as i8, 'o' as i8, 'o' as i8,];
+    br.ord_ids = [0,1,2,3,3,2,1,0];
+    br.ord_actions = ['i' as i8, 'i' as i8, 'i' as i8, 'i' as i8, 'o' as i8, 'o' as i8, 'o' as i8, 'o' as i8,];
     br.cab = 0;
     return br;
   }

@@ -13,7 +13,7 @@ use model::{KernCfg, Order, OrderStatus, OrderTransfer, Stop, Cab, CabStatus, Br
             MAXSTOPSNUMB, MAXCABSNUMB, MAXORDERSNUMB, MAXBRANCHNUMB, MAXINPOOL};
 use stats::{Stat,update_max_and_avg_time,update_max_and_avg_stats,incr_val};
 use pool::{orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
-use repo::{CNFG, assign_pool_to_cab, assign_requests_for_free_cabs, run_sql};
+use repo::{assign_pool_to_cab, assign_requests_for_free_cabs, run_sql};
 use extender::{find_matching_routes, get_handle}; // write_sql_to_file
 use utils::get_elapsed;
 use mysql::*;
@@ -24,6 +24,7 @@ use std::ptr::addr_of;
 use std::time::Instant;
 use std::thread;
 use std::env;
+use std::mem;
 use hungarian::minimize;
 use log::{info,warn,debug,error,LevelFilter};
 use log4rs::{
@@ -40,8 +41,11 @@ const MAXLCM : usize = 20000; // !! max number of cabs or orders sent to LCM in 
 const CFG_FILE_DEFAULT: &str = "kern.toml";
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
-    println!("cargo:rustc-link-lib=dynapool121");
-    println!("cargo:rustc-link-arg=--max-memory=15294967296");
+    // cargo rustc --release -- -L /Users/bogusz.jelinski/Rust/kern/pool
+    // RUSTFLAGS='-L /Users/bogusz.jelinski/Rust/kern/pool' cargo build --release
+    //println!("cargo:rustc-link-search=/Users/bogusz.jelinski/Rust/kern/pool");
+    //println!("cargo:rustc-link-lib=static=dynapool");
+    //println!("cargo:rustc-link-arg=--max-memory=20294967296");
     // reading Config
     let mut cfg_file: String = CFG_FILE_DEFAULT.to_string();
 
@@ -65,6 +69,8 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
 
     info!("Database: {db_conn_str}");
     setupcfg(&cfg);
+    let cfig = KernCfg::access();
+
     // init DB
     // 192.168.10.176
     let url: &str = &db_conn_str;
@@ -72,10 +78,10 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
     let mut conn = pool.get_conn()?;
 
     let stops = repo::read_stops(&mut conn);
-    distance::init_distance(&stops);
-
+    distance::init_distance(&stops, cfig.cab_speed);
+    
     unsafe {
-        if CNFG.use_extern_pool {
+        if cfig.use_extern_pool {
             initMem();
         }
     }
@@ -84,20 +90,20 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
     loop {
         let start = Instant::now();
         // get newly requested trips and free cabs, reject expired orders (no luck this time)
-        let tmp_model = prepare_data(&mut conn);
-        
+        let tmp_model = prepare_data(&mut conn, cfig.max_assign_time);
+
         match tmp_model {
             Some(mut x) => { 
-                dispatch(&db_conn_str, &mut conn, &mut x.0, &mut x.1, &stops, unsafe { CNFG.clone() });
+                dispatch(&db_conn_str, &mut conn, &mut x.0, &mut x.1, &stops, *cfig);
             },
             None => {
                 info!("Nothing to do");
             }
         }
         update_max_and_avg_time(Stat::AvgShedulerTime, Stat::MaxShedulerTime, start);
-        unsafe {
+
         // check if we should wait for new orders
-        let mut wait: u64 = CNFG.run_after - start.elapsed().as_secs();
+        let mut wait: u64 = cfig.run_after - start.elapsed().as_secs();
         if wait > 60 {
             // TODO: find the bug!
             warn!("Strange wait time: {}", wait);
@@ -106,52 +112,52 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
         if wait > 0 {
             debug!("Sleeping in {} secs", wait);
             thread::sleep(std::time::Duration::from_secs(wait));
-        }}
+        }
     }
 }
 
 fn setupcfg(cfg: & HashMap<String, String>) {
-    unsafe {
-        CNFG = KernCfg { 
-            max_assign_time: cfg["max_assign_time"].parse().unwrap(),
-            max_solver_size: cfg["max_solver_size"].parse().unwrap(),
-            run_after:       cfg["run_after"].parse().unwrap(),
-            max_legs:        cfg["max_legs"].parse().unwrap(),
-            max_angle:       cfg["max_angle"].parse().unwrap(),
-            max_angle_dist:  cfg["max_angle_dist"].parse().unwrap(),
-            use_pool:        cfg["use_pool"].parse::<bool>().unwrap(),
-            use_extern_pool: cfg["use_extern_pool"].parse::<bool>().unwrap(),
-            use_extender:    cfg["use_extender"].parse::<bool>().unwrap(),
-            thread_numb:     cfg["thread_numb"].parse().unwrap(),
-            stop_wait:       cfg["stop_wait"].parse().unwrap(),
-            cab_speed:       cfg["cab_speed"].parse().unwrap(),
-            max_pool5_size:  cfg["max_pool5_size"].parse().unwrap(),
-            max_pool4_size:  cfg["max_pool4_size"].parse().unwrap(),
-            max_pool3_size:  cfg["max_pool3_size"].parse().unwrap(),
-            max_pool2_size:  cfg["max_pool2_size"].parse().unwrap(),
-            solver_delay: cfg["solver_delay"].parse().unwrap(),
-        };
-    }
+    let mut c: KernCfg = KernCfg::new();
+    c.max_assign_time = cfg["max_assign_time"].parse().unwrap();
+    c.max_solver_size = cfg["max_solver_size"].parse().unwrap();
+    c.run_after      = cfg["run_after"].parse().unwrap();
+    c.max_legs       = cfg["max_legs"].parse().unwrap();
+    c.max_angle      = cfg["max_angle"].parse().unwrap();
+    c.max_angle_dist = cfg["max_angle_dist"].parse().unwrap();
+    c.use_pool       = cfg["use_pool"].parse::<bool>().unwrap();
+    c.use_extern_pool= cfg["use_extern_pool"].parse::<bool>().unwrap();
+    c.use_extender   = cfg["use_extender"].parse::<bool>().unwrap();
+    c.thread_numb    = cfg["thread_numb"].parse().unwrap();
+    c.stop_wait      = cfg["stop_wait"].parse().unwrap();
+    c.cab_speed      = cfg["cab_speed"].parse().unwrap();
+    c.max_pool5_size = cfg["max_pool5_size"].parse().unwrap();
+    c.max_pool4_size = cfg["max_pool4_size"].parse().unwrap();
+    c.max_pool3_size = cfg["max_pool3_size"].parse().unwrap();
+    c.max_pool2_size = cfg["max_pool2_size"].parse().unwrap();
+    c.max_pool2_size = cfg["max_pool2_size"].parse().unwrap();
+    c.solver_delay =cfg["solver_delay"].parse().unwrap();
+
+    KernCfg::put(c);
+
     setup_logger(cfg["log_file"].clone());
-    unsafe { info!("Starting up with config:"); 
-        info!("max_assign_time: {}", CNFG.max_assign_time);
-        info!("max_solver_size: {}", CNFG.max_solver_size);
-        info!("run_after: {}", CNFG.run_after);
-        info!("max_legs: {}", CNFG.max_legs);
-        info!("max_angle: {}", CNFG.max_angle);
-        info!("max_angle_dist: {}", CNFG.max_angle_dist);
-        info!("use_pool: {}", CNFG.use_pool);
-        info!("use_extern_pool: {}", CNFG.use_extern_pool);
-        info!("use_extender: {}", CNFG.use_extender);
-        info!("thread_numb: {}", CNFG.thread_numb);
-        info!("stop_wait: {}", CNFG.stop_wait);
-        info!("cab_speed: {}", CNFG.cab_speed);
-        info!("pool5_size: {}", CNFG.max_pool5_size);
-        info!("pool4_size: {}", CNFG.max_pool4_size);
-        info!("pool3_size: {}", CNFG.max_pool3_size);
-        info!("pool2_size: {}", CNFG.max_pool2_size);
-        info!("solver_delay: {}", CNFG.solver_delay);
-    }
+    info!("Starting up with config:"); 
+    info!("max_assign_time: {}", c.max_assign_time);
+    info!("max_solver_size: {}", c.max_solver_size);
+    info!("run_after: {}", c.run_after);
+    info!("max_legs: {}", c.max_legs);
+    info!("max_angle: {}", c.max_angle);
+    info!("max_angle_dist: {}", c.max_angle_dist);
+    info!("use_pool: {}", c.use_pool);
+    info!("use_extern_pool: {}", c.use_extern_pool);
+    info!("use_extender: {}", c.use_extender);
+    info!("thread_numb: {}", c.thread_numb);
+    info!("stop_wait: {}", c.stop_wait);
+    info!("cab_speed: {}", c.cab_speed);
+    info!("pool5_size: {}", c.max_pool5_size);
+    info!("pool4_size: {}", c.max_pool4_size);
+    info!("pool3_size: {}", c.max_pool3_size);
+    info!("pool2_size: {}", c.max_pool2_size);
+    info!("solver_delay: {}", c.solver_delay);
 }
 
 fn setup_logger(file_path: String) {
@@ -189,9 +195,9 @@ fn setup_logger(file_path: String) {
     let _handle = log4rs::init_config(config);
 }
 
-#[link(name = "dynapool121")]
-extern "C" {
-    fn dynapool(
+#[link(name = "dynapool")]
+unsafe extern "C" {
+    unsafe fn dynapool(
 		numbThreads: i32,
         poolsize: &[i32; MAXINPOOL - 1], // max sizes
 		distance: *const [[i16; 5200]; 5200], 
@@ -208,7 +214,7 @@ extern "C" {
         pooltime: &mut [i32; MAXINPOOL - 1] // performance statistics
     );
 
-    fn c_lcm(
+    unsafe fn c_lcm(
         distance: *const [[i16; 5200]; 5200],
         distSize: i32,
         orders: &[OrderTransfer; MAXORDERSNUMB],
@@ -221,7 +227,7 @@ extern "C" {
         count: &mut i32 // returned count of values
     );
     
-    fn initMem();
+    unsafe fn initMem();
 }
 
 fn run_extender(conn: &mut PooledConn, orders: &Vec<Order>, stops: &Vec<Stop>, 
@@ -229,8 +235,7 @@ fn run_extender(conn: &mut PooledConn, orders: &Vec<Order>, stops: &Vec<Stop>,
     let len_before = orders.len();
     if cfg.use_extender {
         let start_extender = Instant::now();
-        let demand 
-            = find_matching_routes(conn, orders, &stops, max_leg_id);
+        let demand = find_matching_routes(conn, orders, &stops, max_leg_id, cfg);
         update_max_and_avg_time(Stat::AvgExtenderTime, Stat::MaxExtenderTime, start_extender);
         let len_after = demand.len();
         if len_before != len_after {
@@ -276,9 +281,9 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
         let sql: String;
         // 2 versions available - in C (external) and Rust
         if cfg.use_extern_pool {
-            (pl, sql) = find_external_pool(&mut demand, cabs, stops, cfg.thread_numb, &mut max_route_id, &mut max_leg_id);
+            (pl, sql) = find_external_pool(&mut demand, cabs, stops, cfg.thread_numb, &mut max_route_id, &mut max_leg_id, cfg);
         } else {
-            (pl, sql) = find_internal_pool(&mut demand, cabs, stops, &mut max_route_id, &mut max_leg_id);
+            (pl, sql) = find_internal_pool(&mut demand, cabs, stops, &mut max_route_id, &mut max_leg_id, cfg);
         }
         update_max_and_avg_time(Stat::AvgPoolTime, Stat::MaxPoolTime, start_pool);
         //write_sql_to_file(itr, &sql, "pool");
@@ -298,7 +303,7 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
 
     // we don't want to run run solver each time, once a minute is fine, these are som trouble-making customers :)
 
-    demand = get_old_orders(&demand);
+    demand = get_old_orders(&demand, cfg.solver_delay);
 
     if demand.len() > 0 {
         // shrinking vectors, getting rid of .id == -1 and (TODO) distant orders and cabs !!!!!!!!!!!!!!!
@@ -314,8 +319,7 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
         }
         // LCM presolver
         let mut lcm_handle = thread::spawn(|| { });
-        unsafe {
-        if demand.len() > CNFG.max_solver_size && cabs.len() > CNFG.max_solver_size {
+        if demand.len() > cfg.max_solver_size && cabs.len() > cfg.max_solver_size {
             // too big to send to solver, it has to be cut by LCM
             // first just kill the default thread
             info!("LCM input: demand={}, supply={}", demand.len(), cabs.len());
@@ -324,11 +328,11 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
             let cabs_len = cabs.len();
             let ord_len = orders.len();
             lcm_handle = lcm(host, &mut cabs, &mut demand, &mut max_route_id, &mut max_leg_id, 
-                    std::cmp::min(ord_len, cabs_len) as i16 - CNFG.max_solver_size as i16);
+                    std::cmp::min(ord_len, cabs_len) as i16 - cfg.max_solver_size as i16);
             update_max_and_avg_time(Stat::AvgLcmTime, Stat::MaxLcmTime, start_lcm);
             incr_val(Stat::TotalLcmUsed);
             (*cabs, demand) = shrink(&cabs, demand);
-        }}
+        }
         // SOLVER
         let start_solver = Instant::now();
         info!("Solver input - demand={}, supply={}", demand.len(), cabs.len());
@@ -384,65 +388,13 @@ fn extern_lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i
         &mut demand,
         &mut count
     );}
+    
     let mut pairs: Vec<(i16,i16)> = vec![];
     for i in 0..count as usize {
         pairs.push((supply[i], demand[i]));
     }
     return pairs;
 }
-
-
-fn lcm_gen_pairs2(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i16)> {
-    // let us start with a big cost - is there any smaller?
-let big_cost: i32 = 1000000;
-let mut cabs_cpy = cabs.to_vec(); // clone
-let mut orders_cpy = orders.to_vec();
-let mut lcm_min_val;
-let mut pairs: Vec<(i16,i16)> = vec![];
-for _ in 0..how_many { // we need to repeat the search (cut off rows/columns) 'howMany' times
-    lcm_min_val = big_cost;
-    let mut smin: i16 = -1;
-    let mut dmin: i16 = -1;
-    // now find the minimal element in the whole matrix
-    unsafe {
-    let mut s: usize = 0;
-    let mut found = false;
-    for cab in cabs_cpy.iter() {
-        if cab.id == -1 {
-            s += 1;
-            continue;
-        }
-        let mut d: usize = 0;
-        for order in orders_cpy.iter() {
-            if order.id != -1 && (distance::DIST[cab.location as usize][order.from as usize] as i32) < lcm_min_val {
-                lcm_min_val = distance::DIST[cab.location as usize][order.from as usize] as i32;
-                smin = s as i16;
-                dmin = d as i16;
-                if lcm_min_val == 0 { // you can't have a better solution
-                    found = true;
-                    break;
-                }
-            }
-            d += 1;
-        }
-        if found {
-            break; // yes, we could have loop labels and break two of them here, but this is for migration to C
-        }
-        s += 1;
-    }}
-    if lcm_min_val == big_cost {
-        info!("LCM minimal cost is big_cost - no more interesting stuff here");
-        break;
-    }
-    // binding cab to the customer order
-    pairs.push((smin, dmin));
-    // removing the "columns" and "rows" from a virtual matrix
-    cabs_cpy[smin as usize].id = -1;
-    orders_cpy[dmin as usize].id = -1;
-}
-return pairs;
-}
-
 
 // remove orders and cabs allocated by the pool so that the vectors can be sent to solver
 fn shrink(cabs: &Vec<Cab>, orders: Vec<Order>) -> (Vec<Cab>, Vec<Order>) {
@@ -458,10 +410,10 @@ fn shrink(cabs: &Vec<Cab>, orders: Vec<Order>) -> (Vec<Cab>, Vec<Order>) {
     return (new_cabs, new_orders);
 }
 
-fn get_old_orders(orders: &Vec<Order>) -> Vec<Order> {
+fn get_old_orders(orders: &Vec<Order>, solver_delay: i32) -> Vec<Order> {
     let mut new_orders: Vec<Order> = vec![];
     for o in orders.iter() { 
-        if get_elapsed(o.received) > unsafe { CNFG.solver_delay as i64 } { 
+        if get_elapsed(o.received) > solver_delay as i64 { 
             new_orders.push(*o); 
         }
     }
@@ -491,18 +443,19 @@ fn count_orders(pl: Vec<Branch>, orders: &Vec<Order>) -> i32 {
 }
 
 fn find_internal_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<Stop>, 
-                    max_route_id: &mut i64, max_leg_id: &mut i64) -> (Vec<Branch>, String) {
+                    max_route_id: &mut i64, max_leg_id: &mut i64, cfg: KernCfg) -> (Vec<Branch>, String) {
     let mut pl: Vec<Branch> = Vec::new();  
     let mut sql: String = String::from("");
 
     for p in (2..6).rev() { //5,4,3,2
-        if (p == 5 && demand.len() < unsafe { (CNFG.max_pool5_size) as usize } ) || // 5: TODO: check if it works!!
-            (p == 4 && demand.len() < unsafe { (CNFG.max_pool4_size) as usize }) ||
-            (p == 3 && demand.len() < unsafe { (CNFG.max_pool3_size) as usize }) ||
-            (p == 2 && demand.len() < unsafe { (CNFG.max_pool2_size) as usize }) {
+        if (p == 5 && demand.len() < (cfg.max_pool5_size) as usize ) || // 5: TODO: check if it works!!
+            (p == 4 && demand.len() < (cfg.max_pool4_size) as usize ) ||
+            (p == 3 && demand.len() < (cfg.max_pool3_size) as usize ) ||
+            (p == 2 && demand.len() < (cfg.max_pool2_size) as usize ) {
             let now = Instant::now();
-            let mut ret = find_pool(p, unsafe { CNFG.thread_numb } as i16,
-                                                            demand,  cabs, &stops, max_route_id, max_leg_id);
+            let mut ret = find_pool(p, cfg.thread_numb as i16,
+                                                            demand,  cabs, &stops, max_route_id, max_leg_id,
+                                                            cfg.max_angle, cfg.stop_wait);
             print!("Pool with {}, found pools: {}\n", p, ret.0.len());
             info!("Pool with {}, found pools: {}\n", p, ret.0.len());
             let el = now.elapsed().as_secs() as i64;
@@ -525,9 +478,79 @@ fn find_internal_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
     return (pl, sql);
 }
 
+// if fail then dump input and output
+fn validate_answer(br: &[Branch; MAXBRANCHNUMB], cnt: &i32, demand_size: usize, cabs: &Vec<Cab>) {
+    let mut fail_found: bool = false;
+    for i in 0 .. *cnt as usize {
+        fail_found = false;
+        if br[i].ord_numb > MAXINPOOL as i16 * 2 || br[i].ord_numb < 0 {
+            warn!("ord_numb > {}", MAXINPOOL * 2);
+            fail_found = true;
+            break;
+        }
+        let mut in_count = 0;
+        let mut out_count = 0;
+        for j in 0 .. br[i].ord_numb as usize{
+            if br[i].ord_ids[j] >= demand_size as i16 {
+                warn!("ord_ids >= demandSize, id: {}, size: {}", br[i].ord_ids[j], demand_size);
+                fail_found = true;
+                break;
+            }
+            // last stop cannot be 'i'
+            if (j == (br[i].ord_numb - 1) as usize) && br[i].ord_actions[j] == 'i' as i8 {
+                warn!("last stop is 'i'");
+                fail_found = true;
+                break;
+            }
+            if br[i].ord_actions[j] == 'i' as i8 {
+                in_count += 1;
+                // every in has its out
+                let mut found_out = false;
+                for k in j + 1 .. br[i].ord_numb as usize {
+                    if br[i].ord_actions[k] == 'o' as i8 
+                        && br[i].ord_ids[k] == br[i].ord_ids[j] {
+                            found_out = true;
+                            break;
+                        }
+                }
+                if !found_out {
+                    warn!("OUT not found");
+                    fail_found = true;
+                    break;
+                }
+            }
+            if br[i].ord_actions[j] == 'o' as i8 {
+                out_count += 1;
+            }
+        }
+        if fail_found { // go out of outer loop
+            break;
+        }
+        if in_count != br[i].ord_numb / 2 {
+            warn!("in_count: {}, ord_numb: {}", in_count, br[i].ord_numb);
+            fail_found = true;
+            break;
+        }
+        if out_count != br[i].ord_numb / 2 {
+            warn!("out_count: {}, ord_numb: {}", out_count, br[i].ord_numb);
+            fail_found = true;
+            break;
+        }
+        // cab on the list
+        if br[i].cab >= cabs.len() as i16 {
+            warn!("Cab index {} higher than list.len {}", br[i].cab, cabs.len());
+            fail_found = true;
+            break;
+        }
+    }
+    if fail_found { // dump input
+        panic!("Pool corrupt");
+    } 
+}
+
 // calling a C routine
 fn find_external_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<Stop>, threads: i32,
-                      max_route_id: &mut i64, max_leg_id: &mut i64) -> (Vec<Branch>, String) {
+                      max_route_id: &mut i64, max_leg_id: &mut i64, cfg: KernCfg) -> (Vec<Branch>, String) {
     let mut ret: Vec<Branch> = Vec::new();  
     if demand.len() > MAXORDERSNUMB || cabs.len() > MAXCABSNUMB {
         error!("Demand or supply too big, accordingly {} and {}", demand.len(), cabs.len());
@@ -538,12 +561,17 @@ fn find_external_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
     let mut cnt: i32 = 0;
     let mut poolsize = [0; MAXINPOOL as usize - 1];
     let mut pooltime = [0; MAXINPOOL as usize - 1];
-    
+    info!("Size of Branch: {}", mem::size_of::<Branch>());
     unsafe {
-        poolsize[0] = CNFG.max_pool5_size;
+        /*poolsize[0] = CNFG.max_pool5_size;
         poolsize[1] = CNFG.max_pool4_size;
         poolsize[2] = CNFG.max_pool3_size;
         poolsize[3] = CNFG.max_pool2_size;
+        */
+        poolsize[0] = cfg.max_pool4_size;
+        poolsize[1] = cfg.max_pool3_size;
+        poolsize[2] = cfg.max_pool2_size;
+
         dynapool(
             threads,
             &poolsize,
@@ -561,27 +589,35 @@ fn find_external_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
             &mut pooltime
         );
     }
+    validate_answer(&br, &cnt, demand.len(), cabs);
     update_max_and_avg_stats(Stat::AvgPool5Time, Stat::MaxPool5Time, pooltime[0] as i64);
     update_max_and_avg_stats(Stat::AvgPool4Time, Stat::MaxPool4Time, pooltime[1] as i64);
     update_max_and_avg_stats(Stat::AvgPool3Time, Stat::MaxPool3Time, pooltime[2] as i64);
-  /*  for i in 0 .. cnt as usize {
+
+    /*
+    info!("CNT: {}", cnt);
+    info!("BR0: {}", br[0].ord_numb);
+    info!("BR1: {}", br[1].ord_numb);
+    for i in 0 .. cnt as usize {
         let mut str: String = String::from("");
         str += &format!("{}: cost={}, outs={}, ordNumb={}, cab={},(", i, br[i].cost, br[i].outs, br[i].ord_numb, br[i].cab);
         for j in 0.. br[i].ord_numb {
-            str += &format!("{}{},", br[i].ord_ids[j as usize], br[i].ord_actions[j as usize]);
+            str += &format!("{}:{},", br[i].ord_ids[j as usize], br[i].ord_actions[j as usize]);
         }
         str += &format!(")\n");
         info!("{}", str);
     }
-*/
+        */
+
     // generate SQL
     let mut sql: String = String::from("");
     'outer: for i in 0 .. cnt as usize {
         // first two quality checks
-        if br[i].cab == -1 || br[i].cab >= cabs.len() as i32 {
+        if br[i].cab == -1 || br[i].cab >= cabs.len() as i16 {
             error!("Wrong cab index: {}, array len: {}, array index: {}", br[i].cab, cnt, i);
             continue;
         }
+        //print!("{}: ", br[i].ord_numb);
         for c in 0 .. br[i].ord_numb as usize {
             if br[i].ord_ids[c] < 0 || br[i].ord_ids[c] as usize > MAXORDERSNUMB {
                 error!("Wrong order index: {}", br[i].ord_ids[c]);
@@ -599,7 +635,7 @@ fn find_external_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
         }
         }*/
         ret.push(br[i]); // just convert to vec
-        sql += &assign_pool_to_cab(cabs[br[i].cab as usize], demand, br[i], max_route_id, max_leg_id);
+        sql += &assign_pool_to_cab(cabs[br[i].cab as usize], demand, br[i], max_route_id, max_leg_id, cfg.stop_wait);
         // remove the cab from list so that it cannot be allocated twice, by LCM or Munkres
         cabs[br[i].cab as usize].id = -1;
         // mark orders as assigned too
@@ -643,7 +679,7 @@ fn wait_constraints_met(el: &Branch, dist_cab: i16, orders: &Vec<Order>) -> bool
 // 2) expire old orders
 // 3) some orders and cabs are too distant, although som cabs may end their last legs soon
 // TODO: cabs on last leg should be considered
-fn prepare_data(conn: &mut PooledConn) -> Option<(Vec<Order>, Vec<Cab>)> {
+fn prepare_data(conn: &mut PooledConn, max_assign_time: i64) -> Option<(Vec<Order>, Vec<Cab>)> {
     let mut orders = repo::find_orders_by_status_and_time(
                 conn, OrderStatus::RECEIVED , (Local::now() - Duration::minutes(5)).naive_local());
     if orders.len() == 0 {
@@ -652,7 +688,7 @@ fn prepare_data(conn: &mut PooledConn) -> Option<(Vec<Order>, Vec<Cab>)> {
     }
     info!("Orders before expiry check, input: {}", orders.len());
     
-    orders = expire_orders(conn, &orders);
+    orders = expire_orders(conn, &orders, max_assign_time);
     if orders.len() == 0 {
         info!("No demand, expired");
         return None;
@@ -677,7 +713,7 @@ fn prepare_data(conn: &mut PooledConn) -> Option<(Vec<Order>, Vec<Cab>)> {
 }
 
 // TODO: bulk update
-fn expire_orders(conn: &mut PooledConn, demand: &Vec<Order>) -> Vec<Order> {
+fn expire_orders(conn: &mut PooledConn, demand: &Vec<Order>, max_assign_time: i64) -> Vec<Order> {
     let mut ret: Vec<Order> = Vec::new();
     let mut ids: String = "".to_string();
     for o in demand.iter() {
@@ -686,13 +722,13 @@ fn expire_orders(conn: &mut PooledConn, demand: &Vec<Order>) -> Vec<Order> {
       //}
         let minutes_rcvd = get_elapsed(o.received)/60;
         let minutes_at : i64 = get_elapsed(o.at_time)/60;
-        unsafe {
-        if (minutes_at == -1 && minutes_rcvd > CNFG.max_assign_time)
-                    || (minutes_at != -1 && minutes_at > CNFG.max_assign_time) {
+        
+        if (minutes_at == -1 && minutes_rcvd > max_assign_time)
+                    || (minutes_at != -1 && minutes_at > max_assign_time) {
             ids = ids + &o.id.to_string() + &",".to_string();
         } else {
             ret.push(*o);
-        }}
+        }
     }
     if ids.len() > 0 {
         let sql = ids[0..ids.len() - 1].to_string(); // remove last comma
@@ -764,8 +800,8 @@ fn munkres(cabs: &Vec<Cab>, orders: &Vec<Order>) -> Vec<i16> {
 mod tests {
   use std::vec;
   use super::*;
-  use chrono::format::InternalNumeric;
-use serial_test::serial;
+  //use chrono::format::InternalNumeric;
+  use serial_test::serial;
   use crate::distance::init_distance;
   use distance::DIST;
 
@@ -857,9 +893,10 @@ use serial_test::serial;
     let mut orders: Vec<Order> = test_orders();
     let mut cabs: Vec<Cab> = test_cabs();
     let stops = test_stops();
-    init_distance(&stops);
+    init_distance(&stops, 30);
     unsafe { initMem(); }
-    let ret = find_external_pool(&mut orders, &mut cabs, &stops, 1_i32, &mut 0, &mut 0);
+    let ret = find_external_pool(&mut orders, &mut cabs, &stops, 1_i32,
+                                                         &mut 0, &mut 0, KernCfg::new());
     assert_eq!(ret.0.len(), 1); 
     /*assert_eq!(ret.1, 
         "UPDATE cab SET status=0 WHERE id=0;\n\
@@ -912,14 +949,16 @@ use serial_test::serial;
   #[serial]
   fn test_performance_find_extern_pool() {
     let stops = get_stops(0.03, 49);
-    init_distance(&stops);
-    let mut orders: Vec<Order> = get_orders(60, 49);
+    init_distance(&stops, 30);
+    let mut orders: Vec<Order> = get_orders(100, 49);
     let mut cabs: Vec<Cab> = get_cabs(1000);
     unsafe { initMem(); }
     let start = Instant::now();
-    let ret = find_external_pool(&mut orders, &mut cabs, &stops, 8_i32, &mut 0, &mut 0);
+    let ret = find_external_pool(&mut orders, &mut cabs, &stops, 8_i32, 
+                                                        &mut 0, &mut 0, KernCfg::new());
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
+    println!("Len: {}", ret.1.len()); 
     assert_eq!(ret.0.len(), 15); 
     assert_eq!(ret.1.len(), 18127); // TODO: Rust gives 21444
   }
@@ -928,11 +967,12 @@ use serial_test::serial;
   #[serial]
   fn test_performance_find_intern_pool() {
     let stops = get_stops(0.03, 49);
-    init_distance(&stops);
-    let mut orders: Vec<Order> = get_orders(60, 49);
+    init_distance(&stops, 30);
+    let mut orders: Vec<Order> = get_orders(100, 49);
     let mut cabs: Vec<Cab> = get_cabs(1000);
     let start = Instant::now();
-    let ret = find_internal_pool(&mut orders, &mut cabs, &stops, &mut 0, &mut 0);
+    let ret = find_internal_pool(&mut orders, &mut cabs, &stops, 
+                                                    &mut 0, &mut 0, KernCfg::new());
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(ret.0.len(), 15); 
@@ -945,12 +985,15 @@ use serial_test::serial;
     let mut max_route_id : i64 = 0;
     let mut max_leg_id : i64 = 0;
     let stops = get_stops(0.05, 49);
-    init_distance(&stops);
-    let mut demand: Vec<Order> = get_orders(50, 49);
+    init_distance(&stops, 30);
+    let mut demand: Vec<Order> = get_orders(100, 49);
     let mut cabs = get_cabs(1000);
     unsafe { initMem(); }
     let start = Instant::now();
-    let ret = find_pool(4, 8, &mut demand,  &mut cabs, &stops, &mut max_route_id, &mut max_leg_id);
+    let cfg = KernCfg::new();
+    let ret = find_pool(4, 8, &mut demand,  &mut cabs, &stops, 
+                                                &mut max_route_id, &mut max_leg_id, 
+                                                cfg.max_angle, cfg.stop_wait);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(ret.0.len() > 0, false); 
@@ -960,12 +1003,13 @@ use serial_test::serial;
   #[serial]
   fn test_performance_find_extern_pool5() {
     let stops = get_stops(0.01, 49);
-    init_distance(&stops);
+    init_distance(&stops, 30);
     let mut orders: Vec<Order> = get_orders(10, 49);
     let mut cabs: Vec<Cab> = get_cabs(1000);
     unsafe { initMem(); }
     let start = Instant::now();
-    let ret = find_external_pool(&mut orders, &mut cabs, &stops, 8_i32, &mut 0, &mut 0);
+    let ret = find_external_pool(&mut orders, &mut cabs, &stops, 8_i32, 
+                                                        &mut 0, &mut 0, KernCfg::new());
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(ret.0.len(), 2); 
@@ -976,7 +1020,7 @@ use serial_test::serial;
   #[serial]
   fn test_performance_lcm() {
     let stops = get_stops(0.05, 49);
-    init_distance(&stops);
+    init_distance(&stops, 30);
     let mut orders: Vec<Order> = get_orders(2000, 49);
     let mut cabs: Vec<Cab> = get_cabs(2000);
     //let ret = lcm_gen_pairs(&mut cabs, &mut orders, 100);
@@ -989,6 +1033,59 @@ use serial_test::serial;
     // assert_eq!(ret2[1].0, 902);
     // assert_eq!(ret2[1].1, 1498);
   } 
+
+  
+fn lcm_gen_pairs2(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i16)> {
+    // let us start with a big cost - is there any smaller?
+    let big_cost: i32 = 1000000;
+    let mut cabs_cpy = cabs.to_vec(); // clone
+    let mut orders_cpy = orders.to_vec();
+    let mut lcm_min_val;
+    let mut pairs: Vec<(i16,i16)> = vec![];
+    for _ in 0..how_many { // we need to repeat the search (cut off rows/columns) 'howMany' times
+        lcm_min_val = big_cost;
+        let mut smin: i16 = -1;
+        let mut dmin: i16 = -1;
+        // now find the minimal element in the whole matrix
+        unsafe {
+        let mut s: usize = 0;
+        let mut found = false;
+        for cab in cabs_cpy.iter() {
+            if cab.id == -1 {
+                s += 1;
+                continue;
+            }
+            let mut d: usize = 0;
+            for order in orders_cpy.iter() {
+                if order.id != -1 && (distance::DIST[cab.location as usize][order.from as usize] as i32) < lcm_min_val {
+                    lcm_min_val = distance::DIST[cab.location as usize][order.from as usize] as i32;
+                    smin = s as i16;
+                    dmin = d as i16;
+                    if lcm_min_val == 0 { // you can't have a better solution
+                        found = true;
+                        break;
+                    }
+                }
+                d += 1;
+            }
+            if found {
+                break; // yes, we could have loop labels and break two of them here, but this is for migration to C
+            }
+            s += 1;
+        }}
+        if lcm_min_val == big_cost {
+            info!("LCM minimal cost is big_cost - no more interesting stuff here");
+            break;
+        }
+        // binding cab to the customer order
+        pairs.push((smin, dmin));
+        // removing the "columns" and "rows" from a virtual matrix
+        cabs_cpy[smin as usize].id = -1;
+        orders_cpy[dmin as usize].id = -1;
+    }
+    return pairs;
+}
+
 
   #[test]
   fn a() {

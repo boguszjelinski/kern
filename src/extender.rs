@@ -12,11 +12,11 @@ use log::{info, warn, debug};
 //use postgres::{Client, NoTls};
 use mysql::*;
 use mysql::prelude::*;
-use crate::model::{ Order, OrderStatus, Stop, Leg, RouteStatus};
+use crate::model::{ KernCfg, Leg, Order, OrderStatus, RouteStatus, Stop};
 use crate::repo::{find_legs, assign_order_find_cab, create_leg, update_leg_a_bit2, update_reserves_in_legs_before_and_including,
                   update_reserves_in_legs_before_and_including2,
                   update_place_in_legs_after, update_passengers_and_reserve_in_legs_between, update_reserve_after,
-                  find_orders_by_status_and_time, CNFG};
+                  find_orders_by_status_and_time};
 use crate::distance::DIST;
 use crate::utils::get_elapsed;
 
@@ -45,7 +45,7 @@ pub fn bearing_diff(a: i32, b: i32 ) -> f32 {
   return r.abs();
 }
 
-pub fn find_matching_routes(conn: &mut PooledConn, demand: &Vec<Order>, stops: &Vec<Stop>, max_leg_id: &mut i64) 
+pub fn find_matching_routes(conn: &mut PooledConn, demand: &Vec<Order>, stops: &Vec<Stop>, max_leg_id: &mut i64, cfg: &KernCfg) 
                             -> Vec<Order> {
     if demand.len() == 0 {
         return Vec::new();
@@ -64,7 +64,7 @@ pub fn find_matching_routes(conn: &mut PooledConn, demand: &Vec<Order>, stops: &
       let ass_orders_map = assigned_orders(&ass_orders);
 
       let (mut ret_part, missed, sql)
-        = extend_routes(&demand_cpy, &ass_orders_map, stops, &mut legs, max_leg_id);
+        = extend_routes(&demand_cpy, &ass_orders_map, stops, &mut legs, max_leg_id, cfg);
         
       // EXECUTE SQL !!
       //write_sql_to_file(itr, &sql_bulk, "extender");
@@ -140,8 +140,8 @@ pub fn assigned_orders(assigned_orders: &Vec<Order>) -> HashMap<i64, Vec<Order>>
 // 1) orders that can go to pool finder because they did not match anything in routes 
 // 2) orders than cannot go to pool finder because they perfectly match a route - a duplicate that needs another iteration
 // 3) sql to be run 
-fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>, stops: &Vec<Stop>, legs: &mut Vec<Leg>, max_leg_id: &mut i64,
-                ) -> (Vec<Order>, Vec<Order>, String) {
+fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>, stops: &Vec<Stop>, legs: &mut Vec<Leg>, 
+                max_leg_id: &mut i64, cfg: &KernCfg) -> (Vec<Order>, Vec<Order>, String) {
   let mut t_numb = 10; // mut: there might be one more thread, rest of division
 	let leg_count: HashMap<i64, i8> = count_legs(legs);
   
@@ -160,8 +160,9 @@ fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>
     let stops_cpy = stops.to_vec();
     let leg_count_cpy = leg_count.clone();
     let old_orders = assigned_orders.clone();
-    children.push(thread::spawn(move || {  
-      iterate(part, &legs_cpy, &stops_cpy, &leg_count_cpy, &old_orders)
+    let c = cfg.clone();
+    children.push(thread::spawn(move || {
+      iterate(part, &legs_cpy, &stops_cpy, &leg_count_cpy, &old_orders, &c)
     }));
   }
   // collect the data from threads, join their execution first
@@ -205,11 +206,11 @@ fn extend_routes(orders: &Vec<Order>, assigned_orders: &HashMap<i64, Vec<Order>>
   return (missed_orders_for_pool, missed_orders, sql);
 }
 
-fn iterate(orders: Vec<Order>, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &HashMap<i64, i8>, assigned_orders: &HashMap<i64, Vec<Order>>) 
-            -> Vec<LegIndicesWithDistance2> {
+fn iterate(orders: Vec<Order>, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &HashMap<i64, i8>, 
+            assigned_orders: &HashMap<i64, Vec<Order>>, cfg: &KernCfg) -> Vec<LegIndicesWithDistance2> {
   let mut ret : Vec<LegIndicesWithDistance2> = Vec::new();
   for o in orders {
-    match find_route(&o, legs, stops, leg_count, assigned_orders) {
+    match find_route(&o, legs, stops, leg_count, assigned_orders, cfg) {
       Some(x) => { ret.push(x); },
       None => {}
     }
@@ -217,16 +218,16 @@ fn iterate(orders: Vec<Order>, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &H
   return ret;
 }
 
-fn leg_is_short(val: Option<&i8>) -> bool {
+fn leg_is_short(val: Option<&i8>, max_legs: i8) -> bool {
   match val {
-    Some(x) => { *x <= unsafe { CNFG.max_legs } },
+    Some(x) => { *x <= max_legs },
     None => { true }
   }
 }
 
 // iterate over all existing routes and find the one that will be least distracted (additional path is shortest)
 fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &HashMap<i64, i8>,
-              assigned_orders: &HashMap<i64, Vec<Order>>) -> Option<LegIndicesWithDistance2> {
+              assigned_orders: &HashMap<i64, Vec<Order>>, cfg: &KernCfg) -> Option<LegIndicesWithDistance2> {
   unsafe {
   if legs.len() == 0 { return None; }
   let mut ret: Option<LegIndicesWithDistance2> = None;
@@ -240,10 +241,10 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &Has
     total_dist = legs[0].dist + 2*STOP_WAIT as i32; // distance from the begining of a route; well, only the remaining legs
   }
   let mut min_cost: i32 = MAXCOST; // added cost of the winner, we are starting with a looser
-  let mut is_short = leg_is_short(leg_count.get(&legs[i].route_id));
+  let mut is_short = leg_is_short(leg_count.get(&legs[i].route_id), cfg.max_legs);
   let order_from = order.from as usize;
-  let max_angle = CNFG.max_angle as f32;
-  let max_angle_dist = CNFG.max_angle_dist as i32;
+  let max_angle = cfg.max_angle as f32;
+  let max_angle_dist = cfg.max_angle_dist as i32;
   let mut wait_legs: i16 = 0; // each leg takes 15secs more, TODO: check why
   let mut first_leg: usize = i; // index of the first leg in a route, needed by 'wait_exceeded'
 
@@ -253,7 +254,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &Has
       first_leg = i;
       let prev_leg_to = legs[i-1].to as usize;
       let dist1 = DIST[prev_leg_to][order_from] as i32;
-      is_short = leg_is_short(leg_count.get(&leg.route_id));
+      is_short = leg_is_short(leg_count.get(&leg.route_id), cfg.max_legs);
       // check beyond route
       if total_dist + dist1 + extra_wait(wait_legs + 1) < order.wait
          && dist1 < min_cost
@@ -328,7 +329,7 @@ fn find_route(order: &Order, legs: &Vec<Leg>, stops: &Vec<Stop>, leg_count: &Has
       } else { // find in next legs
         match find_droppoff(order, legs, first_leg, i, add_cost, min_cost, 
                       total_dist + (DIST[leg.from as usize][order_from] as i32) + extra_wait(wait_legs), wait_legs,
-                            is_short, assigned_orders, stops) {
+                            is_short, assigned_orders, stops, &cfg) {
           Some(x) => { 
             min_cost = x.dist; 
             ret = Some(x); 
@@ -480,11 +481,11 @@ fn get_some(from: usize, to: usize, route_id: i64, cost: i32, wait: i32, tour: i
 }
 
 fn find_droppoff(order: &Order, legs: &Vec<Leg>, first_leg: usize, i: usize, add_cost: i32, mincost: i32, wait: i32, wait_legs: i16, 
-                is_short: bool, assigned_orders: &HashMap<i64, Vec<Order>>, stops: &Vec<Stop>) -> Option<LegIndicesWithDistance2> {
+                is_short: bool, assigned_orders: &HashMap<i64, Vec<Order>>, stops: &Vec<Stop>, cfg: &KernCfg) -> Option<LegIndicesWithDistance2> {
   unsafe {
   let mut ret: Option<LegIndicesWithDistance2> = None;
-  let max_angle = CNFG.max_angle as f32;
-  let max_angle_dist = CNFG.max_angle_dist as i32;
+  let max_angle = cfg.max_angle as f32;
+  let max_angle_dist = cfg.max_angle_dist as i32;
   let mut j: usize = i + 1;
   let mut min: i32 = mincost;
   let dist_with_loss: i32 = ((1.0 + order.loss as f32 / 100.0) * order.dist as f32).round() as i32;
@@ -906,12 +907,12 @@ mod tests {
   }
 
   fn test_find_route(from_stand: i32, to_stand: i32, from_idx: usize, to_idx: usize) {
-    init_distance(&get_stops());
+    init_distance(&get_stops(), 30);
     let order1: Order = Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, 
                               dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, 
                               received: None, at_time: None, route_id: -1 };
     match find_route(&order1, &mut get_test_legs(), &mut get_stops(), 
-                    &HashMap::new(), &HashMap::new()) {
+                    &HashMap::new(), &HashMap::new(), &KernCfg::new()) {
       Some(x) => {
         assert_eq!(x.route_id, 123);
         assert_eq!(x.idx_from, from_idx);
@@ -924,12 +925,13 @@ mod tests {
   }
 
   fn test_find_route2(from_stand: i32, to_stand: i32, from_idx: usize, to_idx: usize, route_id: i64) {
-    init_distance(&get_stops());
+    init_distance(&get_stops(), 30);
     let order1: Order = Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, 
                               dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32},
                               received: None, at_time: None, route_id: -1  };
     let mut legs = get_test_legs2();
-    match find_route(&order1, &mut legs, &mut get_stops(), &HashMap::new(), &HashMap::new()) {
+    match find_route(&order1, &mut legs, &mut get_stops(), &HashMap::new(), 
+                &HashMap::new(), &KernCfg::new()) {
       Some(x) => {
         assert_eq!(x.route_id, route_id);
         assert_eq!(x.idx_from, from_idx);
@@ -943,23 +945,23 @@ mod tests {
 
   fn test_extend_legs_sql(from_stand: i32, to_stand: i32, expected_sql: &str) {
     let mut max_leg_id: &mut i64 = &mut 10;
-    init_distance(&get_stops());
+    init_distance(&get_stops(), 30);
     let orders = vec![Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, 
                                       dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, 
       received: None, at_time: None, route_id: -1 }];
     let (_ret, _, sql) = extend_routes(&orders, &HashMap::new(),  &get_stops(),
-                                                       &mut get_test_legs(), &mut max_leg_id);
+                                                       &mut get_test_legs(), &mut max_leg_id, &KernCfg::new());
     assert_eq!(sql, expected_sql);
   }
 
   fn test_extend_legs_sql2(from_stand: i32, to_stand: i32, expected_sql: &str) {
     let mut max_leg_id: &mut i64 = &mut 10;
-    init_distance(&get_stops());
+    init_distance(&get_stops(), 30);
     let orders = vec![Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, 
                                       dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32},
       received: None, at_time: None, route_id: -1 }];
     let (_ret, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
-                                                         &mut get_test_legs2(), &mut max_leg_id);
+                                                         &mut get_test_legs2(), &mut max_leg_id, &KernCfg::new());
     assert_eq!(sql, expected_sql);
   }
 
@@ -1064,12 +1066,12 @@ fn get_test_legs4() -> Vec<Leg> {
 }
 
 fn test_find_route4(route_id: i64, from_stand: i32, to_stand: i32, from_idx: usize, to_idx: usize) {
-  init_distance(&get_stops());
+  init_distance(&get_stops(), 30);
   let order1: Order = Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, 
                             dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, 
                             received: None, at_time: None, route_id: -1 };
   match find_route(&order1, &mut get_test_legs4(), &mut get_stops(), 
-                    &HashMap::new(), &HashMap::new()) {
+                    &HashMap::new(), &HashMap::new(), KernCfg::new()) {
     Some(x) => {
       assert_eq!(x.route_id, route_id);
       assert_eq!(x.idx_from, from_idx);
@@ -1088,12 +1090,12 @@ fn test_find_route_extending_one_leg() {
 
 fn test_extend_legs_sql4(from_stand: i32, to_stand: i32, expected_sql: &str) {
   let mut max_leg_id: &mut i64 = &mut 10;
-  init_distance(&get_stops());
+  init_distance(&get_stops(), 30);
   let orders = vec![Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, 
                                     dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, 
     received: None, at_time: None, route_id: -1 }];
   let (_ret, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
-                                                       &mut get_test_legs4(), &mut max_leg_id);
+                                                       &mut get_test_legs4(), &mut max_leg_id, &KernCfg::new());
   assert_eq!(sql, expected_sql);
 }
 
@@ -1152,12 +1154,12 @@ fn get_test_legs3() -> Vec<Leg> {
 }
 
 fn test_find_route3(route_id: i64, from_stand: i32, to_stand: i32, from_idx: usize, to_idx: usize) {
-  init_distance(&get_stops());
+  init_distance(&get_stops(), 30);
   let order1: Order = Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, 
                             dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, 
                             received: None, at_time: None, route_id: -1 };
   match find_route(&order1, &mut get_test_legs3(), &mut get_stops(), 
-                    &HashMap::new(), &HashMap::new()) {
+                    &HashMap::new(), &HashMap::new(), KernCfg::new()) {
     Some(x) => {
       assert_eq!(x.route_id, route_id);
       assert_eq!(x.idx_from, from_idx);
@@ -1178,12 +1180,12 @@ fn test_find_route_more_matching_routes() {
 
 fn test_extend_legs_no_match(from_stand: i32, to_stand: i32) {
   let mut max_leg_id: &mut i64 = &mut 10;
-  init_distance(&get_stops());
+  init_distance(&get_stops(), 30);
   let orders = vec![Order { id: 1, from: from_stand, to: to_stand, wait: 1, loss:1, 
                                     dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, 
     received: None,  at_time: None, route_id: -1 }];
   let (ret, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
-                                                       &mut get_test_legs2(), &mut max_leg_id);
+                                                       &mut get_test_legs2(), &mut max_leg_id, &KernCfg::new());
   assert_eq!(sql, "");
   assert_eq!(ret.len(), 1);
 }
@@ -1197,14 +1199,14 @@ fn test_extend_legs_in_db_returns_no_sql() {
 // test of two identical orders - only one should go thru
 fn test_extend_legs_identical_orders(from_stand: i32, to_stand: i32) {
   let mut max_leg_id: &mut i64 = &mut 10;
-  init_distance(&get_stops());
+  init_distance(&get_stops(), 30);
   let orders = vec![
     Order { id: 1, from: from_stand, to: to_stand, wait: 10, loss:90, dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32},
             received: None,  at_time: None,  route_id: -1 },
     Order { id: 2, from: from_stand, to: to_stand, wait: 10, loss:90, dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32},
              received: None,  at_time: None,  route_id: -1 }];
   let (ret, _, sql) = extend_routes(&orders, &HashMap::new(), &get_stops(),
-                                                       &mut get_test_legs2(), &mut max_leg_id);
+                                                       &mut get_test_legs2(), &mut max_leg_id, &KernCfg::new());
   assert_eq!(sql, "UPDATE taxi_order SET route_id=123, leg_id=1, cab_id=(SELECT cab_id FROM route where id=123), status=1, eta=9, in_pool=true WHERE id=1 AND status=0;\nUPDATE leg SET reserve=GREATEST(0, reserve-0) WHERE route_id=123 AND place <= 0;\nUPDATE leg SET reserve=LEAST(reserve, 1) WHERE route_id=123 AND place <= 0;\nUPDATE leg SET reserve=GREATEST(0, reserve-0) WHERE route_id=123 AND place >= 2;\nUPDATE leg SET passengers=passengers+1, reserve=LEAST(reserve, 6) WHERE route_id=123 AND place BETWEEN 1 AND 1;\n");
   assert_eq!(ret.len(), 0); // nothing should go to pool finder, one order should be allocated by extender at next iteration 
 }
@@ -1228,11 +1230,11 @@ fn get_test_legs5() -> Vec<Leg> {
 }
 
 fn test_find_route_wait_time_exceeded(from_stand: i32, to_stand: i32) {
-  init_distance(&get_stops());
+  init_distance(&get_stops(), 30);
   let order1: Order = Order { id: 1, from: from_stand, to: to_stand, wait: 5, loss:90, 
                             dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32},  
                             received: None, at_time: None,  route_id: -1 };
-    assert!(find_route(&order1, &mut get_test_legs5(), &mut get_stops(), &HashMap::new(), &HashMap::new()).is_none());
+    assert!(find_route(&order1, &mut get_test_legs5(), &mut get_stops(), &HashMap::new(), &HashMap::new(), KernCfg::new()).is_none());
 }
 
 #[test]
@@ -1256,7 +1258,7 @@ fn test_wait_exceed_no_assigned_orders_then_false() {
 #[test]
 #[serial]
 fn test_wait_exceed_assigned_order_and_too_long_then_true() {
-  init_distance(&get_stops());
+  init_distance(&get_stops(), 30);
   let o = Order { id: 1, from: 4, to: 5, wait: 5, loss:90, 
     dist:unsafe{DIST[4][5] as i32}, 
     received: Local::now().naive_local().checked_sub_signed(chrono::Duration::seconds(3*60)), // ! three minutes are enough to exceed the wait time
@@ -1274,7 +1276,7 @@ fn test_wait_exceed_assigned_order_and_too_long_then_true() {
 #[test]
 #[serial]
 fn test_wait_exceed_assigned_order_and_not_too_long_then_false() {
-  init_distance(&get_stops());
+  init_distance(&get_stops(), 30);
   let o = Order { id: 1, from: 4, to: 10, wait: 10, loss:90, 
                   dist:unsafe{DIST[4][5] as i32},  
                   received: Local::now().naive_local().checked_sub_signed(chrono::Duration::seconds(60)), // one minute only
