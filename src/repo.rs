@@ -4,7 +4,7 @@ use mysql::prelude::*;
 use chrono::{Local, NaiveDateTime};
 use std::cmp;
 use crate::extender::STOP_WAIT;
-use crate::model::{Branch, Cab, CabAssign, CabStatus, Leg, Order, OrderStatus, RouteStatus, Stop, MAXINPOOL, MAXORDID};
+use crate::model::{Branch, Cab, CabAssign, CabStatus, Leg, Order, OrderStatus, RouteStatus, Stop, MAXORDID};
 use crate::distance::DIST;
 use crate::stats::{STATS, Stat, add_avg_element, update_val, count_average};
 use crate::utils::get_elapsed;

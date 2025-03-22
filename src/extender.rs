@@ -1071,7 +1071,7 @@ fn test_find_route4(route_id: i64, from_stand: i32, to_stand: i32, from_idx: usi
                             dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, 
                             received: None, at_time: None, route_id: -1 };
   match find_route(&order1, &mut get_test_legs4(), &mut get_stops(), 
-                    &HashMap::new(), &HashMap::new(), KernCfg::new()) {
+                    &HashMap::new(), &HashMap::new(), &KernCfg::new()) {
     Some(x) => {
       assert_eq!(x.route_id, route_id);
       assert_eq!(x.idx_from, from_idx);
@@ -1159,7 +1159,7 @@ fn test_find_route3(route_id: i64, from_stand: i32, to_stand: i32, from_idx: usi
                             dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32}, 
                             received: None, at_time: None, route_id: -1 };
   match find_route(&order1, &mut get_test_legs3(), &mut get_stops(), 
-                    &HashMap::new(), &HashMap::new(), KernCfg::new()) {
+                    &HashMap::new(), &HashMap::new(), &KernCfg::new()) {
     Some(x) => {
       assert_eq!(x.route_id, route_id);
       assert_eq!(x.idx_from, from_idx);
@@ -1234,7 +1234,7 @@ fn test_find_route_wait_time_exceeded(from_stand: i32, to_stand: i32) {
   let order1: Order = Order { id: 1, from: from_stand, to: to_stand, wait: 5, loss:90, 
                             dist:unsafe{DIST[from_stand as usize][to_stand as usize] as i32},  
                             received: None, at_time: None,  route_id: -1 };
-    assert!(find_route(&order1, &mut get_test_legs5(), &mut get_stops(), &HashMap::new(), &HashMap::new(), KernCfg::new()).is_none());
+    assert!(find_route(&order1, &mut get_test_legs5(), &mut get_stops(), &HashMap::new(), &HashMap::new(), &KernCfg::new()).is_none());
 }
 
 #[test]
