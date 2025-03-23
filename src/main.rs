@@ -228,6 +228,7 @@ unsafe extern "C" {
     );
     
     unsafe fn initMem();
+    unsafe fn freeMem();
 }
 
 fn run_extender(conn: &mut PooledConn, orders: &Vec<Order>, stops: &Vec<Stop>, 
@@ -465,30 +466,37 @@ fn find_internal_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
                 3 => update_max_and_avg_stats(Stat::AvgPool3Time, Stat::MaxPool3Time, el),
                 _=>{},
             }
-            /*
-            for b in ret.0.iter() {
-                let cab_cost = unsafe { DIST[cabs[b.cab as usize].location as usize][demand[b.ord_ids[0] as usize].from as usize] };
-                print!("cost={}, cab={}, cab_cost={}: ", b.cost, b.cab, cab_cost);
-                for c in 0..b.ord_numb as usize {
-                    let mut cost = 0;
-                    let mut from = 0;
-                    if c < b.ord_numb as usize -1 {
-                        from = if b.ord_actions[c as usize] == 105 { demand[b.ord_ids[c as usize] as usize].from }
-                                        else {demand[b.ord_ids[c as usize] as usize].to}; 
-                        let to = if b.ord_actions[(c+1) as usize] == 105 { demand[b.ord_ids[(c+1) as usize] as usize].from }
-                                        else {demand[b.ord_ids[c as usize] as usize].to}; 
-                        cost = unsafe { DIST[from as usize][to as usize] };
-                    }
-                    print!("{}{:?}[{}]({}),", b.ord_ids[c], char::from_u32(b.ord_actions[c] as u32).unwrap(), from, cost);
-                }
-                println!("");
-            }
-            */
+            //print_pool(&ret.0, demand, cabs);
+
             pl.append(&mut ret.0);
             sql += &ret.1;
         }
     }
     return (pl, sql);
+}
+
+fn print_pool(list: &Vec<Branch>, demand: &Vec<Order>, cabs: &Vec<Cab>) {
+    for b in list {
+        let cab_cost = unsafe { DIST[cabs[b.cab as usize].location as usize][demand[b.ord_ids[0] as usize].from as usize] };
+        print!("cost={}, cab={}, cab_cost={}: ", b.cost, b.cab, cab_cost);
+        for c in 0..b.ord_numb as usize {
+            if c < b.ord_numb as usize -1 {
+                let from = if b.ord_actions[c as usize] == 105 { demand[b.ord_ids[c as usize] as usize].from }
+                                else {demand[b.ord_ids[c as usize] as usize].to}; 
+                let to = if b.ord_actions[(c+1) as usize] == 105 { demand[b.ord_ids[(c+1) as usize] as usize].from }
+                                else {demand[b.ord_ids[c as usize] as usize].to}; 
+                let cost = unsafe { DIST[from as usize][to as usize] };
+                print!("{}{:?}[{}]({}), ", b.ord_ids[c], char::from_u32(b.ord_actions[c] as u32).unwrap(), from, cost);
+            } else {
+                let from = if b.ord_actions[c as usize -1] == 105 { demand[b.ord_ids[c as usize -1] as usize].from }
+                                else {demand[b.ord_ids[c as usize -1] as usize].to}; 
+                print!("{}{:?}[{}]({}), ", b.ord_ids[c], char::from_u32(b.ord_actions[c] as u32).unwrap(), 
+                        demand[b.ord_ids[c as usize] as usize].to, 
+                        unsafe { DIST[from as usize][demand[b.ord_ids[c as usize] as usize].to as usize] });
+            }
+        }
+        println!("");
+    }
 }
 
 // if fail then dump input and output
@@ -610,28 +618,9 @@ fn find_external_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
     update_max_and_avg_stats(Stat::AvgPool4Time, Stat::MaxPool4Time, pooltime[0] as i64);
     update_max_and_avg_stats(Stat::AvgPool3Time, Stat::MaxPool3Time, pooltime[1] as i64);
 
-    /*
-    info!("CNT: {}", cnt);
-    for i in 0 .. cnt as usize {
-        let mut str: String = String::from("");
-        let cab_cost = unsafe { DIST[cabs[br[i].cab as usize].location as usize][demand[br[i].ord_ids[0] as usize].from as usize] };
-        str += &format!("{}: cost={}, outs={}, ordNumb={}, cab={}, cab_cost={} (", i, br[i].cost, br[i].outs, br[i].ord_numb, br[i].cab, cab_cost);
-        for j in 0.. br[i].ord_numb {
-            let mut cost = 0;
-            let mut from = 0;
-            if j < br[i].ord_numb -1 {
-                from = if br[i].ord_actions[j as usize] == 105 { demand[br[i].ord_ids[j as usize] as usize].from }
-                                else {demand[br[i].ord_ids[j as usize] as usize].to}; 
-                let to = if br[i].ord_actions[(j+1) as usize] == 105 { demand[br[i].ord_ids[(j+1) as usize] as usize].from }
-                                else {demand[br[i].ord_ids[j as usize] as usize].to}; 
-                cost = unsafe { DIST[from as usize][to as usize] };
-            }
-            str += &format!("{}:{}[{}]({}),", br[i].ord_ids[j as usize], br[i].ord_actions[j as usize], from, cost);
-        }
-        str += &format!(")");
-        println!("{}", str);
-    }
-    */
+    //let cut = &br[0..cnt as usize];
+    //print_pool(&cut.to_vec(), demand, cabs);
+
     // generate SQL
     let mut sql: String = String::from("");
     'outer: for i in 0 .. cnt as usize {
@@ -922,6 +911,7 @@ mod tests {
     unsafe { initMem(); }
     let ret = find_external_pool(&mut orders, &mut cabs, &stops, 1_i32,
                                                          &mut 0, &mut 0, KernCfg::new());
+    unsafe { freeMem(); }
     assert_eq!(ret.0.len(), 1); 
     /*assert_eq!(ret.1, 
         "UPDATE cab SET status=0 WHERE id=0;\n\
@@ -976,12 +966,17 @@ mod tests {
     let stops = get_stops(0.03, 49);
     init_distance(&stops, 30);
     let mut orders: Vec<Order> = get_orders(60, 49);
+    //for o in &orders {
+    //    println!("id: {}, from: {}, to: {}, dist: {}", o.id, o.from, o.to, o.dist);
+    //}
+
     let mut cabs: Vec<Cab> = get_cabs(1000);
     unsafe { initMem(); }
     let start = Instant::now();
     let ret = find_external_pool(&mut orders, &mut cabs, &stops, 8_i32, 
                                                         &mut 0, &mut 0, KernCfg::new());
     let elapsed = start.elapsed();
+    unsafe { freeMem(); }
     println!("Elapsed: {:?}", elapsed); 
     println!("Len: {}", ret.1.len()); 
     assert_eq!(ret.0.len(), 15); 
@@ -994,6 +989,9 @@ mod tests {
     let stops = get_stops(0.03, 49);
     init_distance(&stops, 30);
     let mut orders: Vec<Order> = get_orders(60, 49);
+    //for o in &orders {
+    //    println!("id: {}, from: {}, to: {}, dist: {}", o.id, o.from, o.to, o.dist);
+    //}
     let mut cabs: Vec<Cab> = get_cabs(1000);
     let start = Instant::now();
     let ret = find_internal_pool(&mut orders, &mut cabs, &stops, 
@@ -1019,7 +1017,9 @@ mod tests {
     let ret = find_pool(4, 8, &mut demand,  &mut cabs, &stops, 
                                                 &mut max_route_id, &mut max_leg_id, 
                                                 cfg.max_angle, cfg.stop_wait);
+                                                
     let elapsed = start.elapsed();
+    unsafe { freeMem(); }
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(ret.0.len() > 0, true); 
   }
@@ -1037,6 +1037,7 @@ mod tests {
     let ret = find_external_pool(&mut orders, &mut cabs, &stops, 8_i32, 
                                                         &mut 0, &mut 0, KernCfg::new());
     let elapsed = start.elapsed();
+    unsafe { freeMem(); }
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(ret.0.len(), 2); 
     assert_eq!(ret.1.len(), 3322);
