@@ -13,7 +13,7 @@ use model::{KernCfg, Order, OrderStatus, OrderTransfer, Stop, Cab, CabStatus, Br
             MAXSTOPSNUMB, MAXCABSNUMB, MAXORDERSNUMB, MAXBRANCHNUMB, MAXINPOOL};
 use stats::{Stat,update_max_and_avg_time,update_max_and_avg_stats,incr_val};
 use pool::{orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
-use repo::{assign_pool_to_cab, assign_requests_for_free_cabs, run_sql};
+use repo::{assign_pool_to_cab, assign_requests_for_free_cabs, run_sql, find_free_cab_and_on_last_leg};
 use extender::{find_matching_routes, get_handle}; // write_sql_to_file
 use utils::get_elapsed;
 use mysql::*;
@@ -302,7 +302,7 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
             = run_extender(conn, &demand, &stops, &mut max_leg_id, "SECOND", &cfg);
     }
 
-    // we don't want to run run solver each time, once a minute is fine, these are som trouble-making customers :)
+    // we don't want to run run solver each time, once a minute is fine, these are some trouble-making customers :)
 
     demand = get_old_orders(&demand, cfg.solver_delay);
 
@@ -401,9 +401,8 @@ fn extern_lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i
 fn shrink(cabs: &Vec<Cab>, orders: Vec<Order>) -> (Vec<Cab>, Vec<Order>) {
     let mut new_cabs: Vec<Cab> = vec![];
     let mut new_orders: Vec<Order> = vec![];
-    // v.iter().filter(|x| x % 2 == 0).collect() ??
     for c in cabs.iter() { 
-        if c.id != -1 { new_cabs.push(*c); }
+        if c.id != -1 { new_cabs.push(*c); } // && dist=0 would get rid of those on last legs
     }
     for o in orders.iter() { 
         if o.id != -1 { new_orders.push(*o); }
@@ -707,7 +706,7 @@ fn prepare_data(conn: &mut PooledConn, max_assign_time: i64) -> Option<(Vec<Orde
         info!("No demand, expired");
         return None;
     }
-    let mut cabs = repo::find_cab_by_status(conn, CabStatus::FREE);
+    let mut cabs = find_free_cab_and_on_last_leg(conn); //repo::find_cab_by_status(conn, CabStatus::FREE);
     if orders.len() == 0 || cabs.len() == 0 {
         warn!("No cabs available");
         return None;
@@ -793,7 +792,7 @@ fn munkres(cabs: &Vec<Cab>, orders: &Vec<Order>) -> Vec<i16> {
     for c in cabs.iter() {
         for o in orders.iter() {
             unsafe {
-                matrix.push(distance::DIST[c.location as usize][o.from as usize] as i32);
+                matrix.push(distance::DIST[c.location as usize][o.from as usize] as i32 + o.dist);
             }
         }
     }
@@ -839,15 +838,15 @@ mod tests {
 
   fn test_cabs() -> Vec<Cab> {
     return vec![
-        Cab{ id: 0, location: 2, seats: 10},
-        Cab{ id: 1, location: 3, seats: 10}
+        Cab{ id: 0, location: 2, seats: 10, dist: 0},
+        Cab{ id: 1, location: 3, seats: 10, dist: 0}
     ];
   }
 
   fn test_cabs_invalid() -> Vec<Cab> {
     return vec![
-        Cab{ id: 1, location: 0, seats: 10},
-        Cab{ id: -1, location: 1, seats: 10}
+        Cab{ id: 1, location: 0, seats: 10, dist: 0},
+        Cab{ id: -1, location: 1, seats: 10, dist: 0}
     ];
   }
 
@@ -955,7 +954,7 @@ mod tests {
   fn get_cabs(size: usize) -> Vec<Cab> {
     let mut ret: Vec<Cab> = vec![];
     for i in 0..size {
-        ret.push(Cab{ id: i as i64, location: (i % 2400) as i32, seats: 10});
+        ret.push(Cab{ id: i as i64, location: (i % 2400) as i32, seats: 10, dist: 0});
     }
     return ret;
   }

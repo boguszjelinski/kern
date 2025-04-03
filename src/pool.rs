@@ -16,7 +16,7 @@ const MAX_THREAD_NUMB:usize = 12; // this has to be +1 possible config value!!
 const MAX_BRANCH_SIZE:usize = 700000;
 
 static mut NODE: [Branch; MAX_BRANCH_SIZE*MAX_THREAD_NUMB] = [Branch {
-                cost: 0, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0 }; 
+                cost: 0, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0, parity: 0 }; 
                 MAX_BRANCH_SIZE*MAX_THREAD_NUMB];
 static mut NODE_SIZE: usize = 0;
 
@@ -539,7 +539,7 @@ pub fn orders_to_transfer_array(vec: &Vec<Order>) -> [OrderTransfer; MAXORDERSNU
 }
 
 pub fn cabs_to_array(vec: &Vec<Cab>) -> [Cab; MAXCABSNUMB] {
-    let mut arr : [Cab; MAXCABSNUMB] = [Cab {id: 0, location: 0, seats: 0}; MAXCABSNUMB];
+    let mut arr : [Cab; MAXCABSNUMB] = [Cab {id: 0, location: 0, seats: 0, dist: 0}; MAXCABSNUMB];
     for (i,v) in vec.iter().enumerate() { arr[i] = *v; }
     return arr;
 }
@@ -616,8 +616,8 @@ mod tests {
     }
     for i in 0..7 { unsafe { DIST[i][i+1] = dist; } }
     let mut cabs: Vec<Cab> = vec![];
-    cabs.push(Cab{ id: 0, location: 0, seats: 10 });
-    cabs.push(Cab{ id: 1, location: 1, seats: 10 });
+    cabs.push(Cab{ id: 0, location: 0, seats: 10, dist: 0 });
+    cabs.push(Cab{ id: 1, location: 1, seats: 10, dist: 0 });
     return (orders, cabs);
   }
 
@@ -641,7 +641,7 @@ mod tests {
   fn get_cabs(cab_count: usize) -> Vec<Cab> {
     let mut ret: Vec<Cab> = vec![];
     for i in 0..cab_count as i64 {
-        ret.push(Cab{ id: i, location: (i % 2400) as i32, seats: 10});
+        ret.push(Cab{ id: i, location: (i % 2400) as i32, seats: 10, dist: 0});
     }
     return ret;
   }
@@ -654,9 +654,9 @@ mod tests {
 
   fn test_branches() {
     unsafe {
-      NODE[0] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
-      NODE[1] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [5,6,7,8,8,7,6,5], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
-      NODE[2] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,6,7,8,8,7,6,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+      NODE[0] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0, parity: 0 };
+      NODE[1] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [5,6,7,8,8,7,6,5], ord_actions: [105,105,105,105,111,111,111,111], cab: 0, parity: 0 };
+      NODE[2] = Branch{ cost: 1, outs: 4, ord_numb: 1, ord_ids: [1,6,7,8,8,7,6,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0, parity: 0 };
       NODE_SIZE = 3;
     }
   }
@@ -717,7 +717,7 @@ mod tests {
   fn get_pool_cabs() -> Vec<Cab> {
     let mut ret: Vec<Cab> = vec![];
     for i in 0..1000 {
-        ret.push(Cab{ id: i, location: (i % 2400) as i32, seats: 10});
+        ret.push(Cab{ id: i, location: (i % 2400) as i32, seats: 10, dist: 0});
     }
     return ret;
   }
@@ -892,7 +892,7 @@ fn test_append(){
   #[serial]
   fn test_store_branch_if_not_found(){
     let arr = 
-      Branch{ cost: 1, outs: 4, ord_numb: 7, ord_ids: [1,2,3,3,2,1,0,0], ord_actions: [105,105,105,111,111,111,111,0], cab: 0 
+      Branch{ cost: 1, outs: 4, ord_numb: 7, ord_ids: [1,2,3,3,2,1,0,0], ord_actions: [105,105,105,111,111,111,111,0], cab: 0, parity: 0 
     };
     let (orders, _) = test_init_orders_and_dist(1, 5);
     let stops = get_stops();
@@ -910,7 +910,7 @@ fn test_append(){
   #[serial]
   fn test_is_not_too_long() {
     let (orders, _) = test_init_orders_and_dist(1, 6);
-    let b =  Branch{ cost: 1, outs: 1, ord_numb: 7, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+    let b =  Branch{ cost: 1, outs: 1, ord_numb: 7, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0, parity: 0 };
     let cfg = KernCfg::new();
     let ret = is_too_long('i', 0, 1, &b, &orders, cfg.stop_wait);
     assert_eq!(ret, false);
@@ -920,7 +920,7 @@ fn test_append(){
   #[serial]
   fn test_store_branch() {
     let (orders, _) = test_init_orders_and_dist(1, 6);
-    let b =  Branch{ cost: 1, outs: 1, ord_numb: 1, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+    let b =  Branch{ cost: 1, outs: 1, ord_numb: 1, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0, parity: 0 };
     let cfg = KernCfg::new();
     let ret = store_branch('i', 0, 0, &b, 4, &orders, cfg.stop_wait);
     assert_eq!(ret.cost, 3);
@@ -987,7 +987,7 @@ fn test_append(){
   fn test_constraints_met() {
     let (orders, _) = test_init_orders_and_dist(1, 5);
     let br = Branch{ cost: 1, outs: 4, ord_numb: 8, ord_ids: [0,1,2,3,3,2,1,0], 
-            ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+            ord_actions: [105,105,105,105,111,111,111,111], cab: 0, parity: 0 };
     let cfg = KernCfg::new();
     assert_eq!(constraints_met(br, 1, &orders, cfg.stop_wait), true);
   }
@@ -997,7 +997,7 @@ fn test_append(){
   fn test_constraints_not_met() {
     let (orders, _)= test_init_orders_and_dist(10, 4);
     let br = Branch{ cost: 1, outs: 4, ord_numb: 8, ord_ids: [0,1,2,3,3,2,1,0], 
-            ord_actions: [105,105,105,105,111,111,111,111], cab: 0 };
+            ord_actions: [105,105,105,105,111,111,111,111], cab: 0, parity: 0 };
     let cfg = KernCfg::new();
     assert_eq!(constraints_met(br, 1, &orders, cfg.stop_wait), false);
   }
@@ -1019,7 +1019,7 @@ fn test_append(){
   #[test]
   #[serial]
   fn test_cabs_to_array() {
-    let vec: Vec<Cab> = vec![Cab{id: 0, location: 0, seats: 0}];
+    let vec: Vec<Cab> = vec![Cab{id: 0, location: 0, seats: 0, dist: 0}];
     let arr = cabs_to_array(&vec);
     assert_eq!(arr.len(), MAXCABSNUMB);
     assert_eq!(arr[0].id, 0);

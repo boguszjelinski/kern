@@ -40,6 +40,7 @@ typedef struct Order Order;
 struct Cab {
     long id; // int
     int location; // short
+    short dist; // time left to completion of last leg in a route
     int seats;
 };
 typedef struct Cab Cab;
@@ -56,6 +57,7 @@ struct Branch {
   short ordIDs[MAXORDID];
   char ordActions[MAXORDID];
   short cab;
+  unsigned char parity; // by how many do OUTs exceed INs, to easily find empty legs 
 };
 
 typedef struct Branch Branch;

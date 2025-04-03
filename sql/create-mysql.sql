@@ -80,6 +80,7 @@ CREATE TABLE route (
     id bigint NOT NULL,
     status integer NOT NULL,
     cab_id bigint NOT NULL,
+    locked boolean, -- the route should not be extended, cab assigned to a new route
     PRIMARY KEY (id),
     FOREIGN KEY (cab_id) REFERENCES cab(id)
 );

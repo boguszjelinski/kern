@@ -66,6 +66,7 @@ pub struct CabAssign {
 pub struct Cab {
     pub id: i64,
 	pub location: i32, // last known location, current location if FREE
+    pub dist: i16, // for cabs on last leg of a route, this is the distance to the last stop
     pub seats: i32
 }
 
@@ -93,6 +94,7 @@ pub struct Leg {
 
 // dispatcher is interested only into free cabs and non-assigned customers
 // TODO: cabs on last leg should be considered
+#[derive(Copy, Clone, PartialEq)]
 pub enum CabStatus {
 //    ASSIGNED,
     FREE = 1,
@@ -155,7 +157,8 @@ pub struct Branch {
 	pub ord_numb: i16, // it is in fact ord number *2; length of vectors below - INs & OUTs
 	pub ord_ids : [i16; MAXORDID],
 	pub ord_actions: [i8; MAXORDID],
-	pub cab :i16
+	pub cab :i16,
+    pub parity: u8
 }
 
 impl Branch {
@@ -166,7 +169,8 @@ impl Branch {
 			ord_numb: 0,
 			ord_ids: [0; MAXORDID],
 			ord_actions: [0; MAXORDID],
-			cab : -1
+			cab : -1,
+            parity: 0
         }
     }
 }

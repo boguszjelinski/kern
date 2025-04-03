@@ -76,7 +76,13 @@ void storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inP
     short from = action == 'i' ? demand[ordId].fromStand : demand[ordId].toStand;
     short to = b->ordActions[0] == 'i' ? demand[b->ordIDs[0]].fromStand : demand[b->ordIDs[0]].toStand;
     ptr->cost = b->cost + dist(from, to) + (from == to ? 0 : STOP_WAIT);
-    ptr->outs = action == 'o' ? b->outs + 1: b->outs;
+    if (action == 'o') {
+      ptr->outs = b->outs + 1;
+      ptr->parity = b->parity + 1;
+    } else {
+      ptr->outs = b->outs;  
+      ptr->parity = b->parity - 1;
+    }
     nodeSizeSMP[thread]++;
 }
 
@@ -148,7 +154,9 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
                                 + (demand[ordId].toStand != nextStop ? STOP_WAIT : 0), ptr)
         && (dist(demand[ordId].toStand, nextStop) > MAXANGLEDIST 
            || bearingDiff(stops[demand[ordId].toStand].bearing, stops[nextStop].bearing) < MAXANGLE)
-        )
+        // this is OUT, if the node under is in parity (INNs==OUTs), that would imply an empty leg
+        && ptr->parity > 0 // OUTs > INNs, a missing 'i' will be in the next (well, previous) level
+          )
         storeBranch(thread, 'o', lev, ordId, ptr, inPool);
 }
 
@@ -195,6 +203,7 @@ void addLeaf(int id1, int id2, char dir1, int outs, int lev) {
     ptr->ordIDs[1] = id2;
     ptr->ordActions[0] = dir1;
     ptr->ordActions[1] = 'o'; // the second is always OUT in a leaf 
+    ptr->parity = dir1 == 'i' ? 0 : 2; // 2: two OUTs
     ptr->ordNumb = 2;
     nodeSize++;
 }
@@ -231,6 +240,10 @@ void storeLeaves(int lev) {
                 */
           }
         }
+  //int count = 0;
+  //for (int i = 0; i < nodeSize; i++)
+  //  if (node[i]->parity > 0) count++; 
+  //printf("Two OUTs: %d\n", count);
 }
 
 /// finding all feasible pools - sequences of passengers' pick-ups and drop-offs 
@@ -422,7 +435,8 @@ void rmDuplicatesAndFindCab(int inPool) {
       }
       distCab = dist(supply[cabIdx].location, from);
       if (distCab == 0 // constraints inside pool are checked while "diving" in recursion
-              || constraintsMet(i, ptr, distCab + STOP_WAIT)) { // for the first passenger STOP_WAIT is wrong, but it will concern the others
+              || constraintsMet(i, ptr, distCab + STOP_WAIT)
+            ) { // for the first passenger STOP_WAIT is wrong, but it will concern the others
         // hipi! we have a pool
         ptr->cab = cabIdx; // not supply[cabIdx].id as it is faster to reference it in Boot (than finding IDs)
         // mark cab and order ass allocated
@@ -527,7 +541,8 @@ int findNearestCab(int from, int pass_count) {
       if (supply[i].id == -1) // allocated earlier to a pool
         continue;
       found_any = 1;
-      if (dist(supply[i].location, from) < dst && supply[i].seats >= pass_count) {
+      if (dist(supply[i].location, from) + supply[i].dist < dst && supply[i].seats >= pass_count) {
+        // supply[i].dist is  time left on last leg
         dst = dist(supply[i].location, from);
         nearest = i;
       }

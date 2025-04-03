@@ -78,11 +78,41 @@ pub fn read_max(conn: &mut PooledConn, table: &str) -> i64 {
     return 1; // no row
 }
 
-pub fn find_cab_by_status(conn: &mut PooledConn, status: CabStatus) -> Vec<Cab>{
-    return conn.query_map(
-        "SELECT id, location, seats FROM cab WHERE status=".to_string() + &(status as u8).to_string(),
-        |(id, location, seats)| { Cab { id, location, seats } },
+pub fn find_cab_by_status(conn: &mut PooledConn, status: CabStatus) -> Vec<Cab> {
+    let mut sql = format!("SELECT id, location, seats FROM cab WHERE status={} ", status as u8);
+    if status == CabStatus::FREE { // marked by Kim as FREE but a new route is created (while on last leg), 
+        //so this cab is not free
+        sql += &" AND id NOT IN (SELECT cab_id FROM route WHERE status IN (1,5) )"; 
+    }
+    return conn.query_map(sql, |(id, location, seats)| 
+                            { Cab { id, location, seats, dist: 0 } },).unwrap();
+}
+
+pub fn find_free_cab_and_on_last_leg(conn: &mut PooledConn) -> Vec<Cab> {
+    let mut free_cabs = find_cab_by_status(conn, CabStatus::FREE);
+
+    let mut last_leg_cabs = conn.query_map( // 5: STARTED
+        "SELECT cab_id, to_stand, seats, l1.started, distance FROM leg l1, route r, cab c \
+            WHERE not exists (select * from leg l2 where l1.route_id = l2.route_id and \
+                            l1.id!=l2.id AND l2.place>=l1.place) \
+            AND l1.status=5 AND r.id = l1.route_id AND NOT locked AND c.id=cab_id".to_string(),
+        |(id, location, seats, started, distance)| 
+            {   
+                let mut dist: i16 = distance; // default if we can't calculate elapsed
+                let stamp: Option<NaiveDateTime> = started;
+                let passed = get_elapsed(stamp);
+                if passed != -1 { 
+                    if passed as i16 > dist {
+                        dist = 0;
+                    } else {
+                        dist -= passed as i16;
+                    }
+                }
+                Cab { id, location, seats, dist} 
+            },
     ).unwrap();
+    last_leg_cabs.append(&mut free_cabs);
+    return last_leg_cabs;
 }
 
 /*
@@ -101,7 +131,7 @@ pub fn find_legs(conn: &mut PooledConn) -> Vec<Leg> {
     let mut ret: Vec<Leg> = Vec::new();
     let qry = "SELECT l.id, l.from_stand, l.to_stand, l.place, l.distance, l.started, l.completed, \
                     l.route_id, l.status, l.reserve, l.passengers, c.seats FROM leg l, route r, cab c \
-                    WHERE r.id=l.route_id AND r.cab_id=c.id AND (l.status = 1 OR l.status = 5) \
+                    WHERE r.id=l.route_id AND r.cab_id=c.id AND (l.status = 1 OR l.status = 5) AND NOT r.locked \
                     ORDER BY l.route_id ASC, l.place ASC";
     let selected: Result<Vec<Row>> = conn.query(qry);
     
@@ -261,10 +291,11 @@ fn update_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16
     // 0: CabStatus.ASSIGNED TODO: hardcoded status
     let mut sql: String = String::from("UPDATE cab SET status=0 WHERE id=");
     sql += &(cab.id.to_string() + &";\n".to_string());
-    // alter table route alter column id add generated always as identity
-    // ALTER TABLE route ADD PRIMARY KEY (id)
-    // ALTER TABLE taxi_order ALTER COLUMN customer_id DROP NOT NULL;
-    sql += &format!("INSERT INTO route (id, status, cab_id) VALUES ({},{},{});\n", // 0 will be updated soon
+    // mark any active route as LOCKED
+    sql += &format!("UPDATE route SET locked = true WHERE status IN (1,5) AND cab_id=");
+    sql += &(cab.id.to_string() + &";\n".to_string());
+    // then new route
+    sql += &format!("INSERT INTO route (id, status, cab_id, locked) VALUES ({},{},{}, false);\n", // 0 will be updated soon
                     *max_route_id, 1, cab.id).to_string(); // 1=ASSIGNED
 
     if cab.location != order.from { // cab has to move to pickup the first customer
@@ -565,7 +596,7 @@ fn naive_to_string(time: Option<NaiveDateTime>) -> NaiveDateTime {
 }
 
 fn insert_route(route_id: i64, cab_id: i64) -> String {
-    return format!("INSERT INTO route (id, status, cab_id) VALUES ({},{},{});\n", // 0 will be updated soon
+    return format!("INSERT INTO route (id, status, cab_id, locked) VALUES ({},{},{},false);\n", // 0 will be updated soon
                     route_id, RouteStatus::ASSIGNED as i32, cab_id).to_string();
 }
 
@@ -576,7 +607,7 @@ fn insert_leg(_leg_id: i64, route_id: i64, o: &CabAssign, _reserve: i32) -> Stri
     ({},{},{},{},{},{},{},{},{});\n", leg_id, o.from, o.to, 0, unsafe {DIST[o.from as usize][o.to as usize]}, RouteStatus::ASSIGNED as i32, 
         reserve, route_id, 1);
     */
-    return format!("INSERT INTO route (id, status, cab_id) VALUES ({},{},{});\n", // 0 will be updated soon
+    return format!("INSERT INTO route (id, status, cab_id, locked) VALUES ({},{},{},false);\n", // 0 will be updated soon
                     route_id, RouteStatus::ASSIGNED as i32, o.cab_id).to_string();
 }
 
@@ -669,7 +700,7 @@ mod tests {
     let br = get_test_branch(order_count);
     
     let orders = init_test_data(order_count);
-    let cab = Cab { id:0, location:0, seats: 10 };
+    let cab = Cab { id:0, location:0, seats: 10, dist: 0 };
     let reserves: [i32; MAXORDID] = [0; MAXORDID];
     let sql = assign_orders_and_save_legs(cab.id, 0, place, br, eta, &mut max_leg_id, &orders.to_vec(), reserves);
     //println!("{}", sql);
