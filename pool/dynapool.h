@@ -2,7 +2,13 @@
 #define MAXINPOOL 4
 #define MAXORDID MAXINPOOL*2
 #define MAXNODE MAXINPOOL+MAXINPOOL-1
-#define MAXTHREADMEM 10000000
+#ifdef __linux__
+    #define MAXTHREADMEM 5000000 // Decreased value due to static memory limit
+#elif _WIN32
+    #define MAXTHREADMEM 5000000 // You may edit the value for your OS
+#else
+    #define MAXTHREADMEM 10000000
+#endif
 #define MAXNODEMEM MAXTHREADMEM * NUMBTHREAD
 
 #define MAXANGLE 120.0

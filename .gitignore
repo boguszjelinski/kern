@@ -1,1 +1,6 @@
 /target
+/log
+
+## Do not push compiled C libraries
+*.o
+*.a

@@ -43,8 +43,6 @@ const CFG_FILE_DEFAULT: &str = "kern.toml";
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
     // cargo rustc --release -- -L /Users/bogusz.jelinski/Rust/kern/pool
     // RUSTFLAGS='-L /Users/bogusz.jelinski/Rust/kern/pool' cargo build --release
-    //println!("cargo:rustc-link-search=/Users/bogusz.jelinski/Rust/kern/pool");
-    //println!("cargo:rustc-link-lib=static=dynapool");
     //println!("cargo:rustc-link-arg=--max-memory=20294967296");
     // reading Config
     let mut cfg_file: String = CFG_FILE_DEFAULT.to_string();
