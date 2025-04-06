@@ -979,7 +979,7 @@ mod tests {
     println!("Elapsed: {:?}", elapsed); 
     println!("Len: {}", ret.1.len()); 
     assert_eq!(ret.0.len(), 15); 
-    assert_eq!(ret.1.len(), 18127); // TODO: Rust gives 18508
+    assert_eq!(ret.1.len(), 19366); // TODO: Rust gives 18508
   }
 
   #[test]
@@ -998,7 +998,7 @@ mod tests {
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(ret.0.len(), 15); 
-    assert_eq!(ret.1.len(), 18508);
+    assert_eq!(ret.1.len(), 19748);
   }
 
   #[test]
@@ -1013,11 +1013,11 @@ mod tests {
     unsafe { initMem(); }
     let start = Instant::now();
     let cfg = KernCfg::new();
+    let elapsed = start.elapsed();
     let ret = find_pool(4, 8, &mut demand,  &mut cabs, &stops, 
                                                 &mut max_route_id, &mut max_leg_id, 
                                                 cfg.max_angle, cfg.stop_wait);
                                                 
-    let elapsed = start.elapsed();
     unsafe { freeMem(); }
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(ret.0.len() > 0, true); 

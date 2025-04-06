@@ -150,7 +150,7 @@ pub struct Route {
 */
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Branch {
 	pub cost: i16, // the length of the route
 	pub outs: u8, // BYTE, number of OUT nodes, so that we can guarantee enough IN nodes
