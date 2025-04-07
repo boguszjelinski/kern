@@ -7,18 +7,16 @@
 /// 
 use std::{thread, vec};
 use log::debug;
-use crate::model::{Order,OrderTransfer,Stop,Cab,Branch,MAXSTOPSNUMB,MAXCABSNUMB,MAXORDERSNUMB,MAXORDID};
+use std::time::Instant;
+use std::thread::ScopedJoinHandle;
+use crate::model::{Order, OrderTransfer, Stop, Cab, Branch, MAXSTOPSNUMB, MAXCABSNUMB, MAXORDERSNUMB};
 use crate::distance::DIST;
 use crate::repo::assign_pool_to_cab;
 
 const MAXANGLEDIST: i16 = 1;
 const MAX_THREAD_NUMB:usize = 12; // this has to be +1 possible config value!!
-const MAX_BRANCH_SIZE:usize = 500000;
+const MAX_BRANCH_SIZE:usize = 10000000;
 const N: usize = MAX_BRANCH_SIZE*MAX_THREAD_NUMB;
-
-//static mut NODE: [&Branch; MAX_BRANCH_SIZE*MAX_THREAD_NUMB] = [&Branch {
-//                cost: 0, outs: 0,	ord_numb: 0, ord_ids: [0; MAXORDID], ord_actions: [0; MAXORDID], cab: 0, parity: 0 }; 
-//                MAX_BRANCH_SIZE*MAX_THREAD_NUMB];
 
 /// Returns a list of pools sorted by total trip length (sorting helps filter out worse plans)
 /// in_pool: how many passengers
@@ -38,6 +36,7 @@ pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mu
   }
   let mut node: Box<[Branch; N]> = vec![Branch::new(); N].try_into().unwrap();
   let mut node_size: usize = 0;
+  let start = Instant::now();
   // recursive dive until the leaves of the permutation tree
 	dive(0, in_pool, threads, demand, stands, max_angle, stop_wait, &mut node, &mut node_size);
 
@@ -46,7 +45,7 @@ pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mu
       rm_duplicates_assign_cab(in_pool as usize, &mut max_route_id, max_leg_id, supply, demand, 
                               stop_wait, &node, node_size);
 
-  debug!("FINAL: inPool: {}, found pools: {}\n", in_pool, ret.0.len());
+  println!("FINAL: inPool: {}, found pools: {}, elapsed: {:?}\n", in_pool, ret.0.len(), start.elapsed());
   return ret;
 }
 
@@ -67,7 +66,7 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Ve
 		let leaves = store_leaves(orders, stops, max_angle, stop_wait);
     node[0..leaves.len()].copy_from_slice(&leaves[..]);
     *node_size = leaves.len();
-    debug!("Level: {}, size: {}", lev,  leaves.len());
+    println!("Level: {}, size: {}", lev,  leaves.len());
 		// last two levels are "leaves"
     return;
 	}
@@ -82,27 +81,88 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Ve
   if t_numb as usize * chunk < orders.len() { chunk *= 2; }
 
   // run the threads, each thread gets its own range of orders to iterate over - hence 'iterate'
-
-  //let mut children = vec![];
-  let mut vecs: [Vec<Branch>; MAX_THREAD_NUMB] = [const { Vec::new() }; MAX_THREAD_NUMB];
-  for i in 0..t_numb as usize { // TASK: allocated orders might be spread unevenly -> count non-allocated and devide chunks ... evenly
-    thread::scope(|s| {
-      s.spawn(|| {
-        vecs[i] = iterate(lev as usize, in_pool, i, chunk, &orders, &stops, max_angle, stop_wait, node, node_size);
-      });
-    });
-  }
+  // TASK: allocated orders might be spread unevenly -> count non-allocated and devide chunks ... evenly
+  let vecs = thread::scope(|s| {
+      let mut ret: [Vec<Branch>; MAX_THREAD_NUMB] = [const { Vec::new() }; MAX_THREAD_NUMB];
+      let mut children: Vec<ScopedJoinHandle<'_, Vec<Branch>>> = vec![];
+      if  t_numb > 0 {
+        children.push(s.spawn(|| {
+          iterate(lev as usize, in_pool, 0, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+        }));
+      }
+      if  t_numb > 1 {
+        children.push(s.spawn(|| {
+          iterate(lev as usize, in_pool, 1, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+        }));
+      }
+      if  t_numb > 2 {
+        children.push(s.spawn(|| {
+          iterate(lev as usize, in_pool, 2, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+        }));
+      }
+      if  t_numb > 3 {
+        children.push(s.spawn(|| {
+          iterate(lev as usize, in_pool, 3, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+        }));
+      }
+      if  t_numb > 4 {
+        children.push(s.spawn(|| {
+          iterate(lev as usize, in_pool, 4, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+        }));
+      }
+      if  t_numb > 5 {
+        children.push(s.spawn(|| {
+          iterate(lev as usize, in_pool, 5, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+        }));
+      }
+      if  t_numb > 6 {  
+        children.push(s.spawn(|| {
+          iterate(lev as usize, in_pool, 6, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+        }));
+      }
+      if  t_numb > 7 {
+        children.push(s.spawn(|| {
+          iterate(lev as usize, in_pool, 7, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+        }));
+      }
+      if  t_numb > 8 {
+        children.push(s.spawn(|| {
+          iterate(lev as usize, in_pool, 8, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+        }));
+      }
+      if  t_numb > 9 {
+        children.push(s.spawn(|| {
+          iterate(lev as usize, in_pool, 9, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+        }));
+      }
+      if  t_numb > 10 {
+        children.push(s.spawn(|| {
+          iterate(lev as usize, in_pool, 10, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+        }));
+      }
+      if  t_numb > 11 {
+        children.push(s.spawn(|| {
+          iterate(lev as usize, in_pool, 11, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+        }));
+      }
+      // collect the data from threads, join their execution first
+      // there might be 'duplicates', 1-2-3 and 1-3-2 and so on, they will be filtered out later
+      let mut count = 0;
+      for n in children {
+        ret[count] = n.join().unwrap();
+        count += 1;
+      }
+      return ret;
+  });
   
-  // collect the data from threads, join their execution first
-  // there might be 'duplicates', 1-2-3 and 1-3-2 and so on, they will be filtered out later
- 
   let mut ret_size = 0;
-
   for i in 0..t_numb as usize {
-    node[ret_size..ret_size + vecs[i].len()].copy_from_slice(&vecs[i][..]);
-    ret_size += vecs[i].len();
+    let size = vecs[i].len();
+    node[ret_size..ret_size + size].copy_from_slice(&vecs[i][..]);
+    ret_size += size;
   }
-  debug!("Level: {}, size: {}", lev, ret_size); // just for memory usage considerations
+  println!("Level: {}, size: {}", lev, ret_size); // just for memory usage considerations
+  //println!("Level: {}, size: {}", lev, ret_size);
   *node_size = ret_size;
 }
 
@@ -169,22 +229,25 @@ fn add_leaf(id1: i16, id2: i16, dir1: char, outs: u8, orders: &Vec<Order>, stop_
   br.ord_ids[1] = id2;
   br.ord_actions[0] = dir1 as i8;
   br.ord_actions[1] = 'o' as i8; // the last stop is always OUT
+  br.parity = if dir1 == 'i' { 0 } else { 2 }; // 0: i & o;   2: o & o
   br.ord_numb = 2;
   return br;
 }
 
 /// just a loop and calling store_branch...
 /// returns: a chunk of all branches at that level
-fn iterate(lev: usize, in_pool: u8, thread: usize, size: usize, orders: &Vec<Order>, stops: &Vec<Stop>,
-           max_angle: i16, stop_wait: i16, node: &mut Box<[Branch; N]>, node_size: &mut usize) -> Vec<Branch> {
+fn iterate(lev: usize, in_pool: u8, thread: usize, size: usize, orders: &Vec<Order>, 
+           stops: &Vec<Stop>, max_angle: i16, stop_wait: i16, 
+           node: &Box<[Branch; N]>, node_size: usize) -> Vec<Branch> {
   let mut ret: Vec<Branch> = vec![];
  	let mut stop = (thread + 1) * size;
   if stop > orders.len() { stop = orders.len(); } 
 	for ord_id in thread * size .. stop {
 		if orders[ord_id as usize].id != -1 { // not allocated in previous search (inPool+1)
-			for b in node[0..*node_size].iter() {
+			for b in node[0..node_size].iter() {
 					// we iterate over product of the stage further in the tree: +1
-					store_branch_if_not_found(lev as u8, in_pool, ord_id as i16, &b, &mut ret, orders, stops, max_angle, stop_wait);
+					store_branch_if_not_found(lev as u8, in_pool, ord_id as i16, &b, &mut ret, 
+                                    orders, stops, max_angle, stop_wait);
 			}
 		}
 	}
@@ -200,7 +263,7 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i16, br: &Branch, ret
   // two situations: c IN and c OUT
   // c IN has to have c OUT in level+1, and c IN cannot exist in level + 1
   // c OUT cannot have c OUT in level +1
-   let mut out_found : bool = false;
+  let mut out_found : bool = false;
   for i in 0 .. (br.ord_numb as usize) {
     if br.ord_ids[i] == ord_id {
       if br.ord_actions[i] == 'i' as i8 {
@@ -234,8 +297,9 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i16, br: &Branch, ret
         && !is_too_long('o', ord_id, DIST[orders[id].to as usize][next_stop]
                         + if orders[id].to == next_stop as i32 { 0 } else { stop_wait }, br, orders, stop_wait)
         && (DIST[orders[id].to as usize][next_stop] > MAXANGLEDIST
-            || bearing_diff(stops[orders[id].to as usize].bearing, stops[next_stop].bearing) < max_angle) { 
-
+            || bearing_diff(stops[orders[id].to as usize].bearing, stops[next_stop].bearing) < max_angle
+        && br.parity > 0 // to avoid empty legs, OUTs > INNs, a missing 'i' will be in the next (well, previous) level
+        ) { 
           ret.push(store_branch('o', lev, ord_id, br, in_pool, orders, stop_wait)); 
 		}
 	}
@@ -251,7 +315,7 @@ fn is_too_long(action: char, ord_id: i16, dist: i16, br: &Branch, orders: &Vec<O
     // iterate over all previous orders, 
     for i in 0..(br.ord_numb as usize -1) {
 		  let id = br.ord_ids[i] as usize;
-      if br.ord_actions[i] == 'o' as i8 && action == 'i' && ord_id == br.ord_ids[i] &&
+      if ord_id == br.ord_ids[i] && br.ord_actions[i] == 'o' as i8 && action == 'i' &&
         wait as f32 >  //distance[orders[br.ordIDs[i]].fromStand][orders[br.ordIDs[i]].toStand] 
           orders[id].dist as f32 * (100.0 + orders[id].loss as f32) / 100.0 { 
         // max loss of the new order (which we are trying to put in) is violated
@@ -302,7 +366,13 @@ fn store_branch(action: char, lev: u8, ord_id: i16, b: &Branch, in_pool: u8, ord
                     else { orders[b.ord_ids[0]as usize].to as usize};
     br.cost = b.cost + DIST[from][to] + if from == to { 0 } else { stop_wait };
 	}
-  br.outs = if action == 'o' { b.outs + 1 } else { b.outs };
+  if action == 'o' { 
+    br.outs = b.outs + 1;
+    br.parity = b.parity + 1;
+  } else { 
+    br.outs = b.outs;
+    br.parity = b.parity - 1;
+  }
   return br;
 }
 
@@ -347,7 +417,8 @@ fn rm_duplicates_assign_cab(in_pool: usize, mut max_route_id: &mut i64, mut max_
   // 4 next lines is a check if the distance to the cab helps 
   for i in 0..arr.len()  {
     let cab_idx = find_nearest_cab(arr[i].ord_ids[0], count_passengers(arr[i]), cabs, orders);
-    let cab_dist = unsafe { DIST[cabs[cab_idx as usize].location as usize][orders[arr[i].ord_ids[0] as usize].from as usize] };
+    let cab_dist = unsafe { DIST[cabs[cab_idx as usize].location as usize][orders[arr[i].ord_ids[0] as usize].from as usize] }
+                        + cabs[cab_idx as usize].dist;
     if cab_dist > 0 && max_wait_exceeded(cab_dist, &arr[i], orders, stop_wait) {
       arr[i].cost = -1;
       continue;
@@ -373,7 +444,7 @@ fn rm_duplicates_assign_cab(in_pool: usize, mut max_route_id: &mut i64, mut max_
       }
       
       let dist_cab = DIST[cabs[cab_idx as usize].location as usize]
-                              [orders[arr[i].ord_ids[0] as usize].from as usize];
+                              [orders[arr[i].ord_ids[0] as usize].from as usize] + cabs[cab_idx as usize].dist;
       if dist_cab == 0 // constraints inside pool are checked while "diving", and cab does not add up anything if == 0
               || constraints_met(arr[i], (dist_cab + stop_wait) as i32, orders, stop_wait) {
         arr[i].cab = cab_idx; // maybe needed for debug
@@ -463,8 +534,8 @@ fn find_nearest_cab(o_idx: i16, pass_count: i32, cabs: &Vec<Cab>, orders: &Vec<O
         continue;
       }
       found_any = true;
-      if DIST[c.location as usize][o.from as usize] < dist && c.seats >= pass_count {
-        dist = DIST[c.location as usize][o.from as usize];
+      if DIST[c.location as usize][o.from as usize] + c.dist < dist && c.seats >= pass_count {
+        dist = DIST[c.location as usize][o.from as usize] + c.dist;
         nearest = i as i16;
       }
     }
@@ -867,8 +938,8 @@ mod tests {
     if chunk == 0 { chunk = 1; }
     if t_numb as usize * chunk < orders.len() { t_numb += 1; } // last thread will be the reminder of division
     if t_numb as usize * chunk < orders.len() { chunk *= 2; }
-
-    let ret = iterate(0, 4, 0, chunk, &orders, &stops, cfg.max_angle, cfg.stop_wait, &mut node, &mut node_size);
+    let mut ret: Vec<Branch> = vec!(); 
+    ret = iterate(0, 4, 0, chunk, &orders, &stops, cfg.max_angle, cfg.stop_wait, &node, node_size);
     assert_eq!(ret.len(), 1);
     //println!("{} {}", ret[0].ord_ids[0], ret[0].ord_ids[1]);
   }

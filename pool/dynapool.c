@@ -267,9 +267,10 @@ void dive(int lev, int inPool, int numbThreads) {
   }
   dive(lev + 1, inPool, numbThreads);
 
-  // we have to give some memory to nodeSMP, and not that that was used in the previous level, parity is a good distinction
-  if (lev % 2 == 0) nodeSMP = nodeSMP1; //, NUMBTHREAD * MAXTHREADMEM * sizeof(Branch *));
-  else nodeSMP = nodeSMP2; //, NUMBTHREAD * MAXTHREADMEM * sizeof(Branch *));
+  // we have to give some memory to nodeSMP, and not that which was used in the previous level, 
+  // parity of level is a good distinction
+  if (lev % 2 == 0) nodeSMP = nodeSMP1;
+  else nodeSMP = nodeSMP2;
 
   int chunk = demandNumb / numbThreads;
   if (chunk == 0) chunk = 1;
@@ -409,7 +410,7 @@ void rmDuplicatesAndFindCab(int inPool) {
       if (ptr->cost == -1) continue; // not dropped earlier, but was there any such possibility? TODO: check it
       from = demand[ptr->ordIDs[0]].fromStand;
       cabIdx = findNearestCab(from, countPassengers(ptr));
-      distCab = dist(supply[cabIdx].location, from);
+      distCab = dist(supply[cabIdx].location, from) + supply[cabIdx].dist;
       if (distCab > 0 && waitTimeExceeded(distCab, ptr))  {
         ptr->cost == -1; // maybe a big value would be better, -1 will come first after sort, TODO
         continue;
@@ -433,7 +434,7 @@ void rmDuplicatesAndFindCab(int inPool) {
         ptr->cost = -1;
         continue;
       }
-      distCab = dist(supply[cabIdx].location, from);
+      distCab = dist(supply[cabIdx].location, from) + supply[cabIdx].dist;
       if (distCab == 0 // constraints inside pool are checked while "diving" in recursion
               || constraintsMet(i, ptr, distCab + STOP_WAIT)
             ) { // for the first passenger STOP_WAIT is wrong, but it will concern the others
@@ -543,7 +544,7 @@ int findNearestCab(int from, int pass_count) {
       found_any = 1;
       if (dist(supply[i].location, from) + supply[i].dist < dst && supply[i].seats >= pass_count) {
         // supply[i].dist is  time left on last leg
-        dst = dist(supply[i].location, from);
+        dst = dist(supply[i].location, from) + supply[i].dist;
         nearest = i;
       }
     }
