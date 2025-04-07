@@ -66,7 +66,7 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Ve
 		let leaves = store_leaves(orders, stops, max_angle, stop_wait);
     node[0..leaves.len()].copy_from_slice(&leaves[..]);
     *node_size = leaves.len();
-    println!("Level: {}, size: {}", lev,  leaves.len());
+    debug!("Level: {}, size: {}", lev,  leaves.len());
 		// last two levels are "leaves"
     return;
 	}
@@ -161,7 +161,7 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Ve
     node[ret_size..ret_size + size].copy_from_slice(&vecs[i][..]);
     ret_size += size;
   }
-  println!("Level: {}, size: {}", lev, ret_size); // just for memory usage considerations
+  debug!("Level: {}, size: {}", lev, ret_size); // just for memory usage considerations
   //println!("Level: {}, size: {}", lev, ret_size);
   *node_size = ret_size;
 }
@@ -297,9 +297,9 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i16, br: &Branch, ret
         && !is_too_long('o', ord_id, DIST[orders[id].to as usize][next_stop]
                         + if orders[id].to == next_stop as i32 { 0 } else { stop_wait }, br, orders, stop_wait)
         && (DIST[orders[id].to as usize][next_stop] > MAXANGLEDIST
-            || bearing_diff(stops[orders[id].to as usize].bearing, stops[next_stop].bearing) < max_angle
+            || bearing_diff(stops[orders[id].to as usize].bearing, stops[next_stop].bearing) < max_angle)
         && br.parity > 0 // to avoid empty legs, OUTs > INNs, a missing 'i' will be in the next (well, previous) level
-        ) { 
+        { 
           ret.push(store_branch('o', lev, ord_id, br, in_pool, orders, stop_wait)); 
 		}
 	}
