@@ -1,6 +1,6 @@
 # How to run a simulation
-In order to test the dispatcher you can run a simulation. You need at least three components:
-* [Kern](https://gitlab.com/kabina/kapir): dispatcher
+In order to test the dispatcher you can run a simulation. You need at least these two components:
+* [Kern](https://gitlab.com/kabina/kern): dispatcher
 * [Kim](https://gitlab.com/kabina/kim): client simulator, which emulates real users in big volume (100k/h) with direct insertion into database.
 The results will be saved in the database and logs.
 
@@ -22,21 +22,24 @@ But you might also want to test visually, on-line, how a request is served. Four
 * Node.js (optional, React apps for single customer)
 * Python (optional, to watch KPIs and for route quality check; python-tk and psycopg2-binary needed)
 
-Java and C# implementations of these components (dispatcher, RestAPI and clients) exist, but they are not maintained any longer. Java was a proof-of-concept, C# was used for benchmarking (not good either).
+Java and C# implementations of these components (dispatcher, RestAPI and clients) exist, but they are no longer maintained. Java was a proof-of-concept, C# was used for benchmarking (not good either).
 
 ## How to install and run
 
 ### Kern
 
-1) Compile the pool finder (optional, see use_extern_pool below) and make the library available for Rust compiler, an example for Mac OS:
+1) Compile the pool finder (optional, see use_extern_pool below) and make the library available for Rust compiler
+- an example for Mac OS:
    ```
    cd pool
    cc -c -Wno-implicit-function-declaration poold.c dynapool.c -w
    ar -cvq libdynapool.a poold.o dynapool.o
    sudo cp libdynapool.a /Library/Developer/CommandLineTools/SDKs/MacOSX11.1.sdk/usr/lib/
    ```
+IMPORTANT when building on Linux: You should decrease the value of the `MAXTHREADMEM` static variable in `dynapool.h` otherwise you will get an error due to the static memory limit when executing the `cargo build` command!
+- you can also use the `build.rs` file to point out the path to the library to cargo.
 
-2) check the source code if proper name of library is used, during testing different versions may be used, an example for libdynapool88.a
+2) check the source code if the correct name of the static library is used; during testing different versions may be used, an example for libdynapool88.a
    ```
    #[link(name = "dynapool88")] 
    ```
