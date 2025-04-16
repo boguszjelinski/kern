@@ -1,8 +1,8 @@
+use std::cmp;
 use log::{debug, warn};
 use mysql::*;
 use mysql::prelude::*;
 use chrono::{Local, NaiveDateTime};
-use std::cmp;
 use crate::extender::STOP_WAIT;
 use crate::model::{Branch, Cab, CabAssign, CabStatus, Leg, Order, OrderStatus, RouteStatus, Stop, MAXORDID};
 use crate::distance::DIST;
@@ -46,9 +46,9 @@ pub fn find_orders_by_status_and_time(conn: &mut PooledConn, status: OrderStatus
 
 pub fn read_stops(conn: &mut PooledConn) -> Vec<Stop> {
     return conn.query_map(
-        "SELECT id, latitude, longitude, bearing FROM stop",
-        |(id, latitude, longitude, bearing)| {
-            Stop { id, latitude, longitude, bearing }
+        "SELECT id, latitude, longitude, bearing, capacity FROM stop",
+        |(id, latitude, longitude, bearing, capacity)| {
+            Stop { id, latitude, longitude, bearing, capacity }
         },
     ).unwrap();
 }
@@ -493,6 +493,20 @@ pub fn assign_cust_to_cab_munkres(sol: Vec<i16>, cabs: &Vec<Cab>, demand: &Vec<O
         sql += &assign_order_to_cab(order, cabs[cab_idx], place, eta, reserve, *max_route_id, max_leg_id, "assignCustToCabMunkres");
         *max_route_id += 1;
     }
+    return sql;
+}
+
+pub fn create_reloc_route(cab: &Cab, dest_stop: i64,  
+                            max_route_id: &mut i64, max_leg_id: &mut i64) -> String {
+    let mut place = 0;
+    let mut eta = 0;
+    let reserve = 0;
+    
+    // fake order
+    let order = Order { id: -1, from: dest_stop as i32, to: -1, wait: 0, loss: 0, dist: 0, 
+                                received: None, at_time: None, route_id: -1 };
+    let sql = update_cab_add_route(&cab, &order, &mut place, &mut eta, reserve, max_route_id, max_leg_id);
+    *max_route_id += 1;
     return sql;
 }
 

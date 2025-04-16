@@ -603,7 +603,7 @@ pub fn cabs_to_array(vec: &Vec<Cab>) -> [Cab; MAXCABSNUMB] {
 }
 
 pub fn stops_to_array(vec: &Vec<Stop>) -> [Stop; MAXSTOPSNUMB] {
-    let mut arr : [Stop; MAXSTOPSNUMB] = [Stop {id: 0, bearing: 0, longitude:0.0, latitude: 0.0}; MAXSTOPSNUMB];
+    let mut arr : [Stop; MAXSTOPSNUMB] = [Stop {id: 0, bearing: 0, longitude:0.0, latitude: 0.0, capacity: 10}; MAXSTOPSNUMB];
     for (i,v) in vec.iter().enumerate() { arr[i] = *v; }
     return arr;
 }
@@ -623,7 +623,7 @@ mod tests {
     for i in 0..49 {
       for j in 0..49 {
         stops.push(
-          Stop{ id: c, bearing: 0, latitude: 49.0 + 0.025 * i as f64, longitude: 19.000 + 0.025 * j as f64}
+          Stop{ id: c, bearing: 0, latitude: 49.0 + 0.025 * i as f64, longitude: 19.000 + 0.025 * j as f64, capacity: 10}
         );
         c = c + 1;
       }
@@ -637,7 +637,7 @@ mod tests {
     for i in 0..49 {
       for j in 0..49 {
         stops.push(
-          Stop{ id: c, bearing: 0, latitude: 49.0 + step * i as f64, longitude: 19.000 + step * j as f64}
+          Stop{ id: c, bearing: 0, latitude: 49.0 + step * i as f64, longitude: 19.000 + step * j as f64, capacity: 10}
         );
         c = c + 1;
       }
@@ -738,7 +738,7 @@ mod tests {
     for i in 0..49 {
       for j in 0..49 {
         stops.push(
-          Stop{ id: c, bearing: 0, latitude: 49.0 + step * i as f64, longitude: 19.000 + step * j as f64}
+          Stop{ id: c, bearing: 0, latitude: 49.0 + step * i as f64, longitude: 19.000 + step * j as f64, capacity: 10}
         );
         c = c + 1;
       }
@@ -1075,7 +1075,7 @@ mod tests {
   #[test]
   #[serial]
   fn test_stops_to_array() {
-    let vec: Vec<Stop> = vec![ Stop{id:0,bearing:0, latitude: 0.0, longitude: 0.0 }];
+    let vec: Vec<Stop> = vec![ Stop{id:0,bearing:0, latitude: 0.0, longitude: 0.0, capacity: 10 }];
     let arr = stops_to_array(&vec);
     assert_eq!(arr.len(), MAXSTOPSNUMB);
     assert_eq!(arr[0].id, 0);

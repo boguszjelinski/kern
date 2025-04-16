@@ -897,12 +897,12 @@ mod tests {
 
   fn get_stops() -> Vec<Stop> {
     return vec![
-      Stop{ id: 0, bearing: 0, latitude: 49.0, longitude: 19.000},
-      Stop{ id: 1, bearing: 0, latitude: 49.0, longitude: 19.025},
-      Stop{ id: 2, bearing: 0, latitude: 49.0, longitude: 19.050},
-      Stop{ id: 3, bearing: 0, latitude: 49.0, longitude: 19.075},
-      Stop{ id: 4, bearing: 0, latitude: 49.0, longitude: 19.100},
-      Stop{ id: 5, bearing: 0, latitude: 49.0, longitude: 19.125}
+      Stop{ id: 0, bearing: 0, latitude: 49.0, longitude: 19.000, capacity: 10},
+      Stop{ id: 1, bearing: 0, latitude: 49.0, longitude: 19.025, capacity: 10},
+      Stop{ id: 2, bearing: 0, latitude: 49.0, longitude: 19.050, capacity: 10},
+      Stop{ id: 3, bearing: 0, latitude: 49.0, longitude: 19.075, capacity: 10},
+      Stop{ id: 4, bearing: 0, latitude: 49.0, longitude: 19.100, capacity: 10},
+      Stop{ id: 5, bearing: 0, latitude: 49.0, longitude: 19.125, capacity: 10}
     ];
   }
 

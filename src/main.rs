@@ -1,5 +1,5 @@
 /// Kabina minibus/taxi dispatcher
-/// Copyright (c) 2022 by Bogusz Jelinski bogusz.jelinski@gmail.com
+/// Copyright (c) 2025 by Bogusz Jelinski bogusz.jelinski@gmail.com
 
 mod repo;
 mod model;
@@ -8,13 +8,16 @@ mod extender;
 mod pool;
 mod stats;
 mod utils;
+mod solver;
 use distance::DIST;
 use model::{KernCfg, Order, OrderStatus, OrderTransfer, Stop, Cab, CabStatus, Branch,
             MAXSTOPSNUMB, MAXCABSNUMB, MAXORDERSNUMB, MAXBRANCHNUMB, MAXINPOOL};
 use stats::{Stat,update_max_and_avg_time,update_max_and_avg_stats,incr_val};
 use pool::{orders_to_transfer_array, cabs_to_array, stops_to_array, find_pool};
-use repo::{assign_pool_to_cab, assign_requests_for_free_cabs, run_sql, find_free_cab_and_on_last_leg};
+use repo::{assign_pool_to_cab, assign_requests_for_free_cabs, run_sql, find_free_cab_and_on_last_leg, 
+            find_cab_by_status};
 use extender::{find_matching_routes, get_handle}; // write_sql_to_file
+use solver::{lcm, munkres, relocate_free_cabs, relocate_free_cabs_glpk};
 use utils::get_elapsed;
 use mysql::*;
 use mysql::prelude::*;
@@ -22,10 +25,8 @@ use chrono::{Local, Duration};
 use std::collections::HashMap;
 use std::ptr::addr_of;
 use std::time::Instant;
-use std::thread;
-use std::env;
-use std::mem;
-use hungarian::minimize;
+use std::{thread, env, mem};
+
 use log::{info,warn,debug,error,LevelFilter};
 use log4rs::{
     append::{
@@ -37,8 +38,29 @@ use log4rs::{
     filter::threshold::ThresholdFilter,
 };
 
-const MAXLCM : usize = 20000; // !! max number of cabs or orders sent to LCM in C
 const CFG_FILE_DEFAULT: &str = "kern.toml";
+
+#[link(name = "dynapool")]
+unsafe extern "C" {
+    unsafe fn dynapool(
+		numbThreads: i32,
+        poolsize: &[i32; MAXINPOOL - 1], // max sizes
+		distance: *const [[i16; 5200]; 5200], 
+		distSize: i32,
+		stops: &[Stop; MAXSTOPSNUMB],
+		stopsSize: i32,
+		orders: &[OrderTransfer; MAXORDERSNUMB],
+		ordersSize: i32,
+		cabs: &[Cab; MAXCABSNUMB],
+		cabsSize: i32,
+		ret: &mut [Branch; MAXBRANCHNUMB], // returned values
+		retSize: i32,
+		count: &mut i32, // returned count of values
+        pooltime: &mut [i32; MAXINPOOL - 1] // performance statistics
+    );
+    unsafe fn initMem();
+    unsafe fn freeMem();
+}
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
     // cargo rustc --release -- -L /Users/bogusz.jelinski/Rust/kern/pool
@@ -193,42 +215,6 @@ fn setup_logger(file_path: String) {
     let _handle = log4rs::init_config(config);
 }
 
-#[link(name = "dynapool")]
-unsafe extern "C" {
-    unsafe fn dynapool(
-		numbThreads: i32,
-        poolsize: &[i32; MAXINPOOL - 1], // max sizes
-		distance: *const [[i16; 5200]; 5200], 
-		distSize: i32,
-		stops: &[Stop; MAXSTOPSNUMB],
-		stopsSize: i32,
-		orders: &[OrderTransfer; MAXORDERSNUMB],
-		ordersSize: i32,
-		cabs: &[Cab; MAXCABSNUMB],
-		cabsSize: i32,
-		ret: &mut [Branch; MAXBRANCHNUMB], // returned values
-		retSize: i32,
-		count: &mut i32, // returned count of values
-        pooltime: &mut [i32; MAXINPOOL - 1] // performance statistics
-    );
-
-    unsafe fn c_lcm(
-        distance: *const [[i16; 5200]; 5200],
-        distSize: i32,
-        orders: &[OrderTransfer; MAXORDERSNUMB],
-        ordersSize: i32,
-        cabs: &[Cab; MAXCABSNUMB],
-        cabsSize: i32,
-        how_many: i32,
-        supply: &mut [i16; MAXLCM], // returned values
-        demand: &mut [i16; MAXLCM], // returned values
-        count: &mut i32 // returned count of values
-    );
-    
-    unsafe fn initMem();
-    unsafe fn freeMem();
-}
-
 fn run_extender(conn: &mut PooledConn, orders: &Vec<Order>, stops: &Vec<Stop>, 
                 max_leg_id: &mut i64, label: &str, cfg: &KernCfg) -> Vec<Order> {
     let len_before = orders.len();
@@ -264,7 +250,7 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
         return 0;
     }
     stats::update_max_and_avg_stats(Stat::AvgDemandSize, Stat::MaxDemandSize, orders.len() as i64);
-    
+
     // check if we want to run extender is done in run_extender
     let mut demand
         = run_extender(conn, orders, &stops, &mut max_leg_id, "FIRST", &cfg);
@@ -351,49 +337,12 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
     status_handle.join().expect("Status SQL thread being joined has panicked");
 
     assign_requests_for_free_cabs(conn, &mut max_route_id, &mut max_leg_id); // someone went into and took this cab
-
+    let free_cabs = find_cab_by_status(conn, CabStatus::FREE);
+    let sql = relocate_free_cabs(&free_cabs, &stops, &mut max_route_id, &mut max_leg_id);
+    run_sql(conn, sql);
     return 0; // 0: all orders served
 }
 
-// least/low cost method - shrinking the model so that it can be sent to solver
-fn lcm(host: &String, mut cabs: &mut Vec<Cab>, mut orders: &mut Vec<Order>, max_route_id: &mut i64, max_leg_id: &mut i64, how_many: i16) 
-                                -> thread::JoinHandle<()> {
-    if how_many < 1 { // we would like to find at least one
-        warn!("LCM asked to do nothing");
-        return thread::spawn(|| { });
-    }
-    //let pairs: Vec<(i16,i16)> = lcm_gen_pairs2(cabs, orders, how_many);
-    let pairs: Vec<(i16,i16)> = extern_lcm(cabs, orders, how_many);
-    let sql = repo::assign_order_to_cab_lcm(pairs, &mut cabs, &mut orders, max_route_id, max_leg_id);
-    return get_handle(host.clone(), sql, "LCM".to_string());
-}
-
-fn extern_lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i16)> {
-    let cabs_cpy = cabs.to_vec(); // clone
-    let orders_cpy = orders.to_vec();
-    let mut supply: [i16; MAXLCM] = [0; MAXLCM];
-    let mut demand: [i16; MAXLCM] = [0; MAXLCM];
-    let mut count: i32 = 0;
-
-    unsafe { c_lcm(
-        addr_of!(DIST),
-        MAXSTOPSNUMB as i32,
-        &orders_to_transfer_array(&orders_cpy),
-        orders_cpy.len() as i32,
-        &cabs_to_array(&cabs_cpy),
-        cabs_cpy.len() as i32,
-        how_many as i32,
-        &mut supply, // returned values
-        &mut demand,
-        &mut count
-    );}
-    
-    let mut pairs: Vec<(i16,i16)> = vec![];
-    for i in 0..count as usize {
-        pairs.push((supply[i], demand[i]));
-    }
-    return pairs;
-}
 
 // remove orders and cabs allocated by the pool so that the vectors can be sent to solver
 fn shrink(cabs: &Vec<Cab>, orders: Vec<Order>) -> (Vec<Cab>, Vec<Order>) {
@@ -782,34 +731,11 @@ fn get_rid_of_distant_cabs(demand: &Vec<Order>, supply: &Vec<Cab>) -> Vec<Cab> {
     return ret;
 }
 
-// returns indexes of orders assigned to cabs - vec[1]==5 would mean 2nd cab assigned 6th order
-fn munkres(cabs: &Vec<Cab>, orders: &Vec<Order>) -> Vec<i16> {
-    let mut ret: Vec<i16> = vec![];
-    let mut matrix: Vec<i32> = vec![];
-    
-    for c in cabs.iter() {
-        for o in orders.iter() {
-            unsafe {
-                matrix.push(distance::DIST[c.location as usize][o.from as usize] as i32 + o.dist);
-            }
-        }
-    }
-    let assignment = minimize(&matrix, cabs.len() as usize, orders.len() as usize);
-    
-    for s in assignment {
-        if s.is_some() {
-            ret.push(s.unwrap() as i16);
-        } else {
-            ret.push(-1);
-        }
-    }
-    return ret;
-}
-
 // cargo test -- --test-threads=1
 #[cfg(test)]
 mod tests {
   use std::vec;
+  use rand::Rng;
   use super::*;
   //use chrono::format::InternalNumeric;
   use serial_test::serial;
@@ -850,12 +776,12 @@ mod tests {
 
   fn test_stops() -> Vec<Stop> {
     return vec![
-      Stop{ id: 0, bearing: 0, latitude: 1.0, longitude: 1.0},
-      Stop{ id: 1, bearing: 0, latitude: 1.000000001, longitude: 1.000000001},
-      Stop{ id: 2, bearing: 0, latitude: 1.000000002, longitude: 1.000000002},
-      Stop{ id: 3, bearing: 0, latitude: 1.000000003, longitude: 1.000000003},
-      Stop{ id: 4, bearing: 0, latitude: 1.000000004, longitude: 1.000000004},
-      Stop{ id: 5, bearing: 0, latitude: 1.000000005, longitude: 1.000000005}
+      Stop{ id: 0, bearing: 0, latitude: 1.0, longitude: 1.0, capacity: 10},
+      Stop{ id: 1, bearing: 0, latitude: 1.000000001, longitude: 1.000000001, capacity: 10},
+      Stop{ id: 2, bearing: 0, latitude: 1.000000002, longitude: 1.000000002, capacity: 10},
+      Stop{ id: 3, bearing: 0, latitude: 1.000000003, longitude: 1.000000003, capacity: 10},
+      Stop{ id: 4, bearing: 0, latitude: 1.000000004, longitude: 1.000000004, capacity: 10},
+      Stop{ id: 5, bearing: 0, latitude: 1.000000005, longitude: 1.000000005, capacity: 10}
     ];
   }
 
@@ -923,12 +849,17 @@ mod tests {
   }
 
   fn get_stops(step: f64, size: usize) -> Vec<Stop> {
+    return get_stops_cap(step, size, 9, 10);
+  }
+
+  fn get_stops_cap(step: f64, size: usize, cap_from: i16, cap_to: i16) -> Vec<Stop> {
     let mut stops: Vec<Stop> = vec![];
     let mut c: i64 = 0;
     for i in 0..size {
       for j in 0..size {
+        let cap = rand::thread_rng().gen_range(cap_from..cap_to);
         stops.push(
-          Stop{ id: c, bearing: 0, latitude: 49.0 + step * i as f64, longitude: 19.000 + step * j as f64}
+          Stop{ id: c, bearing: 0, latitude: 49.0 + step * i as f64, longitude: 19.000 + step * j as f64, capacity: cap}
         );
         c = c + 1;
       }
@@ -1021,6 +952,33 @@ mod tests {
     assert_eq!(ret.0.len() > 0, true); 
   }
 
+
+  #[test]
+  #[serial]
+  fn test_performance_relocate_cabs() {
+    let mut max_route_id : i64 = 0;
+    let mut max_leg_id : i64 = 0;
+    let stops = get_stops_cap(0.0008, 49, 0, 2);
+    init_distance(&stops, 30);
+    let cabs = get_cabs(1000);
+    let sql = relocate_free_cabs(&cabs, &stops, &mut max_route_id, &mut max_leg_id);
+    assert_eq!(sql.len() > 0, true); 
+    let sql = relocate_free_cabs_glpk(&cabs, &stops, &mut max_route_id, &mut max_leg_id);
+    assert_eq!(sql.len() > 0, true); 
+  }
+
+  #[test]
+  #[serial]
+  fn test_performance_relocate_cabs_glpk() {
+    let mut max_route_id : i64 = 0;
+    let mut max_leg_id : i64 = 0;
+    let stops = get_stops_cap(0.008, 49, 0, 2);
+    init_distance(&stops, 30);
+    let cabs = get_cabs(1000);
+    let sql = relocate_free_cabs_glpk(&cabs, &stops, &mut max_route_id, &mut max_leg_id);
+    assert_eq!(sql.len() > 0, true); 
+  }
+
   /*
   #[test]  
   #[serial]
@@ -1059,7 +1017,6 @@ mod tests {
     // assert_eq!(ret2[1].1, 1498);
   } 
 
-  
 fn lcm_gen_pairs2(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i16)> {
     // let us start with a big cost - is there any smaller?
     let big_cost: i32 = 1000000;

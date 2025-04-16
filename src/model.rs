@@ -15,7 +15,8 @@ pub struct Stop {
     pub id: i64,
     pub bearing: i32,
 	pub latitude: f64,
-    pub longitude: f64
+    pub longitude: f64,
+    pub capacity: i16
 }
 
 #[derive(Copy, Clone)]
