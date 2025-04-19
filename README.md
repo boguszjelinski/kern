@@ -16,6 +16,7 @@ The following accompanying components have been developed:
 * [Kabina](https://gitlab.com/kabina/kabina): mobile application for minibus customers 
 * [Kab](https://gitlab.com/kabina/kab): mobile application for minibus drivers
 * [Kavla](https://gitlab.com/kabina/kavla): mobile application for presenting current routes on stops 
+* [Kaut](https://gitlab.com/kabina/kaut): a panel in a cab for authentication, adding a passenger to an existing route or creating a new one when cab is free
 * [Kaboot](https://gitlab.com/kabina/kaboot): alternative dispatcher with RestAPI and clients written in Java
 
 There are still a few components missing that need to be added to make it a market-ready solution - billing among others. 
@@ -165,7 +166,7 @@ AS aa GROUP BY order_count`
 
 ## Copyright notice
 
-Copyright 2024 Bogusz Jelinski
+Copyright 2025 Bogusz Jelinski
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -180,7 +181,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 #
 Bogusz Jelinski    
-January 2024
+April 2025
 Mo i Rana
 
 bogusz.jelinski (at) g m a i l

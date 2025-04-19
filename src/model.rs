@@ -2,9 +2,9 @@ use chrono::NaiveDateTime;
 use std::sync::{Mutex, MutexGuard};
 
 pub const MAXSTOPSNUMB : usize = 5200;
-pub const MAXORDERSNUMB: usize = 4000; // max not assigned
-pub const MAXCABSNUMB: usize = 18000;
-pub const MAXBRANCHNUMB: usize = 1000; // size of pool finder's response
+pub const MAXORDERSNUMB: usize = 20000; // max not assigned
+pub const MAXCABSNUMB: usize = 32100;
+pub const MAXBRANCHNUMB: usize = 5000; // size of pool finder's response
 
 pub const MAXINPOOL : usize = 4;
 pub const MAXORDID : usize = MAXINPOOL * 2;
@@ -158,7 +158,7 @@ pub struct Branch {
 	pub ord_numb: i16, // it is in fact ord number *2; length of vectors below - INs & OUTs
 	pub ord_ids : [i16; MAXORDID],
 	pub ord_actions: [i8; MAXORDID],
-	pub cab :i16,
+	pub cab :i16, // i16 is not enough for a high number of cabs
     pub parity: u8
 }
 

@@ -100,7 +100,7 @@ pub fn find_free_cab_and_on_last_leg(conn: &mut PooledConn) -> Vec<Cab> {
             {   
                 let mut dist: i16 = distance; // default if we can't calculate elapsed
                 let stamp: Option<NaiveDateTime> = started;
-                let passed = get_elapsed(stamp);
+                let passed = get_elapsed(stamp)/60;
                 if passed != -1 { 
                     if passed as i16 > dist {
                         dist = 0;
@@ -108,6 +108,8 @@ pub fn find_free_cab_and_on_last_leg(conn: &mut PooledConn) -> Vec<Cab> {
                         dist -= passed as i16;
                     }
                 }
+                //debug!("Cab on last leg cab_id={}, to={}, started={:?}, leg.dist={}, passed={}, to_go={}",
+                //        id, location, stamp, distance, passed, dist);
                 Cab { id, location, seats, dist} 
             },
     ).unwrap();
@@ -179,8 +181,8 @@ pub fn assign_order_find_cab(order_id: i64, leg_id: i64, route_id: i64, eta: i32
 }
 
 pub fn assign_order(order_id: i64, cab_id: i64, leg_id: i64, route_id: i64, eta: i16, in_pool: &str, called_by: &str) -> String {   
-    debug!("Assigning order_id={} to cab_id={}, route_id={}, leg_id={}, module: {}",
-                                            order_id, cab_id, route_id, leg_id, called_by);
+    debug!("Assigning order_id={} to cab_id={}, route_id={}, leg_id={}, eta={}, module: {}",
+                                            order_id, cab_id, route_id, leg_id, eta, called_by);
     return format!("\
         UPDATE taxi_order SET route_id={}, leg_id={}, cab_id={}, status=1, eta={}, in_pool={} \
         WHERE id={} AND status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
@@ -297,13 +299,13 @@ fn update_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16
     // then new route
     sql += &format!("INSERT INTO route (id, status, cab_id, locked) VALUES ({},{},{}, false);\n", // 0 will be updated soon
                     *max_route_id, 1, cab.id).to_string(); // 1=ASSIGNED
-
+    *eta = cab.dist;
     if cab.location != order.from { // cab has to move to pickup the first customer
         unsafe {
-            *eta = DIST[cab.location as usize][order.from as usize];
+            *eta += DIST[cab.location as usize][order.from as usize];
         }
         sql += &create_leg(order.id, cab.location, order.from, *place, 
-                    RouteStatus::ASSIGNED, *eta, reserve,
+                    RouteStatus::ASSIGNED, unsafe { DIST[cab.location as usize][order.from as usize] }, reserve,
                             *max_route_id, max_leg_id, 0, "assignCab");
         *place += 1;
         //TODO: statSrvc.addToIntVal("total_pickup_distance", Math.abs(cab.getLocation() - order.fromStand));
@@ -439,7 +441,7 @@ pub fn assign_order_to_cab_lcm(sol: Vec<(i16,i16)>, cabs: &mut Vec<Cab>, demand:
         let order = demand[*ord_idx as usize];
         let cab: Cab = cabs[*cab_idx as usize];
         let mut place = 0;
-        let mut eta: i16 = 0; // cab's leg is not important for customers
+        let mut eta: i16 = 0;
         // this leg should not be extended now, but it might be in the future with "last leg in active route" project
         // so we need to have a valid reserve
         let mut reserve: i32 = order.wait - unsafe { DIST[cab.location as usize][order.from as usize] } as i32; // expected time of arrival
@@ -480,7 +482,7 @@ pub fn assign_cust_to_cab_munkres(sol: Vec<i16>, cabs: &Vec<Cab>, demand: &Vec<O
         let order = demand[*ord_idx as usize];
         let cab: Cab = cabs[cab_idx];
         let mut place = 0;
-        let mut eta = 0; // expected time of arrival, see comments in LCM above
+        let mut eta = 0;
         let mut reserve: i32 = order.wait - unsafe { DIST[cab.location as usize][order.from as usize] } as i32; // expected time of arrival
         if reserve < 0 { 
             // TODO/TASK we should communicate with the customer, if this is acceptable, more than WAIT TIME

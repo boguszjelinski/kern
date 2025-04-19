@@ -528,7 +528,7 @@ fn find_external_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
     let mut cnt: i32 = 0;
     let mut poolsize = [0; MAXINPOOL as usize - 1];
     let mut pooltime = [0; MAXINPOOL as usize - 1];
-    info!("Size of Branch: {}", mem::size_of::<Branch>());
+
     unsafe {
         /*poolsize[0] = CNFG.max_pool5_size;
         poolsize[1] = CNFG.max_pool4_size;

@@ -299,8 +299,6 @@ pub fn lcm(host: &String, mut cabs: &mut Vec<Cab>, mut orders: &mut Vec<Order>, 
     return get_handle(host.clone(), sql, "LCM".to_string());
 }
 
-
-
 // returns indexes of orders assigned to cabs - vec[1]==5 would mean 2nd cab assigned 6th order
 pub fn munkres(cabs: &Vec<Cab>, orders: &Vec<Order>) -> Vec<i16> {
     let mut ret: Vec<i16> = vec![];
@@ -309,7 +307,8 @@ pub fn munkres(cabs: &Vec<Cab>, orders: &Vec<Order>) -> Vec<i16> {
     for c in cabs.iter() {
         for o in orders.iter() {
             unsafe {
-                matrix.push(DIST[c.location as usize][o.from as usize] as i32 + o.dist);
+                let dst = (DIST[c.location as usize][o.from as usize] + c.dist) as i32;
+                matrix.push(if dst <= o.wait { dst } else { 1000 }); // 1k = block this 
             }
         }
     }
