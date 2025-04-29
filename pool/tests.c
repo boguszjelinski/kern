@@ -4,8 +4,8 @@
 #include"dynapool.h"
 
 #define MAXSTOPS 5000
-#define MAXORDERS 1000
-#define MAXCABS 1000
+#define MAXORDERS 4000
+#define MAXCABS 20000
 #define MAXRETURN 1000
 
 Stop stops[MAXSTOPS];
@@ -88,6 +88,7 @@ void get_cabs(int size) {
         supply[i].id = i;
         supply[i].location =  i % 2400;
         supply[i].seats = 10;
+        supply[i].dist = 0;
     }
 }
 
@@ -117,15 +118,44 @@ int main() {
     
     int count;
     int pooltime[MAXINPOOL - 1];
+   
     
     dynapool(numbThreads, poolsize, 
             dist, distSize, 
             stops, stopsSize,
             demand, ordersSize, 
             supply, cabsSize, 
+            120, // max angle
+            1, // max angle dist
+            1, // stop_wait
+            0, // unused
             ret, retSize, 
             &count,
             pooltime);
     printf("Pool count: %d\n", count);
+    
     freeMem();
+
+    short *supply_out = malloc(10000 * sizeof(short));
+    short *demand_out = malloc(10000 * sizeof(short));
+    int count2;
+
+    stops_numb = 4999;
+    ordersSize = 3000;
+    cabsSize = 19000;
+    get_orders(ordersSize, stops_numb);
+    get_cabs(cabsSize);
+    fast_lcm(
+        dist,
+        distSize,
+        demand,
+        ordersSize,
+        supply,
+        cabsSize,
+        1000,
+        supply_out, // returned values
+        demand_out,
+        &count2
+    );
+    printf("LCM output count: %d\n", count2);
 }

@@ -23,13 +23,13 @@ select seq.num,0,2,10 from seq where seq.num<20000;
 -- CUSTOMER
 DROP TABLE customer CASCADE;
 CREATE TABLE customer (id bigint NOT NULL, PRIMARY KEY (id));
-INSERT INTO customer (id) with digit as (
+           INSERT INTO customer (id) with digit as (
     select 0 as d union all select 1 union all select 2 union all select 3 union all
     select 4 union all select 5 union all select 6 union all
     select 7 union all select 8 union all select 9        
-), seq as (select a.d + (10 * b.d) + (100 * c.d) + (1000 * d.d) + (10000 * e.d) as num
-    from digit a cross join digit b cross join digit c cross join digit d cross join digit e order by 1        
-) select seq.num from seq where seq.num<200000;
+), seq as (select a.d + (10 * b.d) + (100 * c.d) + (1000 * d.d) + (10000 * e.d) + (100000 * f.d) as num
+    from digit a cross join digit b cross join digit c cross join digit d cross join digit e cross join digit f order by 1        
+) select seq.num from seq where seq.num<700000;
 
 -- ORDER
 DROP TABLE taxi_order CASCADE;
@@ -113,6 +113,7 @@ CREATE TABLE stat (
 INSERT INTO stat (name, int_val) VALUES
     ('AvgExtenderTime', 0),
     ('AvgPoolTime', 0),
+    ('AvgPool2Time', 0),
     ('AvgPool3Time', 0),
     ('AvgPool4Time', 0),
     ('AvgPool5Time', 0),
@@ -121,6 +122,7 @@ INSERT INTO stat (name, int_val) VALUES
     ('AvgShedulerTime', 0),
     ('MaxExtenderTime', 0),
     ('MaxPoolTime', 0),
+    ('MaxPool2Time', 0),
     ('MaxPool3Time', 0),
     ('MaxPool4Time', 0),
     ('MaxPool5Time', 0),

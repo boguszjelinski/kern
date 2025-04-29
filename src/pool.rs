@@ -13,8 +13,7 @@ use crate::model::{Order, OrderTransfer, Stop, Cab, Branch, MAXSTOPSNUMB, MAXCAB
 use crate::distance::DIST;
 use crate::repo::assign_pool_to_cab;
 
-const MAXANGLEDIST: i16 = 1;
-const MAX_THREAD_NUMB:usize = 12; // this has to be +1 possible config value!!
+pub const MAX_THREAD_NUMB:usize = 12; // this has to be +1 possible config value!!
 const MAX_BRANCH_SIZE:usize = 10000000;
 const N: usize = MAX_BRANCH_SIZE*MAX_THREAD_NUMB;
 
@@ -28,8 +27,8 @@ const N: usize = MAX_BRANCH_SIZE*MAX_THREAD_NUMB;
 /// max_leg_id:  primary key available (not used) for route legs
 /// 
 /// returns: vector of pools and SQL
-pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mut Vec<Cab>,
-                stands: &Vec<Stop>, mut max_route_id: &mut i64, max_leg_id: &mut i64, max_angle: i16, stop_wait: i16) 
+pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mut Vec<Cab>, stands: &Vec<Stop>, 
+                mut max_route_id: &mut i64, max_leg_id: &mut i64, max_angle: i16, max_angle_dist: i16, stop_wait: i16) 
                 -> (Vec<Branch>, String) {
   if demand.len() == 0 || supply.len() == 0 || stands.len() == 0 {
           return (Vec::new(), String::from(""));
@@ -38,7 +37,7 @@ pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mu
   let mut node_size: usize = 0;
   let start = Instant::now();
   // recursive dive until the leaves of the permutation tree
-	dive(0, in_pool, threads, demand, stands, max_angle, stop_wait, &mut node, &mut node_size);
+	dive(0, in_pool, threads, demand, stands, max_angle, max_angle_dist, stop_wait, &mut node, &mut node_size);
 
   // there might be pools with same passengers, with different length - sort and find the best ones
   let ret = 
@@ -60,7 +59,7 @@ pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mu
 /// in_pool: number of passengers going together
 /// threads_numb: 
 fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Vec<Stop>, 
-        max_angle: i16, stop_wait: i16, node: &mut Box<[Branch; N]>, node_size: &mut usize){
+        max_angle: i16, max_angle_dist: i16, stop_wait: i16, node: &mut Box<[Branch; N]>, node_size: &mut usize){
   *node_size = 0;
 	if lev > in_pool + in_pool - 3 { // lev >= 2*inPool-2, where -2 are last two levels
 		let leaves = store_leaves(orders, stops, max_angle, stop_wait);
@@ -71,7 +70,7 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Ve
     return;
 	}
 	// dive more
-	dive(lev + 1, in_pool, threads_numb, orders, stops, max_angle, stop_wait, node, node_size);
+	dive(lev + 1, in_pool, threads_numb, orders, stops, max_angle, max_angle_dist, stop_wait, node, node_size);
 
   let mut t_numb = threads_numb; // mut: there might be one more thread, rest of division
   let mut chunk = orders.len() / t_numb as usize;
@@ -85,64 +84,65 @@ fn dive(lev: u8, in_pool: u8, threads_numb: i16, orders: &Vec<Order>, stops: &Ve
   let vecs = thread::scope(|s| {
       let mut ret: [Vec<Branch>; MAX_THREAD_NUMB] = [const { Vec::new() }; MAX_THREAD_NUMB];
       let mut children: Vec<ScopedJoinHandle<'_, Vec<Branch>>> = vec![];
+      // funny code below, but how to send "thread" value to 'iterate' in a loop without moving/cloning? cloning would cost A LOT
       if  t_numb > 0 {
         children.push(s.spawn(|| {
-          iterate(lev as usize, in_pool, 0, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+          iterate(lev as usize, in_pool, 0, chunk, &orders, &stops, max_angle, max_angle_dist, stop_wait, node, *node_size)
         }));
       }
       if  t_numb > 1 {
         children.push(s.spawn(|| {
-          iterate(lev as usize, in_pool, 1, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+          iterate(lev as usize, in_pool, 1, chunk, &orders, &stops, max_angle, max_angle_dist, stop_wait, node, *node_size)
         }));
       }
       if  t_numb > 2 {
         children.push(s.spawn(|| {
-          iterate(lev as usize, in_pool, 2, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+          iterate(lev as usize, in_pool, 2, chunk, &orders, &stops, max_angle, max_angle_dist, stop_wait, node, *node_size)
         }));
       }
       if  t_numb > 3 {
         children.push(s.spawn(|| {
-          iterate(lev as usize, in_pool, 3, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+          iterate(lev as usize, in_pool, 3, chunk, &orders, &stops, max_angle, max_angle_dist, stop_wait, node, *node_size)
         }));
       }
       if  t_numb > 4 {
         children.push(s.spawn(|| {
-          iterate(lev as usize, in_pool, 4, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+          iterate(lev as usize, in_pool, 4, chunk, &orders, &stops, max_angle, max_angle_dist, stop_wait, node, *node_size)
         }));
       }
       if  t_numb > 5 {
         children.push(s.spawn(|| {
-          iterate(lev as usize, in_pool, 5, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+          iterate(lev as usize, in_pool, 5, chunk, &orders, &stops, max_angle, max_angle_dist, stop_wait, node, *node_size)
         }));
       }
       if  t_numb > 6 {  
         children.push(s.spawn(|| {
-          iterate(lev as usize, in_pool, 6, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+          iterate(lev as usize, in_pool, 6, chunk, &orders, &stops, max_angle, max_angle_dist, stop_wait, node, *node_size)
         }));
       }
       if  t_numb > 7 {
         children.push(s.spawn(|| {
-          iterate(lev as usize, in_pool, 7, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+          iterate(lev as usize, in_pool, 7, chunk, &orders, &stops, max_angle, max_angle_dist, stop_wait, node, *node_size)
         }));
       }
       if  t_numb > 8 {
         children.push(s.spawn(|| {
-          iterate(lev as usize, in_pool, 8, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+          iterate(lev as usize, in_pool, 8, chunk, &orders, &stops, max_angle, max_angle_dist, stop_wait, node, *node_size)
         }));
       }
       if  t_numb > 9 {
         children.push(s.spawn(|| {
-          iterate(lev as usize, in_pool, 9, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+          iterate(lev as usize, in_pool, 9, chunk, &orders, &stops, max_angle, max_angle_dist, stop_wait, node, *node_size)
         }));
       }
       if  t_numb > 10 {
         children.push(s.spawn(|| {
-          iterate(lev as usize, in_pool, 10, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+          iterate(lev as usize, in_pool, 10, chunk, &orders, &stops, max_angle, max_angle_dist, stop_wait, node, *node_size)
         }));
       }
       if  t_numb > 11 {
         children.push(s.spawn(|| {
-          iterate(lev as usize, in_pool, 11, chunk, &orders, &stops, max_angle, stop_wait, node, *node_size)
+          iterate(lev as usize, in_pool, 11, chunk, &orders, &stops, max_angle, max_angle_dist, stop_wait, node, *node_size)
         }));
       }
       // collect the data from threads, join their execution first
@@ -237,7 +237,7 @@ fn add_leaf(id1: i16, id2: i16, dir1: char, outs: u8, orders: &Vec<Order>, stop_
 /// just a loop and calling store_branch...
 /// returns: a chunk of all branches at that level
 fn iterate(lev: usize, in_pool: u8, thread: usize, size: usize, orders: &Vec<Order>, 
-           stops: &Vec<Stop>, max_angle: i16, stop_wait: i16, 
+           stops: &Vec<Stop>, max_angle: i16, max_angle_dist: i16, stop_wait: i16, 
            node: &Box<[Branch; N]>, node_size: usize) -> Vec<Branch> {
   let mut ret: Vec<Branch> = vec![];
  	let mut stop = (thread + 1) * size;
@@ -247,7 +247,7 @@ fn iterate(lev: usize, in_pool: u8, thread: usize, size: usize, orders: &Vec<Ord
 			for b in node[0..node_size].iter() {
 					// we iterate over product of the stage further in the tree: +1
 					store_branch_if_not_found(lev as u8, in_pool, ord_id as i16, &b, &mut ret, 
-                                    orders, stops, max_angle, stop_wait);
+                                    orders, stops, max_angle, max_angle_dist, stop_wait);
 			}
 		}
 	}
@@ -259,7 +259,7 @@ fn iterate(lev: usize, in_pool: u8, thread: usize, size: usize, orders: &Vec<Ord
 /// br is existing Branch in lev+1
 /// returns: just pushes to a mutable vector
 fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i16, br: &Branch, ret: &mut Vec<Branch>, 
-                              orders: &Vec<Order>, stops: &Vec<Stop>, max_angle: i16, stop_wait: i16) {
+                              orders: &Vec<Order>, stops: &Vec<Stop>, max_angle: i16, max_angle_dist: i16, stop_wait: i16) {
   // two situations: c IN and c OUT
   // c IN has to have c OUT in level+1, and c IN cannot exist in level + 1
   // c OUT cannot have c OUT in level +1
@@ -286,7 +286,7 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i16, br: &Branch, ret
       if !is_too_long('i', ord_id, DIST[orders[id].from as usize][next_stop]
                         + if orders[id].from == next_stop as i32 { 0 } else { stop_wait }, br, orders, stop_wait)
         // TASK? if the next stop is OUT of passenger 'c' - we might allow bigger angle
-        && (DIST[orders[id].from as usize][next_stop] > MAXANGLEDIST
+        && (DIST[orders[id].from as usize][next_stop] > max_angle_dist
             || bearing_diff(stops[orders[id].from as usize].bearing, stops[next_stop].bearing) < max_angle) {
           ret.push(store_branch('i', lev, ord_id, br, in_pool, orders, stop_wait)); 
       }
@@ -296,7 +296,7 @@ fn store_branch_if_not_found(lev: u8, in_pool: u8, ord_id: i16, br: &Branch, ret
         && br.outs < in_pool // numb OUT must be numb IN
         && !is_too_long('o', ord_id, DIST[orders[id].to as usize][next_stop]
                         + if orders[id].to == next_stop as i32 { 0 } else { stop_wait }, br, orders, stop_wait)
-        && (DIST[orders[id].to as usize][next_stop] > MAXANGLEDIST
+        && (DIST[orders[id].to as usize][next_stop] > max_angle_dist
             || bearing_diff(stops[orders[id].to as usize].bearing, stops[next_stop].bearing) < max_angle)
         && br.parity > 0 // to avoid empty legs, OUTs > INNs, a missing 'i' will be in the next (well, previous) level
         { 
@@ -523,11 +523,11 @@ fn mark_pools_as_dead(arr: &mut Vec<Branch>, i: usize) {
 
 /// LCM - find the nearest cab for this order ('from' of the first order in pool)
 /// returns id of the cab
-fn find_nearest_cab(o_idx: i16, pass_count: i32, cabs: &Vec<Cab>, orders: &Vec<Order>) -> i16 {
+fn find_nearest_cab(o_idx: i16, pass_count: i32, cabs: &Vec<Cab>, orders: &Vec<Order>) -> i32 {
   unsafe{
     let o: Order = orders[o_idx as usize];
     let mut dist = 10000; // big
-    let mut nearest = -1 as i16;
+    let mut nearest = -1 as i32;
     let mut found_any = false;
     for (i, c) in cabs.iter().enumerate() {
       if c.id == -1 { // allocated earlier to a pool
@@ -536,7 +536,7 @@ fn find_nearest_cab(o_idx: i16, pass_count: i32, cabs: &Vec<Cab>, orders: &Vec<O
       found_any = true;
       if DIST[c.location as usize][o.from as usize] + c.dist < dist && c.seats >= pass_count {
         dist = DIST[c.location as usize][o.from as usize] + c.dist;
-        nearest = i as i16;
+        nearest = i as i32;
       }
     }
     if !found_any { 
@@ -728,7 +728,7 @@ mod tests {
     let mut max_leg_id: i64 = 0;
     let cfg = KernCfg::new();
     let ret = find_pool(4, 3, &mut orders, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id,
-                                                cfg.max_angle, cfg.stop_wait);
+                                                cfg.max_angle, cfg.max_angle_dist, cfg.stop_wait);
     assert_eq!(ret.0.len()>0, true);
   }
 
@@ -800,7 +800,7 @@ mod tests {
     let cfg = KernCfg::new();
     let ret = find_pool(4, 4, &mut orders, &mut cabs, 
                                                 &stops, &mut max_route_id, &mut max_leg_id,
-                                                cfg.max_angle, cfg.stop_wait);
+                                                cfg.max_angle, cfg.max_angle_dist, cfg.stop_wait);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
     assert_eq!(ret.0.len(), 12);
@@ -857,7 +857,7 @@ mod tests {
     let cfg = KernCfg::new();
     let mut node: Box<[Branch; N]> = vec![Branch::new(); N].try_into().unwrap();
     let mut node_size: usize = 0;
-    dive(0, 4, 3, &orders, &stops, cfg.max_angle, cfg.stop_wait, &mut node, &mut node_size);
+    dive(0, 4, 3, &orders, &stops, cfg.max_angle, cfg.max_angle_dist, cfg.stop_wait, &mut node, &mut node_size);
     println!("Elapsed: {:?}", start.elapsed()); 
     assert_eq!(node_size, 866);
   }
@@ -871,7 +871,7 @@ mod tests {
     let cfg = KernCfg::new();
     let mut node: Box<[Branch; N]> = vec![Branch::new(); N].try_into().unwrap();
     let mut node_size: usize = 0;
-    dive(0, 4, 3, &orders, &stops, cfg.max_angle, cfg.stop_wait, &mut node, &mut node_size);
+    dive(0, 4, 3, &orders, &stops, cfg.max_angle, cfg.max_angle_dist, cfg.stop_wait, &mut node, &mut node_size);
     assert_eq!(node_size, 152);
   }
 
@@ -939,7 +939,7 @@ mod tests {
     if t_numb as usize * chunk < orders.len() { t_numb += 1; } // last thread will be the reminder of division
     if t_numb as usize * chunk < orders.len() { chunk *= 2; }
     let mut ret: Vec<Branch> = vec!(); 
-    ret = iterate(0, 4, 0, chunk, &orders, &stops, cfg.max_angle, cfg.stop_wait, &node, node_size);
+    ret = iterate(0, 4, 0, chunk, &orders, &stops, cfg.max_angle, cfg.max_angle_dist, cfg.stop_wait, &node, node_size);
     assert_eq!(ret.len(), 1);
     //println!("{} {}", ret[0].ord_ids[0], ret[0].ord_ids[1]);
   }
@@ -955,7 +955,7 @@ mod tests {
     init_distance(&stops, 30);
     let mut ret: Vec<Branch> = Vec::new();
     let cfg = KernCfg::new();
-    store_branch_if_not_found(0,4,0, &arr, &mut ret, &orders, &stops, cfg.max_angle, cfg.stop_wait);
+    store_branch_if_not_found(0,4,0, &arr, &mut ret, &orders, &stops, cfg.max_angle, cfg.max_angle_dist, cfg.stop_wait);
     assert_eq!(ret.len(), 0);
     //assert_eq!(ret[0].ord_ids[0], 0); // was 1, should be 0
     //assert_eq!(ret[0].ord_actions[7], 111); // was 0, should be 111

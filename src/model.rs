@@ -3,7 +3,7 @@ use std::sync::{Mutex, MutexGuard};
 
 pub const MAXSTOPSNUMB : usize = 5200;
 pub const MAXORDERSNUMB: usize = 20000; // max not assigned
-pub const MAXCABSNUMB: usize = 32100;
+pub const MAXCABSNUMB: usize = 39900;
 pub const MAXBRANCHNUMB: usize = 5000; // size of pool finder's response
 
 pub const MAXINPOOL : usize = 4;
@@ -19,7 +19,7 @@ pub struct Stop {
     pub capacity: i16
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Order {
     pub id: i64, // -1 as to-be-dropped
 	pub from: i32,
@@ -158,7 +158,7 @@ pub struct Branch {
 	pub ord_numb: i16, // it is in fact ord number *2; length of vectors below - INs & OUTs
 	pub ord_ids : [i16; MAXORDID],
 	pub ord_actions: [i8; MAXORDID],
-	pub cab :i16, // i16 is not enough for a high number of cabs
+	pub cab :i32,
     pub parity: u8
 }
 

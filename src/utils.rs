@@ -4,7 +4,7 @@ pub fn get_elapsed(val: Option<NaiveDateTime>) -> i64 {
     match val {
         Some(x) => { 
             let now = Local::now().naive_local();
-            return (now - x).num_seconds();
+            (now - x).num_seconds()
         }
         None => -1
     }

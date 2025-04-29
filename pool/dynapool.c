@@ -44,6 +44,7 @@ extern int cabsNumb;
 
 extern Branch *retNode;
 extern int retCount, retNumb; // number of branches returned to Rust
+extern short maxangle, maxangledist, stop_wait;
 
 //inline would cause linker problems while running 'cargo build'
 short dist(int row, int col) {
@@ -75,7 +76,7 @@ void storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inP
     //sprintf (ptr->key, "%d%c%s", ordId, action, b->key);
     short from = action == 'i' ? demand[ordId].fromStand : demand[ordId].toStand;
     short to = b->ordActions[0] == 'i' ? demand[b->ordIDs[0]].fromStand : demand[b->ordIDs[0]].toStand;
-    ptr->cost = b->cost + dist(from, to) + (from == to ? 0 : STOP_WAIT);
+    ptr->cost = b->cost + dist(from, to) + (from == to ? 0 : stop_wait);
     if (action == 'o') {
       ptr->outs = b->outs + 1;
       ptr->parity = b->parity + 1;
@@ -106,7 +107,7 @@ boolean isTooLong(int ordId, char oper, int wait, Branch *b) {
         return true;
       from = b->ordActions[i] == 'i' ? demand[b->ordIDs[i]].fromStand : demand[b->ordIDs[i]].toStand;
       to = b->ordActions[i + 1] == 'i' ? demand[b->ordIDs[i + 1]].fromStand : demand[b->ordIDs[i + 1]].toStand;
-      if (from != to) wait += dist(from, to) + STOP_WAIT;
+      if (from != to) wait += dist(from, to) + stop_wait;
   }
   // just check the last 'o', if it is the OUT of the order that we are checking now (with IN) we have to check max loss
   if (ordId == b->ordIDs[b->ordNumb - 1] && oper == 'i' &&
@@ -140,10 +141,10 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
                     ? demand[ptr->ordIDs[0]].fromStand : demand[ptr->ordIDs[0]].toStand;
     if (outFound) {
       if (!isTooLong(ordId, 'i', dist(demand[ordId].fromStand, nextStop) 
-                                  + (demand[ordId].fromStand != nextStop ? STOP_WAIT : 0), ptr)
+                                  + (demand[ordId].fromStand != nextStop ? stop_wait : 0), ptr)
         // TASK? if the next stop is OUT of passenger 'c' - we might allow bigger angle
-        && (dist(demand[ordId].fromStand, nextStop) > MAXANGLEDIST 
-            || bearingDiff(stops[demand[ordId].fromStand].bearing, stops[nextStop].bearing) < MAXANGLE)
+        && (dist(demand[ordId].fromStand, nextStop) > maxangledist 
+            || bearingDiff(stops[demand[ordId].fromStand].bearing, stops[nextStop].bearing) < maxangle)
         ) 
         storeBranch(thread, 'i', lev, ordId, ptr, inPool);
     }
@@ -151,9 +152,9 @@ void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, in
     else if (lev > 0 // the first stop cannot be OUT
         && ptr->outs < inPool // numb OUT must be numb IN
         && !isTooLong(ordId, 'o', dist(demand[ordId].toStand, nextStop)
-                                + (demand[ordId].toStand != nextStop ? STOP_WAIT : 0), ptr)
-        && (dist(demand[ordId].toStand, nextStop) > MAXANGLEDIST 
-           || bearingDiff(stops[demand[ordId].toStand].bearing, stops[nextStop].bearing) < MAXANGLE)
+                                + (demand[ordId].toStand != nextStop ? stop_wait : 0), ptr)
+        && (dist(demand[ordId].toStand, nextStop) > maxangledist 
+           || bearingDiff(stops[demand[ordId].toStand].bearing, stops[nextStop].bearing) < maxangle)
         // this is OUT, if the node under is in parity (INNs==OUTs), that would imply an empty leg
         && ptr->parity > 0 // OUTs > INNs, a missing 'i' will be in the next (well, previous) level
           )
@@ -197,7 +198,7 @@ void addLeaf(int id1, int id2, char dir1, int outs, int lev) {
     }
     Branch *ptr = node[nodeSize];
     int from_stand = dir1 == 'i' ? demand[id1].fromStand : demand[id1].toStand;
-    ptr->cost = dist(from_stand, demand[id2].toStand) + (from_stand == demand[id2].toStand ? 0 : STOP_WAIT);
+    ptr->cost = dist(from_stand, demand[id2].toStand) + (from_stand == demand[id2].toStand ? 0 : stop_wait);
     ptr->outs = outs;
     ptr->ordIDs[0] = id1;
     ptr->ordIDs[1] = id2;
@@ -221,7 +222,7 @@ void storeLeaves(int lev) {
           if (c == d) {
             // 'bearing' checks if stops are in line, it promotes straight paths to avoid unlife solutions
             // !! we might not check bearing here as they are probably distant stops
-            if (dist(demand[c].fromStand, demand[d].toStand) > MAXANGLEDIST || bearingDiff(stops[demand[c].fromStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)  {
+            if (dist(demand[c].fromStand, demand[d].toStand) > maxangledist || bearingDiff(stops[demand[c].fromStand].bearing, stops[demand[d].toStand].bearing) < maxangle)  {
               // IN and OUT of the same passenger
               addLeaf(c, d, 'i', 1, lev);
             }
@@ -229,7 +230,7 @@ void storeLeaves(int lev) {
           // now <1out, 2out>
           else if (dist(demand[c].toStand, demand[d].toStand)
                       < dist(demand[d].fromStand, demand[d].toStand) * (100.0 + demand[d].maxLoss) / 100.0
-                  && (dist(demand[c].toStand, demand[d].toStand) > MAXANGLEDIST || bearingDiff(stops[demand[c].toStand].bearing, stops[demand[d].toStand].bearing) < MAXANGLE)
+                  && (dist(demand[c].toStand, demand[d].toStand) > maxangledist || bearingDiff(stops[demand[c].toStand].bearing, stops[demand[d].toStand].bearing) < maxangle)
           ) {
             // TASK - this calculation above should be replaced by a redundant value in taxi_order - distance * loss
             addLeaf(c, d, 'o', 2, lev);
@@ -378,7 +379,7 @@ boolean waitTimeExceeded(int wait, Branch *b) {
         return true;
       from = b->ordActions[i] == 'i' ? demand[b->ordIDs[i]].fromStand : demand[b->ordIDs[i]].toStand;
       to = b->ordActions[i + 1] == 'i' ? demand[b->ordIDs[i + 1]].fromStand : demand[b->ordIDs[i + 1]].toStand;
-      if (from != to) wait += dist(from, to) + STOP_WAIT;
+      if (from != to) wait += dist(from, to) + stop_wait;
   }
   return false;
 }
@@ -436,7 +437,7 @@ void rmDuplicatesAndFindCab(int inPool) {
       }
       distCab = dist(supply[cabIdx].location, from) + supply[cabIdx].dist;
       if (distCab == 0 // constraints inside pool are checked while "diving" in recursion
-              || constraintsMet(i, ptr, distCab + STOP_WAIT)
+              || constraintsMet(i, ptr, distCab + stop_wait)
             ) { // for the first passenger STOP_WAIT is wrong, but it will concern the others
         // hipi! we have a pool
         ptr->cab = cabIdx; // not supply[cabIdx].id as it is faster to reference it in Boot (than finding IDs)
@@ -471,7 +472,7 @@ boolean constraintsMet(int idx, Branch *el, int distCab) {
     o2 = &demand[el->ordIDs[i + 1]];
     from = el->ordActions[i] == 'i' ? o->fromStand : o->toStand;
     to = el->ordActions[i + 1] == 'i' ? o2->fromStand : o2->toStand;
-    if (from != to) dst += dist(from, to) + STOP_WAIT;
+    if (from != to) dst += dist(from, to) + stop_wait;
   }
   // we don't need to check the last leg as it does not concern "loss", this has been check earlier 
   return true;
@@ -490,7 +491,7 @@ int sumDetour(Branch *el) {
         from = el->ordActions[j - 1] == 'i' ? o->fromStand : o->toStand;
         to = el->ordActions[j] == 'i' ? o2->fromStand : o2->toStand;
         if (from != to) { 
-          dst += dist(from, to) + STOP_WAIT;
+          dst += dist(from, to) + stop_wait;
         }
         if (el->ordIDs[j] == el->ordIDs[i]) { // you don't need to check 'o', it has to be it
           sum += (dst - o->distance); // actual distance - distance without pool
@@ -517,7 +518,7 @@ int countDistanceWithoutPassengers(Branch *el) {
       from = el->ordActions[i] == 'i' ? o->fromStand : o->toStand;
       to = el->ordActions[i + 1] == 'i' ? o2->fromStand : o2->toStand;
       if (from != to) { 
-        dst += dist(from, to) + STOP_WAIT;
+        dst += dist(from, to) + stop_wait;
       }
     }
   }

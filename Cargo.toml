@@ -1,11 +1,11 @@
 [package]
 name = "kern"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["bogusz.jelinski@gmail.com"] 
 
 [dependencies]
-mysql = "25.0.1"
+mysql = { version = "26.0.0", features = ["chrono"] }
 mysql_common = { version = "0.32.4", features = ["chrono"] }
 #postgres = { version = "0.19.3", features = ["with-chrono-0_4"] }
 chrono = "0.4.38"
