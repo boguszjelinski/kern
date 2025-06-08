@@ -120,7 +120,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
                 info!("Nothing to do");
             }
         }
-        update_max_and_avg_time(Stat::AvgShedulerTime, Stat::MaxShedulerTime, start);
+        update_max_and_avg_time(Stat::AvgSchedulerTime, Stat::MaxSchedulerTime, start);
 
         // check if we should wait for new orders
         let mut wait: u64 = cfig.run_after - start.elapsed().as_secs();
