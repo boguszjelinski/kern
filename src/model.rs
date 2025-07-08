@@ -181,7 +181,7 @@ impl Branch {
 pub struct KernCfg {
 	pub max_assign_time: i64,
     pub max_solver_size: usize,
-    pub run_after:u64,
+    pub run_delay:u64,
     pub max_legs: i8,
     pub max_angle: i16,
     pub max_angle_dist: i16,
@@ -203,7 +203,7 @@ impl KernCfg {
         KernCfg { 
             max_assign_time: 3, // min
             max_solver_size: 500, // count
-            run_after: 15, // secs
+            run_delay: 15, // secs
             max_legs: 8,
             max_angle: 120,
             max_angle_dist: 3, 
@@ -230,7 +230,7 @@ impl KernCfg {
         let mut s = Self::access();
         s.max_assign_time = val.max_assign_time; // min
         s.max_solver_size = val.max_solver_size; // count
-        s.run_after = val.run_after; // secs
+        s.run_delay = val.run_delay; // secs
         s.max_legs = val.max_legs;
         s.max_angle = val.max_angle;
         s.max_angle_dist = val.max_angle_dist;

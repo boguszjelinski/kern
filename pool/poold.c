@@ -185,7 +185,7 @@ void lcm_dummy(short *dista, int distSize,
   }
 }
 
-void fast_lcm(short *dista, int distSize,
+void slow_lcm(short *dista, int distSize,
           Order *orders_cpy, int ordersSize, 
           Cab *cabs_cpy, int cabsSize, 
           int how_many,

@@ -67,7 +67,8 @@ For MySQL run this:
   | Parameter | Purpose
   |----------|--------
   | db_conn | database connection string - user, password, address, port, schema
-  | run_after | time difference in seconds between dispatcher executions
+  | run_delay | time difference in seconds between dispatcher executions
+  | run_by  | dispatch will be an eternal loop (if "iterate" value used) or one-run with other value
   | solver_delay | time in seconds after receiving an order when order can no longer wait for a pool and should be assigned by solver.
   | max_assign_time | time in minutes after which orders expire
   | max_solver_size | if demand and supply exceed the value LCM will be called to shrink the model
@@ -77,6 +78,7 @@ For MySQL run this:
   | cab_speed | average speed in km/h
   | stop_wait | how many minutes it takes at a stop
   | log_file  | log file location and name
+  | dist_file  | file with distances matrix, starts with matrix size, all values separated by a new line. Distances will be calculated if empty value.
   | use_pool | if pool finder should be used
   | use_extern_pool | if external pool finder (C library) should be used
   | use_extender | if route extender should be used

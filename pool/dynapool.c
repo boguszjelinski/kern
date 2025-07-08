@@ -55,10 +55,10 @@ short dist(int row, int col) {
 ///  b is existing Branch in lev+1
 /// 
 /// adds an extended pool to the current level (temporary SMP memory)
-void storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inPool) {
+boolean storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inPool) {
     if (nodeSizeSMP[thread] >= MAXTHREADMEM) {
       printf("storeBranch: allocated mem too low, level: %d, inPool: %d\n", lev, inPool);
-      return;
+      return false;
     }
     Branch *ptr = nodeSMP[thread][nodeSizeSMP[thread]];
     ptr->ordNumb = inPool + inPool - lev;
@@ -85,6 +85,7 @@ void storeBranch(int thread, char action, int lev, int ordId, Branch *b, int inP
       ptr->parity = b->parity - 1;
     }
     nodeSizeSMP[thread]++;
+    return true;
 }
 
 // we need to check the following distances while iterating thru IDs
@@ -117,48 +118,47 @@ boolean isTooLong(int ordId, char oper, int wait, Branch *b) {
 }
 /// check how an order fits into a pool
 /// branch is index of existing Branch in lev+1
-/// returns: just pushes to temporary array
-void storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, int branch, int inPool) {
-    // two situations: c IN and c OUT
-    // c IN has to have c OUT in level+1, and c IN cannot exist in level + 1
-    // c OUT cannot have c OUT in level +1
-    boolean outFound = false;
-    Branch *ptr = node[branch];
-    for (int i = 0; i < ptr->ordNumb; i++) {
-      if (ptr->ordIDs[i] == ordId) {
-        if (ptr->ordActions[i] == 'i') {
-          // there is IN in one of next legs, and of course there must by OUT deeper in the tree
-          return;
-        } else {
-          outFound = true;
-          break; //
-        }
+/// returns: false if low memory, otherwise pushes to temporary array
+boolean storeBranchIfNotFoundDeeperAndNotTooLong(int thread, int lev, int ordId, int branch, int inPool) {
+  // two situations: c IN and c OUT
+  // c IN has to have c OUT in level+1, and c IN cannot exist in level + 1
+  // c OUT cannot have c OUT in level +1
+  boolean outFound = false;
+  Branch *ptr = node[branch];
+  for (int i = 0; i < ptr->ordNumb; i++) {
+    if (ptr->ordIDs[i] == ordId) {
+      if (ptr->ordActions[i] == 'i') {
+        // there is IN in one of next legs, and of course there must by OUT deeper in the tree
+        return true;
+      } else {
+        outFound = true;
+        break; //
       }
     }
-    // now checking if anyone in the branch does not lose too much with the pool
-    // c IN
-    int nextStop = ptr->ordActions[0] == 'i'
-                    ? demand[ptr->ordIDs[0]].fromStand : demand[ptr->ordIDs[0]].toStand;
-    if (outFound) {
-      if (!isTooLong(ordId, 'i', dist(demand[ordId].fromStand, nextStop) 
-                                  + (demand[ordId].fromStand != nextStop ? stop_wait : 0), ptr)
-        // TASK? if the next stop is OUT of passenger 'c' - we might allow bigger angle
-        && (dist(demand[ordId].fromStand, nextStop) > maxangledist 
-            || bearingDiff(stops[demand[ordId].fromStand].bearing, stops[nextStop].bearing) < maxangle)
-        ) 
-        storeBranch(thread, 'i', lev, ordId, ptr, inPool);
-    }
-    // c OUT
-    else if (lev > 0 // the first stop cannot be OUT
-        && ptr->outs < inPool // numb OUT must be numb IN
-        && !isTooLong(ordId, 'o', dist(demand[ordId].toStand, nextStop)
-                                + (demand[ordId].toStand != nextStop ? stop_wait : 0), ptr)
-        && (dist(demand[ordId].toStand, nextStop) > maxangledist 
-           || bearingDiff(stops[demand[ordId].toStand].bearing, stops[nextStop].bearing) < maxangle)
-        // this is OUT, if the node under is in parity (INNs==OUTs), that would imply an empty leg
-        && ptr->parity > 0 // OUTs > INNs, a missing 'i' will be in the next (well, previous) level
-          )
-        storeBranch(thread, 'o', lev, ordId, ptr, inPool);
+  }
+  // now checking if anyone in the branch does not lose too much with the pool
+  // c IN
+  int nextStop = ptr->ordActions[0] == 'i'
+                  ? demand[ptr->ordIDs[0]].fromStand : demand[ptr->ordIDs[0]].toStand;
+  if (outFound) {
+    if (!isTooLong(ordId, 'i', dist(demand[ordId].fromStand, nextStop) 
+                                + (demand[ordId].fromStand != nextStop ? stop_wait : 0), ptr)
+      // TASK? if the next stop is OUT of passenger 'c' - we might allow bigger angle
+      && (dist(demand[ordId].fromStand, nextStop) > maxangledist 
+          || bearingDiff(stops[demand[ordId].fromStand].bearing, stops[nextStop].bearing) < maxangle)
+      ) if (!storeBranch(thread, 'i', lev, ordId, ptr, inPool)) return false;
+  }
+  // c OUT
+  else if (lev > 0 // the first stop cannot be OUT
+      && ptr->outs < inPool // numb OUT must be numb IN
+      && !isTooLong(ordId, 'o', dist(demand[ordId].toStand, nextStop)
+                              + (demand[ordId].toStand != nextStop ? stop_wait : 0), ptr)
+      && (dist(demand[ordId].toStand, nextStop) > maxangledist 
+          || bearingDiff(stops[demand[ordId].toStand].bearing, stops[nextStop].bearing) < maxangle)
+      // this is OUT, if the node under is in parity (INNs==OUTs), that would imply an empty leg
+      && ptr->parity > 0 // OUTs > INNs, a missing 'i' will be in the next (well, previous) level
+      ) if (!storeBranch(thread, 'o', lev, ordId, ptr, inPool)) return false;
+  return true;   
 }
 
 void *allocMem(void *arguments) {
@@ -187,7 +187,8 @@ void *iterate(void *arguments) {
    if (demand[ordId].id != -1) { // not allocated in previous search (inPool+1)
     for (int b = 0; b < nodeSize; b++) 
         // we iterate over product of the stage further in the tree: +1
-        storeBranchIfNotFoundDeeperAndNotTooLong(ar->i, ar->lev, ordId, b, ar->inPool);
+      if (!storeBranchIfNotFoundDeeperAndNotTooLong(ar->i, ar->lev, ordId, b, ar->inPool)) 
+        return 0; // low memory, stop iterating
   }
 }
 

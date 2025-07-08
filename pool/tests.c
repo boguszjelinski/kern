@@ -145,7 +145,7 @@ int main() {
     cabsSize = 19000;
     get_orders(ordersSize, stops_numb);
     get_cabs(cabsSize);
-    fast_lcm(
+    slow_lcm(
         dist,
         distSize,
         demand,

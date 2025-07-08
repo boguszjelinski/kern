@@ -719,18 +719,6 @@ mod tests {
     return (node, node_size);
   }
 
-  #[test]
-  #[serial]
-  fn test_find_pool(){
-    let (mut orders, mut cabs, _) = test_init_orders_and_dist2(0.03, 10, 1000);
-    let stops =  get_pool_stops(0.03);
-    let mut max_route_id: i64 = 0;
-    let mut max_leg_id: i64 = 0;
-    let cfg = KernCfg::new();
-    let ret = find_pool(4, 3, &mut orders, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id,
-                                                cfg.max_angle, cfg.max_angle_dist, cfg.stop_wait);
-    assert_eq!(ret.0.len()>0, true);
-  }
 
   fn get_pool_stops(step: f64) -> Vec<Stop> {
     let mut stops: Vec<Stop> = vec![];
@@ -771,6 +759,20 @@ mod tests {
     return ret;
   }
 
+
+  #[test]
+  #[serial]
+  fn test_find_pool(){
+    let (mut orders, mut cabs, _) = test_init_orders_and_dist2(0.03, 10, 1000);
+    let stops =  get_pool_stops(0.03);
+    let mut max_route_id: i64 = 0;
+    let mut max_leg_id: i64 = 0;
+    let cfg = KernCfg::new();
+    let ret = find_pool(4, 3, &mut orders, &mut cabs, &stops, &mut max_route_id, &mut max_leg_id,
+                                                cfg.max_angle, cfg.max_angle_dist, cfg.stop_wait);
+    assert_eq!(ret.0.len()>0, true);
+  }
+
   /* 
       4 threads
      RELEASE: 5.532196233s
@@ -787,9 +789,9 @@ mod tests {
       codegen-units = 16
       rpath = false
    */
-  #[test]
-  #[serial]
-  fn test_performance_find_pool(){
+   #[test]
+   #[serial]
+   fn test_performance_find_pool(){
     let stops = get_pool_stops(0.03);
     init_distance(&stops, 30);
     let mut orders: Vec<Order> = get_pool_orders();
@@ -835,7 +837,6 @@ mod tests {
   }
   
   #[test]
-  #[serial]
   fn test_append(){
     let mut v: Vec<Branch> = Vec::with_capacity(2500000); // large !
     v.resize(2500000, Branch::new());
@@ -886,7 +887,7 @@ mod tests {
     let leaves = store_leaves(&orders, &stops, cfg.max_angle, cfg.stop_wait);
     let elapsed = start.elapsed();
     println!("Elapsed: {:?}", elapsed); 
-    assert_eq!(leaves.len(), 354470);
+    assert_eq!(leaves.len(), 8795390);
   }
 
   #[test]
@@ -1006,9 +1007,8 @@ mod tests {
     let mut max_leg_id: i64 = 0;
     let cfg = KernCfg::new();
     let ret = assign_and_remove(&mut arr, 4, 0, cabs[0], &mut max_route_id, &mut max_leg_id, &orders, cfg.stop_wait);
-    assert_eq!(ret, "UPDATE cab SET status=0 WHERE id=0;\nINSERT INTO route (id, status, cab_id) VALUES (0,1,0);\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (0,0,1,0,1,1,16000,0,0);\n");
+    assert_eq!(ret, "UPDATE cab SET status=0 WHERE id=0;\nUPDATE route SET locked = true WHERE status IN (1,5) AND cab_id=0;\nINSERT INTO route (id, status, cab_id, locked) VALUES (0,1,0, false);\nINSERT INTO leg (id, from_stand, to_stand, place, distance, status, reserve, route_id, passengers) VALUES (0,0,1,0,1,1,16000,0,0);\n");
   }
-
 
   #[test]
   #[serial]

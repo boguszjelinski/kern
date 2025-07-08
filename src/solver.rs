@@ -5,12 +5,10 @@ use std::io::prelude::*;
 use std::process::Command;
 use hungarian::minimize;
 use std::fs::File;
-use log::{debug, warn};
+use log::{info, debug, warn};
 use crate::repo::create_reloc_route;
 use crate::model::{Order, Stop, Cab};
 use crate::distance::DIST;
-
-pub const MAXLCM : usize = 40000; // !! max number of cabs or orders sent to LCM in C
 
 // TODO: this is a very primitive greedy - does not search the lowest in the whole array but in the current row
 // improve it!
@@ -262,4 +260,65 @@ pub fn munkres(cabs: &Vec<Cab>, orders: &Vec<Order>) -> Vec<i16> {
         }
     }
     return ret;
+}
+
+pub fn lcm_slow(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i32,i32)> {
+    // let us start with a big cost - is there any smaller?
+    let big_cost: i32 = 1000000;
+    let mut cabs_cpy = cabs.to_vec(); // clone
+    let mut orders_cpy = orders.to_vec();
+    let mut lcm_min_val;
+    let mut pairs: Vec<(i32,i32)> = vec![];
+    let mut cnt = 0; // returned count
+    for _ in 0..orders_cpy.len() { // we need to repeat the search (cut off rows/columns) 'howMany' times
+        lcm_min_val = big_cost;
+        let mut smin: i32 = -1;
+        let mut dmin: i32 = -1;
+        // now find the minimal element in the whole matrix
+        unsafe {
+        let mut s: usize = 0;
+        let mut found = false;
+        for cab in cabs_cpy.iter() {
+            if cab.id == -1 {
+                s += 1;
+                continue;
+            }
+            let mut d: usize = 0;
+            for order in orders_cpy.iter() {
+                let dst = DIST[cab.location as usize][order.from as usize] as i32;
+                if order.id != -1 && dst < lcm_min_val {
+                    lcm_min_val = dst;
+                    smin = s as i32;
+                    dmin = d as i32;
+                    if lcm_min_val == 0 { // you can't have a better solution
+                        found = true;
+                        break;
+                    }
+                }
+                d += 1;
+            }
+            if found {
+                break; // yes, we could have loop labels and break two of them here, but this is for migration to C
+            }
+            s += 1;
+        }}
+        if lcm_min_val == big_cost {
+            info!("LCM minimal cost is big_cost - no more interesting stuff here");
+            break;
+        }
+        if orders_cpy[dmin as usize].wait >= lcm_min_val {
+            // binding cab to the customer order
+            pairs.push((smin, dmin));
+            // removing the "columns" and "rows" from a virtual matrix
+            cabs_cpy[smin as usize].id = -1;
+            orders_cpy[dmin as usize].id = -1;
+            cnt += 1;
+        } else { // only forget that order, you will not find a lower value in the matrix
+            orders_cpy[dmin as usize].id = -1;
+        }
+        if cnt >= how_many { 
+            break;
+        }
+    }
+    return pairs;
 }
