@@ -1,4 +1,4 @@
-db_conn = "mysql://kabina:kaboot@127.0.0.1:3306/kabina"
+db_conn = "mysql://kabina:kaboot@172.23.192.1:3306/kabina"
 run_after = 15
 solver_delay = 35
 max_assign_time = 3
