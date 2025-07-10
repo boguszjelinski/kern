@@ -4,7 +4,7 @@ use mysql::*;
 use mysql::prelude::*;
 use chrono::{Local, NaiveDateTime};
 use crate::extender::STOP_WAIT;
-use crate::model::{Branch, Cab, CabAssign, CabStatus, Leg, Order, OrderStatus, RouteStatus, Stop, MAXORDID};
+use crate::model::{Branch, Cab, CabAssign, CabStatus, Leg, Order, OrderStatus, RouteStatus, Stop, MAXORDID, MAXSTOPSNUMB};
 use crate::distance::DIST;
 use crate::stats::{STATS, Stat, add_avg_element, update_val, count_average};
 use crate::utils::get_elapsed;
@@ -45,12 +45,19 @@ pub fn find_orders_by_status_and_time(conn: &mut PooledConn, status: OrderStatus
 }
 
 pub fn read_stops(conn: &mut PooledConn) -> Vec<Stop> {
-    return conn.query_map(
+    let list = conn.query_map(
         "SELECT id, latitude, longitude, bearing, capacity FROM stop",
         |(id, latitude, longitude, bearing, capacity)| {
             Stop { id, latitude, longitude, bearing, capacity }
         },
     ).unwrap();
+    // stops vector is index throughout Kern with from/to in taxi_order, so you have to place stops at their places in the vector
+    // beware! MAXSTOPSNUMB must be adjusted if stops IDs are bigger. Keep IDs low!
+    let mut stops: [Stop; MAXSTOPSNUMB] = [Stop {id: 0, bearing: 0, longitude:0.0, latitude: 0.0, capacity: 10}; MAXSTOPSNUMB];
+    for stop in list {
+        stops[stop.id as usize] = stop;
+    }
+    return stops.to_vec();
 }
 
 pub fn read_free_taxi_orders(conn: &mut PooledConn) -> Vec<CabAssign> {

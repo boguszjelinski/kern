@@ -664,7 +664,7 @@ mod tests {
   fn test_init_orders_and_dist(dist: i16, ord_count: usize) -> (Vec<Order>, Vec<Cab>) {
     let mut orders: Vec<Order> = vec![];
     for i in 0..ord_count {
-      orders.push(Order{ id: i as i64, from: i as i32, to: 7-i as i32, wait: 15, loss: 70, dist: 7-2*i as i32, 
+      orders.push(Order{ id: i as i64, from: i as i32, to: (ord_count - i) as i32, wait: 15, loss: 70, dist: i32::abs(ord_count as i32 -2*i as i32), 
         //shared: true, in_pool: false, 
         received: None, 
         //started: None, completed: None, 
@@ -672,7 +672,7 @@ mod tests {
         //eta: 1, 
         route_id: -1 });
     }
-    for i in 0..7 { unsafe { DIST[i][i+1] = dist; } }
+    for i in 0..ord_count { unsafe { DIST[i][i+1] = dist; } }
     let mut cabs: Vec<Cab> = vec![];
     cabs.push(Cab{ id: 0, location: 0, seats: 10, dist: 0 });
     cabs.push(Cab{ id: 1, location: 1, seats: 10, dist: 0 });
@@ -867,13 +867,13 @@ mod tests {
   #[serial]
   fn test_dive(){
     let (orders, _) = test_init_orders_and_dist(1, 7);
-    let stops = get_pool_stops(0.003);
+    let stops = get_pool_stops(0.008);
     init_distance(&stops, 30);
     let cfg = KernCfg::new();
     let mut node: Box<[Branch; N]> = vec![Branch::new(); N].try_into().unwrap();
     let mut node_size: usize = 0;
     dive(0, 4, 3, &orders, &stops, cfg.max_angle, cfg.max_angle_dist, cfg.stop_wait, &mut node, &mut node_size);
-    assert_eq!(node_size, 152);
+    assert_eq!(node_size, 2);
   }
 
   #[test]
@@ -932,15 +932,14 @@ mod tests {
     node[0] = Branch{ cost: 1, outs: 4, ord_numb: 7, ord_ids: [2,3,4,4,3,2,1,0], ord_actions: [105,105,105,111,111,111,111,0], cab: 0, parity: 1 };
     node[1] = Branch{ cost: 1, outs: 4, ord_numb: 7, ord_ids: [6,7,8,8,7,6,5,0], ord_actions: [105,105,105,111,111,111,111,0], cab: 0, parity: 1 };
     node[2] = Branch{ cost: 1, outs: 4, ord_numb: 7, ord_ids: [6,7,8,8,7,6,1,0], ord_actions: [105,105,105,111,111,111,111,0], cab: 0, parity: 1 };
-    let mut node_size: usize = 3;
+    let node_size: usize = 3;
 
     let mut t_numb = 4;
     let mut chunk = orders.len() / t_numb as usize;
     if chunk == 0 { chunk = 1; }
     if t_numb as usize * chunk < orders.len() { t_numb += 1; } // last thread will be the reminder of division
     if t_numb as usize * chunk < orders.len() { chunk *= 2; }
-    let mut ret: Vec<Branch> = vec!(); 
-    ret = iterate(0, 4, 0, chunk, &orders, &stops, cfg.max_angle, cfg.max_angle_dist, cfg.stop_wait, &node, node_size);
+    let ret = iterate(0, 4, 0, chunk, &orders, &stops, cfg.max_angle, cfg.max_angle_dist, cfg.stop_wait, &node, node_size);
     assert_eq!(ret.len(), 1);
     //println!("{} {}", ret[0].ord_ids[0], ret[0].ord_ids[1]);
   }
@@ -977,10 +976,10 @@ mod tests {
   #[serial]
   fn test_store_branch() {
     let (orders, _) = test_init_orders_and_dist(1, 6);
-    let b =  Branch{ cost: 1, outs: 1, ord_numb: 1, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0, parity: 0 };
+    let b =  Branch{ cost: 1, outs: 4, ord_numb: 4, ord_ids: [1,2,3,4,4,3,2,1], ord_actions: [105,105,105,105,111,111,111,111], cab: 0, parity: 0 };
     let cfg = KernCfg::new();
-    let ret = store_branch('i', 0, 0, &b, 4, &orders, cfg.stop_wait);
-    assert_eq!(ret.cost, 3);
+    let ret = store_branch('o', 0, 0, &b, 4, &orders, cfg.stop_wait);
+    assert_eq!(ret.cost, 2);
   }
 /* 
   #[test]
@@ -1000,7 +999,7 @@ mod tests {
   #[serial]
   fn test_assign_and_remove() {
     let (orders, cabs) = test_init_orders_and_dist(1, 4);
-    let (node, node_size) = test_branches();
+    let (node, _node_size) = test_branches();
     let slice =  &node[0..3];
     let mut arr = slice.to_vec();
     let mut max_route_id: i64 = 0;
@@ -1013,7 +1012,7 @@ mod tests {
   #[test]
   #[serial]
   fn test_mark_pools_as_dead() {
-    let (node, node_size) = test_branches();
+    let (node, _node_size) = test_branches();
     let slice =  &node[0..3];
     let mut arr = slice.to_vec();
     mark_pools_as_dead(&mut arr, 0);

@@ -12,13 +12,15 @@ pub fn get_elapsed(val: Option<NaiveDateTime>) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use chrono::NaiveDate;
+    use chrono::{NaiveDate, NaiveTime};
     use super::*;
 
   #[test]
   fn test_elapsed() {
-    let past = Some(NaiveDate::from_ymd(2018, 3, 26).and_hms(10, 02, 0));
-    let x = get_elapsed(past);
+    let day = NaiveDate::from_ymd_opt(2014, 7, 8).unwrap();
+    let time = NaiveTime::from_hms_opt(10, 02, 0).unwrap();
+    let past = NaiveDateTime::new(day, time);
+    let x = get_elapsed(Some(past));
     let sant = x > 0;
     assert_eq!(sant, true);
   }

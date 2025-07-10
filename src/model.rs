@@ -10,7 +10,7 @@ pub const MAXINPOOL : usize = 4;
 pub const MAXORDID : usize = MAXINPOOL * 2;
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Stop {
     pub id: i64,
     pub bearing: i32,

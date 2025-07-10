@@ -348,7 +348,7 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
             let how_many = std::cmp::min(ord_len, cabs_len) as i16 - cfg.max_solver_size as i16;
             info!("LCM input: demand={}, supply={}, to be found: {}", ord_len, cabs_len, how_many);
             lcm_handle = lcm(host, &mut cabs, &mut demand, &mut max_route_id, &mut max_leg_id, 
-                            how_many, cfg);
+                            how_many);
             update_max_and_avg_time(Stat::AvgLcmTime, Stat::MaxLcmTime, start_lcm);
             incr_val(Stat::TotalLcmUsed);
             (*cabs, demand) = shrink(&cabs, demand);
@@ -454,6 +454,7 @@ fn find_internal_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
     return (pl, sql);
 }
 
+/*
 fn print_pool(list: &Vec<Branch>, demand: &Vec<Order>, cabs: &Vec<Cab>) {
     for b in list {
         let cab_cost = unsafe { DIST[cabs[b.cab as usize].location as usize][demand[b.ord_ids[0] as usize].from as usize] };
@@ -477,6 +478,7 @@ fn print_pool(list: &Vec<Branch>, demand: &Vec<Order>, cabs: &Vec<Cab>) {
         println!("");
     }
 }
+*/
 
 // if fail then dump input and output
 fn validate_answer(br: &[Branch; MAXBRANCHNUMB], cnt: &i32, demand_size: usize, cabs: &Vec<Cab>) {
@@ -548,7 +550,7 @@ fn validate_answer(br: &[Branch; MAXBRANCHNUMB], cnt: &i32, demand_size: usize, 
     } 
 }
 
-pub fn extern_lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16, cfg: KernCfg) -> Vec<(i32,i32)> {
+pub fn extern_lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16, _cfg: KernCfg) -> Vec<(i32,i32)> {
     let cabs_cpy = cabs.to_vec(); // clone
     let orders_cpy = orders.to_vec();
     let mut supply: [i32; MAXLCM] = [0; MAXLCM];
@@ -556,7 +558,7 @@ pub fn extern_lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16, cfg: Kern
     let mut count: i32 = 0;
 
     unsafe { 
-       /* if cabs.len() * orders.len() > cfg.max_solver_size * 20 {
+        /* if cabs.len() * orders.len() > cfg.max_solver_size * 20 {
             lcm_dummy(
                 addr_of!(DIST),
                 MAXSTOPSNUMB as i32,
@@ -598,7 +600,7 @@ pub fn extern_lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16, cfg: Kern
 
 // least/low cost method - shrinking the model so that it can be sent to solver
 pub fn lcm(host: &String, mut cabs: &mut Vec<Cab>, mut orders: &mut Vec<Order>, 
-            max_route_id: &mut i64, max_leg_id: &mut i64, how_many: i16, cfg: KernCfg) 
+            max_route_id: &mut i64, max_leg_id: &mut i64, how_many: i16/*, cfg: KernCfg*/) 
             -> thread::JoinHandle<()> {
     if how_many < 1 { // we would like to find at least one
         warn!("LCM asked to do nothing");
@@ -669,7 +671,7 @@ fn find_external_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
 
     // generate SQL
     let mut sql: String = String::from("");
-    'outer: for i in 0 .. cnt as usize {
+    for i in 0 .. cnt as usize {
         // first two quality checks
         /*
         if br[i].cab == -1 || br[i].cab >= cabs.len() as i16 {

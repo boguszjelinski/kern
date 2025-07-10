@@ -97,7 +97,7 @@ pub fn relocate_free_cabs_glpk(free_cabs: &Vec<Cab>, stops: &Vec<Stop>, max_rout
         return sql;
     }
     // count how many places are still available at stops
-    let mut stop_capa: Vec<i16> = count_capacity(free_cabs, stops);
+    let stop_capa: Vec<i16> = count_capacity(free_cabs, stops);
     // now reduce the size of cabs and stops vectors - cabs that do not need to be moved 
     //and stops with no capacity
     let mut cab_idx: Vec<usize> = vec!(); // index i free_cabs
@@ -161,9 +161,9 @@ fn run_glpk(free_cabs: &Vec<Cab>, cab_idx: &Vec<usize>, stops: &Vec<Stop>, stop_
         str += &format!("{} ", idx + 1); // GLPK's indexes start with 1
     }
     str += ":=\n";
-    for (cab_i, c) in cab_idx.iter().enumerate() {
+    for (cab_i, _c) in cab_idx.iter().enumerate() {
         str += &format!("  {}", cab_i + 1);
-        for (stop_i, s) in stop_idx.iter().enumerate() {
+        for (stop_i, _s) in stop_idx.iter().enumerate() {
             str += &format!(" {}", unsafe { 
                 DIST[free_cabs[cab_idx[cab_i]].location as usize][stops[stop_idx[stop_i]].id as usize]});
         }
