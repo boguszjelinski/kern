@@ -1,10 +1,10 @@
 use std::cmp;
-use log::{debug, warn};
+use log::{info, debug, warn};
 use mysql::*;
 use mysql::prelude::*;
 use chrono::{Local, NaiveDateTime};
 use crate::extender::STOP_WAIT;
-use crate::model::{Branch, Cab, CabAssign, CabStatus, Leg, Order, OrderStatus, RouteStatus, Stop, MAXORDID};
+use crate::model::{Branch, Cab, CabAssign, CabStatus, Leg, Order, OrderStatus, RouteStatus, Stop, MAXORDID, MAXSTOPSNUMB};
 use crate::distance::DIST;
 use crate::stats::{STATS, Stat, add_avg_element, update_val, count_average};
 use crate::utils::get_elapsed;
@@ -45,12 +45,19 @@ pub fn find_orders_by_status_and_time(conn: &mut PooledConn, status: OrderStatus
 }
 
 pub fn read_stops(conn: &mut PooledConn) -> Vec<Stop> {
-    return conn.query_map(
+    let list = conn.query_map(
         "SELECT id, latitude, longitude, bearing, capacity FROM stop",
         |(id, latitude, longitude, bearing, capacity)| {
             Stop { id, latitude, longitude, bearing, capacity }
         },
     ).unwrap();
+    // stops vector is index throughout Kern with from/to in taxi_order, so you have to place stops at their places in the vector
+    // beware! MAXSTOPSNUMB must be adjusted if stops IDs are bigger. Keep IDs low!
+    let mut stops: [Stop; MAXSTOPSNUMB] = [Stop {id: 0, bearing: 0, longitude:0.0, latitude: 0.0, capacity: 10}; MAXSTOPSNUMB];
+    for stop in list {
+        stops[stop.id as usize] = stop;
+    }
+    return stops.to_vec();
 }
 
 pub fn read_free_taxi_orders(conn: &mut PooledConn) -> Vec<CabAssign> {
@@ -100,7 +107,7 @@ pub fn find_free_cab_and_on_last_leg(conn: &mut PooledConn) -> Vec<Cab> {
             {   
                 let mut dist: i16 = distance; // default if we can't calculate elapsed
                 let stamp: Option<NaiveDateTime> = started;
-                let passed = get_elapsed(stamp);
+                let passed = get_elapsed(stamp)/60;
                 if passed != -1 { 
                     if passed as i16 > dist {
                         dist = 0;
@@ -108,6 +115,8 @@ pub fn find_free_cab_and_on_last_leg(conn: &mut PooledConn) -> Vec<Cab> {
                         dist -= passed as i16;
                     }
                 }
+                //debug!("Cab on last leg cab_id={}, to={}, started={:?}, leg.dist={}, passed={}, to_go={}",
+                //        id, location, stamp, distance, passed, dist);
                 Cab { id, location, seats, dist} 
             },
     ).unwrap();
@@ -179,8 +188,8 @@ pub fn assign_order_find_cab(order_id: i64, leg_id: i64, route_id: i64, eta: i32
 }
 
 pub fn assign_order(order_id: i64, cab_id: i64, leg_id: i64, route_id: i64, eta: i16, in_pool: &str, called_by: &str) -> String {   
-    debug!("Assigning order_id={} to cab_id={}, route_id={}, leg_id={}, module: {}",
-                                            order_id, cab_id, route_id, leg_id, called_by);
+    debug!("Assigning order_id={} to cab_id={}, route_id={}, leg_id={}, eta={}, module: {}",
+                                            order_id, cab_id, route_id, leg_id, eta, called_by);
     return format!("\
         UPDATE taxi_order SET route_id={}, leg_id={}, cab_id={}, status=1, eta={}, in_pool={} \
         WHERE id={} AND status=0;\n", // it might be cancelled in the meantime, we have to be sure. 
@@ -297,13 +306,13 @@ fn update_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16
     // then new route
     sql += &format!("INSERT INTO route (id, status, cab_id, locked) VALUES ({},{},{}, false);\n", // 0 will be updated soon
                     *max_route_id, 1, cab.id).to_string(); // 1=ASSIGNED
-
+    *eta = cab.dist;
     if cab.location != order.from { // cab has to move to pickup the first customer
         unsafe {
-            *eta = DIST[cab.location as usize][order.from as usize];
+            *eta += DIST[cab.location as usize][order.from as usize];
         }
         sql += &create_leg(order.id, cab.location, order.from, *place, 
-                    RouteStatus::ASSIGNED, *eta, reserve,
+                    RouteStatus::ASSIGNED, unsafe { DIST[cab.location as usize][order.from as usize] }, reserve,
                             *max_route_id, max_leg_id, 0, "assignCab");
         *place += 1;
         //TODO: statSrvc.addToIntVal("total_pickup_distance", Math.abs(cab.getLocation() - order.fromStand));
@@ -432,17 +441,22 @@ fn assign_orders_and_save_legs(cab_id: i64, route_id: i64, mut place: i32, e: Br
     return sql;
 }
 
-pub fn assign_order_to_cab_lcm(sol: Vec<(i16,i16)>, cabs: &mut Vec<Cab>, demand: &mut Vec<Order>, max_route_id: &mut i64, 
+pub fn assign_order_to_cab_lcm(sol: Vec<(i32,i32)>, cabs: &mut Vec<Cab>, demand: &mut Vec<Order>, max_route_id: &mut i64, 
                               max_leg_id: &mut i64) -> String {
     let mut sql: String = String::from("");
+    let route_id_start = *max_route_id;
     for (_, (cab_idx, ord_idx)) in sol.iter().enumerate() {
         let order = demand[*ord_idx as usize];
         let cab: Cab = cabs[*cab_idx as usize];
+        let cab_transf = (unsafe { DIST[cab.location as usize][order.from as usize] } + cab.dist) as i32;
+        if cab_transf > order.wait {
+            continue;
+        }
         let mut place = 0;
-        let mut eta: i16 = 0; // cab's leg is not important for customers
+        let mut eta: i16 = 0;
         // this leg should not be extended now, but it might be in the future with "last leg in active route" project
         // so we need to have a valid reserve
-        let mut reserve: i32 = order.wait - unsafe { DIST[cab.location as usize][order.from as usize] } as i32; // expected time of arrival
+        let mut reserve: i32 = order.wait - cab_transf; // expected time of arrival
         if reserve < 0 { reserve = 0; } 
         sql += &update_cab_add_route(&cab, &order, &mut place, &mut eta,  reserve, max_route_id, max_leg_id);
         let loss = unsafe { DIST[order.from as usize][order.to as usize] as f32
@@ -453,6 +467,7 @@ pub fn assign_order_to_cab_lcm(sol: Vec<(i16,i16)>, cabs: &mut Vec<Cab>, demand:
         demand[*ord_idx as usize].id = -1;
         *max_route_id += 1;
     }
+    info!("assign_order_to_cab_lcm produced {} routes", *max_route_id - route_id_start);
     return sql;
 }
 
@@ -477,11 +492,16 @@ pub fn assign_cust_to_cab_munkres(sol: Vec<i16>, cabs: &Vec<Cab>, demand: &Vec<O
         if *ord_idx == -1 {
             continue; // cab not assigned
         }
-        let order = demand[*ord_idx as usize];
+        let order = demand[*ord_idx as usize]; 
         let cab: Cab = cabs[cab_idx];
+        let cab_transf = ( unsafe { DIST[cab.location as usize][order.from as usize] } + cab.dist) as i32;
+        if cab_transf > order.wait {
+            // we place a high penalty in the cost matrix in this case, but it can be assigned anyway by Munkres
+            continue;
+        }
         let mut place = 0;
-        let mut eta = 0; // expected time of arrival, see comments in LCM above
-        let mut reserve: i32 = order.wait - unsafe { DIST[cab.location as usize][order.from as usize] } as i32; // expected time of arrival
+        let mut eta = 0;
+        let mut reserve: i32 = order.wait - cab_transf;
         if reserve < 0 { 
             // TODO/TASK we should communicate with the customer, if this is acceptable, more than WAIT TIME
             reserve = 0; 

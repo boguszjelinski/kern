@@ -2,15 +2,15 @@ use chrono::NaiveDateTime;
 use std::sync::{Mutex, MutexGuard};
 
 pub const MAXSTOPSNUMB : usize = 5200;
-pub const MAXORDERSNUMB: usize = 4000; // max not assigned
-pub const MAXCABSNUMB: usize = 18000;
-pub const MAXBRANCHNUMB: usize = 1000; // size of pool finder's response
+pub const MAXORDERSNUMB: usize = 20000; // max not assigned
+pub const MAXCABSNUMB: usize = 39900;
+pub const MAXBRANCHNUMB: usize = 5000; // size of pool finder's response
 
 pub const MAXINPOOL : usize = 4;
 pub const MAXORDID : usize = MAXINPOOL * 2;
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Stop {
     pub id: i64,
     pub bearing: i32,
@@ -19,7 +19,7 @@ pub struct Stop {
     pub capacity: i16
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Order {
     pub id: i64, // -1 as to-be-dropped
 	pub from: i32,
@@ -158,7 +158,7 @@ pub struct Branch {
 	pub ord_numb: i16, // it is in fact ord number *2; length of vectors below - INs & OUTs
 	pub ord_ids : [i16; MAXORDID],
 	pub ord_actions: [i8; MAXORDID],
-	pub cab :i16,
+	pub cab :i32,
     pub parity: u8
 }
 
@@ -181,7 +181,7 @@ impl Branch {
 pub struct KernCfg {
 	pub max_assign_time: i64,
     pub max_solver_size: usize,
-    pub run_after:u64,
+    pub run_delay:u64,
     pub max_legs: i8,
     pub max_angle: i16,
     pub max_angle_dist: i16,
@@ -203,7 +203,7 @@ impl KernCfg {
         KernCfg { 
             max_assign_time: 3, // min
             max_solver_size: 500, // count
-            run_after: 15, // secs
+            run_delay: 15, // secs
             max_legs: 8,
             max_angle: 120,
             max_angle_dist: 3, 
@@ -230,7 +230,7 @@ impl KernCfg {
         let mut s = Self::access();
         s.max_assign_time = val.max_assign_time; // min
         s.max_solver_size = val.max_solver_size; // count
-        s.run_after = val.run_after; // secs
+        s.run_delay = val.run_delay; // secs
         s.max_legs = val.max_legs;
         s.max_angle = val.max_angle;
         s.max_angle_dist = val.max_angle_dist;

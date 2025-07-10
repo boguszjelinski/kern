@@ -5,59 +5,10 @@ use std::io::prelude::*;
 use std::process::Command;
 use hungarian::minimize;
 use std::fs::File;
-use std::thread;
-use log::{debug, warn};
-use std::ptr::addr_of;
-use crate::pool::{orders_to_transfer_array, cabs_to_array};
-use crate::repo::{assign_order_to_cab_lcm, create_reloc_route};
-use crate::model::{Order, OrderTransfer, Stop, Cab, MAXSTOPSNUMB, MAXCABSNUMB, MAXORDERSNUMB};
+use log::{info, debug, warn};
+use crate::repo::create_reloc_route;
+use crate::model::{Order, Stop, Cab};
 use crate::distance::DIST;
-use crate::extender::get_handle;
-
-const MAXLCM : usize = 20000; // !! max number of cabs or orders sent to LCM in C
-
-#[link(name = "dynapool")]
-unsafe extern "C" {
-    unsafe fn c_lcm(
-        distance: *const [[i16; 5200]; 5200],
-        distSize: i32,
-        orders: &[OrderTransfer; MAXORDERSNUMB],
-        ordersSize: i32,
-        cabs: &[Cab; MAXCABSNUMB],
-        cabsSize: i32,
-        how_many: i32,
-        supply: &mut [i16; MAXLCM], // returned values
-        demand: &mut [i16; MAXLCM], // returned values
-        count: &mut i32 // returned count of values
-    );
-}
-
-fn extern_lcm(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i16,i16)> {
-    let cabs_cpy = cabs.to_vec(); // clone
-    let orders_cpy = orders.to_vec();
-    let mut supply: [i16; MAXLCM] = [0; MAXLCM];
-    let mut demand: [i16; MAXLCM] = [0; MAXLCM];
-    let mut count: i32 = 0;
-
-    unsafe { c_lcm(
-        addr_of!(DIST),
-        MAXSTOPSNUMB as i32,
-        &orders_to_transfer_array(&orders_cpy),
-        orders_cpy.len() as i32,
-        &cabs_to_array(&cabs_cpy),
-        cabs_cpy.len() as i32,
-        how_many as i32,
-        &mut supply, // returned values
-        &mut demand,
-        &mut count
-    );}
-    
-    let mut pairs: Vec<(i16,i16)> = vec![];
-    for i in 0..count as usize {
-        pairs.push((supply[i], demand[i]));
-    }
-    return pairs;
-}
 
 // TODO: this is a very primitive greedy - does not search the lowest in the whole array but in the current row
 // improve it!
@@ -146,7 +97,7 @@ pub fn relocate_free_cabs_glpk(free_cabs: &Vec<Cab>, stops: &Vec<Stop>, max_rout
         return sql;
     }
     // count how many places are still available at stops
-    let mut stop_capa: Vec<i16> = count_capacity(free_cabs, stops);
+    let stop_capa: Vec<i16> = count_capacity(free_cabs, stops);
     // now reduce the size of cabs and stops vectors - cabs that do not need to be moved 
     //and stops with no capacity
     let mut cab_idx: Vec<usize> = vec!(); // index i free_cabs
@@ -210,9 +161,9 @@ fn run_glpk(free_cabs: &Vec<Cab>, cab_idx: &Vec<usize>, stops: &Vec<Stop>, stop_
         str += &format!("{} ", idx + 1); // GLPK's indexes start with 1
     }
     str += ":=\n";
-    for (cab_i, c) in cab_idx.iter().enumerate() {
+    for (cab_i, _c) in cab_idx.iter().enumerate() {
         str += &format!("  {}", cab_i + 1);
-        for (stop_i, s) in stop_idx.iter().enumerate() {
+        for (stop_i, _s) in stop_idx.iter().enumerate() {
             str += &format!(" {}", unsafe { 
                 DIST[free_cabs[cab_idx[cab_i]].location as usize][stops[stop_idx[stop_i]].id as usize]});
         }
@@ -286,21 +237,6 @@ j,i
 3,4
 */
 
-// least/low cost method - shrinking the model so that it can be sent to solver
-pub fn lcm(host: &String, mut cabs: &mut Vec<Cab>, mut orders: &mut Vec<Order>, max_route_id: &mut i64, max_leg_id: &mut i64, how_many: i16) 
-                                -> thread::JoinHandle<()> {
-    if how_many < 1 { // we would like to find at least one
-        warn!("LCM asked to do nothing");
-        return thread::spawn(|| { });
-    }
-    //let pairs: Vec<(i16,i16)> = lcm_gen_pairs2(cabs, orders, how_many);
-    let pairs: Vec<(i16,i16)> = extern_lcm(cabs, orders, how_many);
-    let sql = assign_order_to_cab_lcm(pairs, &mut cabs, &mut orders, max_route_id, max_leg_id);
-    return get_handle(host.clone(), sql, "LCM".to_string());
-}
-
-
-
 // returns indexes of orders assigned to cabs - vec[1]==5 would mean 2nd cab assigned 6th order
 pub fn munkres(cabs: &Vec<Cab>, orders: &Vec<Order>) -> Vec<i16> {
     let mut ret: Vec<i16> = vec![];
@@ -309,7 +245,8 @@ pub fn munkres(cabs: &Vec<Cab>, orders: &Vec<Order>) -> Vec<i16> {
     for c in cabs.iter() {
         for o in orders.iter() {
             unsafe {
-                matrix.push(DIST[c.location as usize][o.from as usize] as i32 + o.dist);
+                let dst = (DIST[c.location as usize][o.from as usize] + c.dist) as i32;
+                matrix.push(if dst <= o.wait { dst } else { 1000 }); // 1k = block this 
             }
         }
     }
@@ -323,4 +260,65 @@ pub fn munkres(cabs: &Vec<Cab>, orders: &Vec<Order>) -> Vec<i16> {
         }
     }
     return ret;
+}
+
+pub fn lcm_slow(cabs: &Vec<Cab>, orders: &Vec<Order>, how_many: i16) -> Vec<(i32,i32)> {
+    // let us start with a big cost - is there any smaller?
+    let big_cost: i32 = 1000000;
+    let mut cabs_cpy = cabs.to_vec(); // clone
+    let mut orders_cpy = orders.to_vec();
+    let mut lcm_min_val;
+    let mut pairs: Vec<(i32,i32)> = vec![];
+    let mut cnt = 0; // returned count
+    for _ in 0..orders_cpy.len() { // we need to repeat the search (cut off rows/columns) 'howMany' times
+        lcm_min_val = big_cost;
+        let mut smin: i32 = -1;
+        let mut dmin: i32 = -1;
+        // now find the minimal element in the whole matrix
+        unsafe {
+        let mut s: usize = 0;
+        let mut found = false;
+        for cab in cabs_cpy.iter() {
+            if cab.id == -1 {
+                s += 1;
+                continue;
+            }
+            let mut d: usize = 0;
+            for order in orders_cpy.iter() {
+                let dst = DIST[cab.location as usize][order.from as usize] as i32;
+                if order.id != -1 && dst < lcm_min_val {
+                    lcm_min_val = dst;
+                    smin = s as i32;
+                    dmin = d as i32;
+                    if lcm_min_val == 0 { // you can't have a better solution
+                        found = true;
+                        break;
+                    }
+                }
+                d += 1;
+            }
+            if found {
+                break; // yes, we could have loop labels and break two of them here, but this is for migration to C
+            }
+            s += 1;
+        }}
+        if lcm_min_val == big_cost {
+            info!("LCM minimal cost is big_cost - no more interesting stuff here");
+            break;
+        }
+        if orders_cpy[dmin as usize].wait >= lcm_min_val {
+            // binding cab to the customer order
+            pairs.push((smin, dmin));
+            // removing the "columns" and "rows" from a virtual matrix
+            cabs_cpy[smin as usize].id = -1;
+            orders_cpy[dmin as usize].id = -1;
+            cnt += 1;
+        } else { // only forget that order, you will not find a lower value in the matrix
+            orders_cpy[dmin as usize].id = -1;
+        }
+        if cnt >= how_many { 
+            break;
+        }
+    }
+    return pairs;
 }

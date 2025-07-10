@@ -8,11 +8,13 @@ To test the technology stack more realistically you can simulate clients via Res
 * [Kapir](https://gitlab.com/kabina/kapir): Rest API responsible for receiving requests, share statuses and store them in a database. You need Kapir to run React clients.
 * [Kapi](https://gitlab.com/kabina/kapi/client): Rest API client simulator, which also emulates real users in big volume (100k/h)
 
-But you might also want to test visually, on-line, how a request is served. Four React applications will help you do it: 
+But you might also want to test visually, on-line, how a request is served. Five React applications will help you do it: 
 * [Kabina](https://gitlab.com/kabina/kabina): mobile application for customers 
 * [Kab](https://gitlab.com/kabina/kab): mobile application for minibus drivers
 * [Kavla](https://gitlab.com/kabina/kavla): mobile application for presenting current routes serving a bus stop 
+* [Kaut](https://gitlab.com/kabina/kaut): a panel in a cab for authentication, adding a passenger to an existing route or creating a new one when cab is free
 * [Kanal](https://gitlab.com/kabina/kanal): some performance indicators of the dispatcher.
+
 
 ## Prerequisites:
 * MySQL or PostgreSQL (currently not maintained, a separate branch)
@@ -41,7 +43,7 @@ IMPORTANT when building on Linux: You should decrease the value of the `MAXTHREA
 
 2) check the source code if the correct name of the static library is used; during testing different versions may be used, an example for libdynapool88.a
    ```
-   #[link(name = "dynapool88")] 
+   #[link(name = "dynapool")] 
    ```
 3) Compile the dispatcher
    ```
@@ -65,7 +67,8 @@ For MySQL run this:
   | Parameter | Purpose
   |----------|--------
   | db_conn | database connection string - user, password, address, port, schema
-  | run_after | time difference in seconds between dispatcher executions
+  | run_delay | time difference in seconds between dispatcher executions
+  | run_by  | dispatch will be an eternal loop (if "iterate" value used) or one-run with other value
   | solver_delay | time in seconds after receiving an order when order can no longer wait for a pool and should be assigned by solver.
   | max_assign_time | time in minutes after which orders expire
   | max_solver_size | if demand and supply exceed the value LCM will be called to shrink the model
@@ -75,6 +78,7 @@ For MySQL run this:
   | cab_speed | average speed in km/h
   | stop_wait | how many minutes it takes at a stop
   | log_file  | log file location and name
+  | dist_file  | file with distances matrix, starts with matrix size, all values separated by a new line. Distances will be calculated if empty value.
   | use_pool | if pool finder should be used
   | use_extern_pool | if external pool finder (C library) should be used
   | use_extender | if route extender should be used
@@ -242,7 +246,7 @@ You would like to remove previous logs:
 
 ## Copyright notice
 
-Copyright 2024 Bogusz Jelinski
+Copyright 2025 Bogusz Jelinski
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -257,7 +261,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 #
 Bogusz Jelinski    
-January 2024
+April 2025
 Mo i Rana
 
 bogusz.jelinski (at) g m a i l

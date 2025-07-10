@@ -12,6 +12,7 @@ pub static mut AVG_ELEMENTS: [Vec<i64>; Stat::TotalPickupDistance as usize + 1]
 pub enum Stat {
     AvgExtenderTime,
     AvgPoolTime,
+    AvgPool2Time,
     AvgPool3Time,
     AvgPool4Time,
     AvgPool5Time,
@@ -21,6 +22,7 @@ pub enum Stat {
 
     MaxExtenderTime,
     MaxPoolTime,
+    MaxPool2Time,
     MaxPool3Time,
     MaxPool4Time,
     MaxPool5Time,
@@ -75,17 +77,19 @@ impl Stat {
     }
     */
     pub fn iterator() -> Iter<'static, Stat> {
-        static RET: [Stat; 23] = [
+        static RET: [Stat; 25] = [
             AvgExtenderTime,
             AvgPoolTime,
-            AvgPool3Time, // not updated as it runs in C
-            AvgPool4Time, // not updated
+            AvgPool2Time,
+            AvgPool3Time,
+            AvgPool4Time,
             AvgLcmTime,
             AvgSolverTime,
             AvgSchedulerTime,
         
             MaxExtenderTime,
             MaxPoolTime,
+            MaxPool2Time,
             MaxPool3Time,
             MaxPool4Time,
             MaxLcmTime,

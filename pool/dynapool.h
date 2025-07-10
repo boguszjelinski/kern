@@ -11,10 +11,6 @@
 #endif
 #define MAXNODEMEM MAXTHREADMEM * NUMBTHREAD
 
-#define MAXANGLE 120.0
-#define MAXANGLEDIST 1
-#define STOP_WAIT 1 // minute, how long it takes at a bus stop
-
 #define true 1
 #define false 0
 typedef int boolean;
@@ -62,7 +58,7 @@ struct Branch {
   // ordIDs does not need to be int, short is enough as we NEVER are going to solve pools with 64k orders as input
   short ordIDs[MAXORDID];
   char ordActions[MAXORDID];
-  short cab;
+  int cab;
   unsigned char parity; // by how many do OUTs exceed INs, to easily find empty legs 
 };
 
@@ -73,6 +69,18 @@ void dynapool(int, int[MAXINPOOL - 1],
     Stop *, int,
     Order *, int, 
     Cab *, int, 
+    short, short, short,
+    char,
     Branch *, int, 
     int *,
     int [MAXINPOOL - 1]);
+
+void slow_lcm(short *dista, int distSize,
+        Order *orders_cpy, int ordersSize, 
+        Cab *cabs_cpy, int cabsSize, 
+        int how_many,
+        // returned values, the size is determined by how_many
+        int *supply,
+        int *demand,
+        int *count);
+        
