@@ -149,10 +149,14 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>>  {
         update_max_and_avg_time(Stat::AvgSchedulerTime, Stat::MaxSchedulerTime, start);
 
         if run_by != "iterate" { // exit after one iteration
-            return Ok(())
+            return Ok(());
         }
         // check if we should wait for new orders
-        let mut wait: u64 = cfig.run_delay - start.elapsed().as_secs();
+        let mut wait: u64 = cfig.run_delay.saturating_sub(start.elapsed().as_secs());
+        if wait == 0 {
+           continue;
+        }
+
         if wait > 60 {
             // TODO: find the bug!
             warn!("Strange wait time: {}", wait);

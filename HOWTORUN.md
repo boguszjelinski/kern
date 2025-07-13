@@ -73,7 +73,7 @@ For MySQL run this:
   | max_assign_time | time in minutes after which orders expire
   | max_solver_size | if demand and supply exceed the value LCM will be called to shrink the model
   | max_legs | how many legs can a route have, used in route extender
-  | max_angle | max angle between consecutive stops; used to promote streight routes 
+  | max_angle | max angle between consecutive stops; used to promote straight routes 
   | max_angle_dist | a max distance where 'max angle' constraint is applied 
   | cab_speed | average speed in km/h
   | stop_wait | how many minutes it takes at a stop
