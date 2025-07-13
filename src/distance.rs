@@ -1,6 +1,4 @@
-use std::fs::File;
-use std::io::{BufRead, BufReader, Error, ErrorKind, Read};
-use log::warn;
+use log::{info, warn};
 use crate::model::{Stop,MAXSTOPSNUMB};
 pub static mut DIST : [[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB] = [[0; MAXSTOPSNUMB]; MAXSTOPSNUMB];
 const M_PI : f64 = 3.14159265358979323846264338327950288;
@@ -61,29 +59,28 @@ pub fn dump_dist(file_name: &str, size: usize) {
 }
 */
 
-pub fn read_dist(file_name: &String, stop_size: usize) {
-    match File::open(file_name) {
-        Ok(f) => {
-            match read_io(f) {
-                Ok(data) => {
-                    let size = data[0] as usize;
-                    if stop_size > size {
-                        panic!("Number of stops {} is bigger than data set size: {}", stop_size, size);
-                    }
-                    if size > MAXSTOPSNUMB {
-                        panic!("Requested size {} is bigger than matrix size: {}", stop_size, MAXSTOPSNUMB);
-                    }
-                    if size == 0 || data.len() != size*size + 1 {
-                        panic!("Requested size {} is strange as data length is {}", size, data.len());
-                    }
-                    for i in 0 .. size {
-                        for j in 0 .. size {
-                            unsafe { DIST[i][j] = data[1 + i*size + j] }; // 1 as the first number is size
-                        }
-                    }
-                }
-                Err(err) => {
-                    warn!("Reading {} failed: {}", file_name, err);
+pub fn read_dist(file_name: &String, stop_size: usize){
+    match std::fs::read_to_string(file_name) {
+        Ok(txt) => {
+            let data = txt
+                        .trim_end()// remove any new line at the end
+                        .split([' ', '\n'])
+                        .map(|num| num.parse::<i16>())
+                        .collect::<Result<Vec<i16>, _>>()
+                        .expect("Number parsing error");
+            let size = data[0] as usize;
+            if size > stop_size {
+                panic!("Number of stops {} is bigger than allowed: {}", size, stop_size);
+            }
+            if size > MAXSTOPSNUMB {
+                panic!("Requested size {} is bigger than matrix size: {}", stop_size, MAXSTOPSNUMB);
+            }
+            if size == 0 || data.len() != size*size + 1 {
+                panic!("Requested size {} is strange as data length is {}", size, data.len());
+            }
+            for i in 0 .. size {
+                for j in 0 .. size {
+                    unsafe { DIST[i][j] = data[1 + i*size + j] }; // 1 as the first number is size
                 }
             }
         }
@@ -91,11 +88,4 @@ pub fn read_dist(file_name: &String, stop_size: usize) {
             warn!("Opening file {} failed: {}", file_name, err);
         }
     } 
-}
-
-fn read_io<R: Read>(ios: R) -> Result<Vec<i16>, Error> {
-    let reader = BufReader::new(ios);
-    reader.lines()
-        .map(|line| line.and_then(|v| v.parse().map_err(|e| Error::new(ErrorKind::InvalidData, e))))
-        .collect()
 }
