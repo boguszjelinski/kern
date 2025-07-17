@@ -76,7 +76,7 @@ pub fn read_dist(file_name: &String, stop_size: usize) {
             }
             for i in 0 .. size {
                 for j in 0 .. size {
-                    unsafe { DIST[i+1][j+1] = data[i][j] };
+                    unsafe { DIST[i][j] = data[i][j] };
                 }
             }
         }
