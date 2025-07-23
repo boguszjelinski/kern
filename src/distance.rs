@@ -1,9 +1,6 @@
-<<<<<<< HEAD
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-=======
->>>>>>> b5ae750569ad8d70e43a4d1fdd174a6c56205a4a
 use log::warn;
 use crate::model::{Stop,MAXSTOPSNUMB};
 pub static mut DIST : [[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB] = [[0; MAXSTOPSNUMB]; MAXSTOPSNUMB];
