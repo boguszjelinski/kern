@@ -651,7 +651,7 @@ mod tests {
       let from: i32 = i % 2400;
       let to: i32 = from + 1;
       orders.push(Order{ id: i as i64, from, to, wait: 15, loss: 70, dist: unsafe { DIST[from as usize][to as usize] as i32}, 
-        //shared: true, in_pool: false, 
+        shared: true, //in_pool: false, 
         received: None, 
         //started: None, completed: None, 
         at_time: None, 
@@ -665,7 +665,7 @@ mod tests {
     let mut orders: Vec<Order> = vec![];
     for i in 0..ord_count {
       orders.push(Order{ id: i as i64, from: i as i32, to: (ord_count - i) as i32, wait: 15, loss: 70, dist: i32::abs(ord_count as i32 -2*i as i32), 
-        //shared: true, in_pool: false, 
+        shared: true, //in_pool: false, 
         received: None, 
         //started: None, completed: None, 
         at_time: None, 
@@ -686,7 +686,7 @@ mod tests {
         let to: i32 = from + 5;
         let dista = unsafe { DIST[from as usize][to as usize] as i32 };
         ret.push(Order{ id: i as i64, from, to, wait: 15, loss: 70, dist: dista, 
-                    //shared: true, in_pool: false, 
+                    shared: true, //in_pool: false, 
                     received: Some(Local::now().naive_local()), 
                     //started: None, completed: None, 
                     at_time: None, 
@@ -741,7 +741,7 @@ mod tests {
         let to: i32 = from + 5;
         let dista = unsafe { DIST[from as usize][to as usize] as i32 };
         ret.push(Order{ id: i as i64, from, to, wait: 15, loss: 70, dist: dista, 
-                    //shared: true, in_pool: false, 
+                    shared: true, //in_pool: false, 
                     received: Some(Local::now().naive_local()), 
                     //started: None, completed: None, 
                     at_time: None, 
@@ -914,6 +914,7 @@ mod tests {
       let from: i32 = i;
       let to: i32 = from + 1;
       orders.push(Order{ id: i as i64, from, to, wait: 15, loss: 1000, dist: 10, 
+        shared: true, 
         received: None, 
         at_time: None, 
         route_id: -1 });
@@ -1052,6 +1053,7 @@ mod tests {
   #[serial]
   fn test_orders_to_transfer_array() {
     let vec: Vec<Order> = vec![Order{ id: 1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, //shared: true, in_pool: false,
+          shared: true, 
           received: None,//started: None,completed: None,
           at_time: None,
           //eta: 0, 

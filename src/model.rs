@@ -27,7 +27,7 @@ pub struct Order {
 	pub wait: i32, // expected pick up time
 	pub loss: i32, // allowed loss of time in detour
 	pub dist: i32, // distance without pool
- //   pub shared: bool, // agreed to be in pool
+    pub shared: bool, // agreed to be in pool
  //   pub in_pool: bool, // actually in pool
     pub received: Option<NaiveDateTime>,
  //   pub started: Option<NaiveDateTime>,
