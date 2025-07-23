@@ -28,7 +28,7 @@ pub fn find_orders_by_status_and_time(conn: &mut PooledConn, status: OrderStatus
                     wait: r.get(3).unwrap(),
                     loss: r.get(4).unwrap(),
                     dist: r.get(5).unwrap(),
-                    //shared: r.get(6).unwrap(),
+                    shared: r.get(6).unwrap(),
                     //in_pool: r.get(7).unwrap(),
                     received: get_naivedate(&r, 8),
                     //started: get_naivedate(&r, 9),
@@ -523,7 +523,7 @@ pub fn create_reloc_route(cab: &Cab, dest_stop: i64,
     let reserve = 0;
     
     // fake order
-    let order = Order { id: -1, from: dest_stop as i32, to: -1, wait: 0, loss: 0, dist: 0, 
+    let order = Order { id: -1, from: dest_stop as i32, to: -1, wait: 0, loss: 0, dist: 0, shared: true,
                                 received: None, at_time: None, route_id: -1 };
     let sql = update_cab_add_route(&cab, &order, &mut place, &mut eta, reserve, max_route_id, max_leg_id);
     *max_route_id += 1;
@@ -689,7 +689,7 @@ mod tests {
         }
     }
     let o: Order = Order { id: 0, from: 0, to: stop_count as i32 - 1, wait: 10, loss: 90, dist: 7, 
-        //shared: true, in_pool: true, 
+                            shared: true, // in_pool: true, 
                             received: None, 
                             //started: None, completed: None, 
                             at_time: None, 
@@ -700,7 +700,8 @@ mod tests {
         let to: i32 = stop_count as i32 -1 -i as i32;
         unsafe{
             orders[i] = Order { id: i as i64, from: i as i32, to: to, wait: 10, loss: 90, dist: DIST[i as usize][to as usize] as i32, 
-                            //shared: true, in_pool: true, 
+                            shared: true, 
+                            //in_pool: true, 
                             received: None, 
                             //started: None, completed: None, 
                             at_time: None, 

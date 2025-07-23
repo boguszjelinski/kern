@@ -1,4 +1,4 @@
-use log::{info, warn};
+use log::warn;
 use crate::model::{Stop,MAXSTOPSNUMB};
 pub static mut DIST : [[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB] = [[0; MAXSTOPSNUMB]; MAXSTOPSNUMB];
 const M_PI : f64 = 3.14159265358979323846264338327950288;

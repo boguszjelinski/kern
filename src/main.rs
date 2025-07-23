@@ -284,9 +284,16 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
     }
     stats::update_max_and_avg_stats(Stat::AvgDemandSize, Stat::MaxDemandSize, orders.len() as i64);
 
+    // orders that cannot be shared won't be sent to extender and pool finder
+    // but they have to be added before Munkres is called, let's split the order set
+    let mut demand_nonshared = orders.clone();
+    orders.retain(|&o| o.shared == true);    
+    demand_nonshared.retain(|&o| o.shared == false);
+
     // check if we want to run extender is done in run_extender
     let mut demand
         = run_extender(conn, orders, &stops, &mut max_leg_id, "FIRST", &cfg);
+
     if cabs.len() == 0 {
         info!("No cabs");
         return 0;
@@ -322,6 +329,8 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
     // we don't want to run solver on new requests, without giving it a chance for a pool in another iteration, 
     // after some time with no luck in pool finder/extender we give it to the solver
     demand = get_old_orders(&demand, cfg.solver_delay);
+    // nonshared orders should be delayed
+    demand.append(&mut demand_nonshared);
 
     if demand.len() > 0 {
         // shrinking vectors, getting rid of .id == -1 and (TODO) distant orders and cabs !!!!!!!!!!!!!!!
@@ -849,18 +858,18 @@ mod tests {
   fn test_orders_invalid() -> Vec<Order> {
     return vec![
         Order{ id: 1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, 
-            received: None,at_time: None, route_id: -1},
+            shared: true, received: None,at_time: None, route_id: -1},
         Order{ id: -1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, 
-            received: None,at_time: None,route_id: -1}
+            shared: true, received: None,at_time: None,route_id: -1}
     ];
   }
 
   fn test_orders() -> Vec<Order> {
     return vec![
         Order{ id: 0, from: 0, to: 1, wait: 10, loss: 50, dist: 2, 
-            received: None,at_time: None, route_id: -1},
+            shared: true, received: None,at_time: None, route_id: -1},
         Order{ id: 1, from: 1, to: 2, wait: 10, loss: 50, dist: 2, 
-            received: None,at_time: None, route_id: -1}
+            shared: true, received: None,at_time: None, route_id: -1}
     ];
   }
 
@@ -978,7 +987,7 @@ mod tests {
         let to: i32 = if from + 5 >= stops { from - 5} else { from + 5} ;
         let dista = unsafe { DIST[from as usize][to as usize] as i32 };
         ret.push(Order{ id: i as i64, from, to, wait: 15, loss: 70, dist: dista, 
-                    received: Some(Local::now().naive_local()), at_time: None, 
+                    shared: true, received: Some(Local::now().naive_local()), at_time: None, 
                     route_id: -1 });
     }
     return ret;
