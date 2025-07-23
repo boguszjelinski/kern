@@ -29,9 +29,9 @@ select count(*) from taxi_order where status=3;
 \echo 'avg detour: total duration / total requested distance (we measure distance with time)'
 select (EXTRACT(epoch FROM (select sum(completed-started) from taxi_order where completed is not null and started is not null))/60)::float / (select sum(distance) from taxi_order where completed is not null and started is not null)::float;
 \echo 'max scheduler time (seconds)' 
-select * from stat where name='MaxShedulerTime';
+select * from stat where name='MaxSchedulerTime';
 \echo 'average scheduler time (seconds)' 
-select * from stat where name='AvgShedulerTime';
+select * from stat where name='AvgSchedulerTime';
 \echo 'average pool finder input size (demand)'
 select * from stat where name='AvgPoolDemandSize';
 \echo 'average solver input size (demand)'

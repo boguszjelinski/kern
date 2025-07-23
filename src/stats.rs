@@ -18,7 +18,7 @@ pub enum Stat {
     AvgPool5Time,
     AvgLcmTime,
     AvgSolverTime,
-    AvgShedulerTime,
+    AvgSchedulerTime,
 
     MaxExtenderTime,
     MaxPoolTime,
@@ -28,7 +28,7 @@ pub enum Stat {
     MaxPool5Time,
     MaxLcmTime,
     MaxSolverTime,
-    MaxShedulerTime,
+    MaxSchedulerTime,
 
     AvgDemandSize, // at start
     AvgPoolDemandSize,  // after extender
@@ -53,14 +53,14 @@ impl Stat {
             3 => Stat::AVG_POOL4_TIME,
             4 => Stat::AVG_LCM_TIME,
             5 => Stat::AVG_SOLVER_TIME,
-            6 => Stat::AVG_SHEDULER_TIME,
+            6 => Stat::AVG_SCHEDULER_TIME,
             7 => Stat::MAX_EXTENDER_TIME,
             8 => Stat::MAX_POOL_TIME,
             9 => Stat::MAX_POOL3_TIME,
             10 => Stat::MAX_POOL4_TIME,
             11 => Stat::MAX_LCM_TIME,
             12 => Stat::MAX_SOLVER_TIME,
-            13 => Stat::MAX_SHEDULER_TIME,
+            13 => Stat::MAX_SCHEDULER_TIME,
             14 => Stat::AVG_DEMAND_SIZE, 
             15 => Stat::AVG_POOL_DEMAND_SIZE,
             16 => Stat::AVG_SOLVER_DEMAND_SIZE,
@@ -85,7 +85,7 @@ impl Stat {
             AvgPool4Time,
             AvgLcmTime,
             AvgSolverTime,
-            AvgShedulerTime,
+            AvgSchedulerTime,
         
             MaxExtenderTime,
             MaxPoolTime,
@@ -94,7 +94,7 @@ impl Stat {
             MaxPool4Time,
             MaxLcmTime,
             MaxSolverTime,
-            MaxShedulerTime,
+            MaxSchedulerTime,
         
             AvgDemandSize, // at start
             AvgPoolDemandSize,  // after extender

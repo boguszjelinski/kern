@@ -1,3 +1,6 @@
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use log::warn;
 use crate::model::{Stop,MAXSTOPSNUMB};
 pub static mut DIST : [[i16; MAXSTOPSNUMB]; MAXSTOPSNUMB] = [[0; MAXSTOPSNUMB]; MAXSTOPSNUMB];
@@ -59,33 +62,60 @@ pub fn dump_dist(file_name: &str, size: usize) {
 }
 */
 
-pub fn read_dist(file_name: &String, stop_size: usize){
-    match std::fs::read_to_string(file_name) {
-        Ok(txt) => {
-            let data = txt
-                        .trim_end()// remove any new line at the end
-                        .split([' ', '\n'])
-                        .map(|num| num.parse::<i16>())
-                        .collect::<Result<Vec<i16>, _>>()
-                        .expect("Number parsing error");
-            let size = data[0] as usize;
+pub fn read_dist(file_name: &String, stop_size: usize) {
+    match read_matrix_from_file(file_name) {
+        Ok((data, size)) => {
             if size > stop_size {
                 panic!("Number of stops {} is bigger than allowed: {}", size, stop_size);
             }
             if size > MAXSTOPSNUMB {
                 panic!("Requested size {} is bigger than matrix size: {}", stop_size, MAXSTOPSNUMB);
             }
-            if size == 0 || data.len() != size*size + 1 {
+            if size == 0 || data.len() != size {
                 panic!("Requested size {} is strange as data length is {}", size, data.len());
             }
             for i in 0 .. size {
                 for j in 0 .. size {
-                    unsafe { DIST[i][j] = data[1 + i*size + j] }; // 1 as the first number is size
+                    unsafe { DIST[i][j] = data[i][j] };
                 }
             }
         }
         Err(err) => {
-            warn!("Opening file {} failed: {}", file_name, err);
+            warn!("Reading {} failed: {}", file_name, err);
         }
-    } 
+    }
+}
+
+pub fn read_matrix_from_file(path: &str) -> Result<(Vec<Vec<i16>>, usize), Box<dyn Error>> {
+    let file = File::open(path)?;
+    let mut lines = BufReader::new(file).lines();
+
+    let matrix_dimension: usize = lines
+        .next()
+        .ok_or("File is empty")??
+        .trim()
+        .parse()?;
+
+    let mut matrix = Vec::with_capacity(matrix_dimension);
+    for row_index in 0..matrix_dimension {
+        let line = lines
+            .next()
+            .ok_or("Matrix has fewer rows than expected")??;
+
+        let row: Vec<i16> = line
+            .split(',')
+            .map(|s| s.trim().parse::<i16>())
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if row.len() != matrix_dimension {
+            return Err(format!("Row {row_index} has {} elements, expected {matrix_dimension}", row.len()).into());
+        }
+        matrix.push(row);
+    }
+
+    if lines.next().is_some() {
+        return Err("File contains more rows than expected".into());
+    }
+
+    Ok((matrix, matrix_dimension))
 }
