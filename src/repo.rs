@@ -322,7 +322,7 @@ fn update_cab_add_route(cab: &Cab, order: &Order, place: &mut i32, eta: &mut i16
 
 // count reserves on legs
 // reserves have to obey max_wait and max_loss
-// returnes reserves for legs in Branch as well as in the leg for cab (if needed)
+// returns reserves for legs in Branch as well as in the leg for cab (if needed)
 fn count_reserves(cab_dist: i16, br: Branch, orders: &Vec<Order>, stop_wait: i16) -> (i32, [i32; MAXORDID]) {
     // not all "c" values will produce legs below in "assign...", but we will use it as index for values -> res[c]
     let mut res: [i32; MAXORDID] = [16000; MAXORDID]; // we will decreas value
