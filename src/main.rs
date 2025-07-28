@@ -439,9 +439,8 @@ fn find_internal_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
     let mut pl: Vec<Branch> = Vec::new();  
     let mut sql: String = String::from("");
 
-    for p in (2..6).rev() { //5,4,3,2
-        if (p == 5 && demand.len() < (cfg.max_pool5_size) as usize ) || // 5: TODO: check if it works!!
-            (p == 4 && demand.len() < (cfg.max_pool4_size) as usize ) ||
+    for p in (2..5).rev() { // 4,3,2
+        if (p == 4 && demand.len() < (cfg.max_pool4_size) as usize ) ||
             (p == 3 && demand.len() < (cfg.max_pool3_size) as usize ) ||
             (p == 2 && demand.len() < (cfg.max_pool2_size) as usize ) {
             let now = Instant::now();
@@ -452,7 +451,6 @@ fn find_internal_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
             info!("Pool with {}, found pools: {}\n", p, ret.0.len());
             let el = now.elapsed().as_secs() as i64;
             match p {
-                5 => update_max_and_avg_stats(Stat::AvgPool5Time, Stat::MaxPool5Time, el),
                 4 => update_max_and_avg_stats(Stat::AvgPool4Time, Stat::MaxPool4Time, el),
                 3 => update_max_and_avg_stats(Stat::AvgPool3Time, Stat::MaxPool3Time, el),
                 2 => update_max_and_avg_stats(Stat::AvgPool2Time, Stat::MaxPool2Time, el),
@@ -619,8 +617,7 @@ pub fn lcm(host: &String, mut cabs: &mut Vec<Cab>, mut orders: &mut Vec<Order>,
         warn!("LCM asked to do nothing");
         return thread::spawn(|| { });
     }
-    let pairs: Vec<(i32,i32)> = lcm_slow(cabs, orders, how_many);
-    //let pairs: Vec<(i32,i32)> = extern_lcm(cabs, orders, how_many, cfg);
+    let pairs: Vec<(i32,i32)> = lcm_slow(cabs, orders, how_many);  // extern_lcm(cabs, orders, how_many, cfg);
     let sql = assign_order_to_cab_lcm(pairs, &mut cabs, &mut orders, max_route_id, max_leg_id);
     return get_handle(host.clone(), sql, "LCM".to_string());
 }
@@ -640,11 +637,6 @@ fn find_external_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
     let mut pooltime = [0; MAXINPOOL as usize - 1];
 
     unsafe {
-        /*poolsize[0] = CNFG.max_pool5_size;
-        poolsize[1] = CNFG.max_pool4_size;
-        poolsize[2] = CNFG.max_pool3_size;
-        poolsize[3] = CNFG.max_pool2_size;
-        */
         poolsize[0] = cfg.max_pool4_size;
         poolsize[1] = cfg.max_pool3_size;
         poolsize[2] = cfg.max_pool2_size;
@@ -671,10 +663,6 @@ fn find_external_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
         );
     }
     validate_answer(&br, &cnt, demand.len(), cabs);
-    /*update_max_and_avg_stats(Stat::AvgPool5Time, Stat::MaxPool5Time, pooltime[0] as i64);
-    update_max_and_avg_stats(Stat::AvgPool4Time, Stat::MaxPool4Time, pooltime[1] as i64);
-    update_max_and_avg_stats(Stat::AvgPool3Time, Stat::MaxPool3Time, pooltime[2] as i64);
-*/
     update_max_and_avg_stats(Stat::AvgPool4Time, Stat::MaxPool4Time, pooltime[0] as i64);
     update_max_and_avg_stats(Stat::AvgPool3Time, Stat::MaxPool3Time, pooltime[1] as i64);
     update_max_and_avg_stats(Stat::AvgPool2Time, Stat::MaxPool2Time, pooltime[2] as i64);

@@ -3,7 +3,7 @@ This repository contains a subproject of Kabina - Kern minibus dispatcher, which
 
 Kern dispatcher consists of three main components:
 * **solver**, which allocates passengers to free cabs ([Hungarian](https://en.wikipedia.org/wiki/Hungarian_algorithm) and [Least Cost Method](https://www.educationlessons.co.in/notes/least-cost-method) are used)
-* **pool finder** (multithreaded, linearly scalable, written in C) to assign several customers to one bus and create routes with several stops, 5+ passengers with 10+ stops are feasible with finder based on [dynamic programming](https://en.wikipedia.org/wiki/Dynamic_programming) principles. This module is available also in Rust, Java and C#.
+* **pool finder** (multithreaded, linearly scalable, written in C) to assign several customers to one bus and create routes with several stops, 5+ passengers with 10+ stops are feasible (currently limited to 4 passengers) with finder based on [dynamic programming](https://en.wikipedia.org/wiki/Dynamic_programming) principles. This module is available also in Rust, Java and C#.
 * **route extender** to assign customers to matching routes, including non-perfect matching (multithreaded)
 
 ## Other Kabina subprojects:

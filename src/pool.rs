@@ -6,10 +6,10 @@
 /// 'Branch' structure describes one such group (saved as route in the database)
 /// 
 use std::{thread, vec};
-use log::debug;
+use log::{debug, warn};
 use std::time::Instant;
 use std::thread::ScopedJoinHandle;
-use crate::model::{Order, OrderTransfer, Stop, Cab, Branch, MAXSTOPSNUMB, MAXCABSNUMB, MAXORDERSNUMB};
+use crate::model::{Branch, Cab, Order, OrderTransfer, Stop, MAXCABSNUMB, MAXINPOOL, MAXORDERSNUMB, MAXSTOPSNUMB};
 use crate::distance::DIST;
 use crate::repo::assign_pool_to_cab;
 
@@ -32,6 +32,10 @@ pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mu
                 -> (Vec<Branch>, String) {
   if demand.len() == 0 || supply.len() == 0 || stands.len() == 0 {
           return (Vec::new(), String::from(""));
+  }
+  if in_pool > MAXINPOOL as u8 {
+    warn!("Requested pool ({}) is bigger than allowed: {}", in_pool, MAXINPOOL);
+    return (Vec::new(), String::from(""));
   }
   let mut node: Box<[Branch; N]> = vec![Branch::new(); N].try_into().unwrap();
   let mut node_size: usize = 0;
