@@ -10,7 +10,7 @@ def execSql(conn, fil, sql, column):
     print('', file=fil, flush=True)
 dbhost = 'localhost' #192.168.10.176 
 conn = mysql.connector.connect(host=dbhost, user='kabina', password='kaboot', database='kabina', auth_plugin='mysql_native_password')
-file1 = open('kpis.txt', 'w')
+file1 = open('kpis_status.txt', 'w')
 file2 = open('cab_status.txt', 'w')
 file3 = open('order_status.txt', 'w')
 # column names
