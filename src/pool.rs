@@ -6,7 +6,7 @@
 /// 'Branch' structure describes one such group (saved as route in the database)
 /// 
 use std::{thread, vec};
-use log::{debug, warn};
+use log::{info, debug, warn};
 use std::time::Instant;
 use std::thread::ScopedJoinHandle;
 use crate::model::{Branch, Cab, Order, OrderTransfer, Stop, MAXCABSNUMB, MAXINPOOL, MAXORDERSNUMB, MAXSTOPSNUMB};
@@ -30,6 +30,7 @@ const N: usize = MAX_BRANCH_SIZE*MAX_THREAD_NUMB;
 pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mut Vec<Cab>, stands: &Vec<Stop>, 
                 mut max_route_id: &mut i64, max_leg_id: &mut i64, max_angle: i16, max_angle_dist: i16, stop_wait: i16) 
                 -> (Vec<Branch>, String) {
+  debug!("find_pool started, in pool: {}", in_pool);
   if demand.len() == 0 || supply.len() == 0 || stands.len() == 0 {
           return (Vec::new(), String::from(""));
   }
@@ -40,6 +41,7 @@ pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mu
   let mut node: Box<[Branch; N]> = vec![Branch::new(); N].try_into().unwrap();
   let mut node_size: usize = 0;
   let start = Instant::now();
+  debug!("find_pool after memalloc"); // some platforms might be slow in memalloc, reduce MAX_BRANCH_SIZE
   // recursive dive until the leaves of the permutation tree
 	dive(0, in_pool, threads, demand, stands, max_angle, max_angle_dist, stop_wait, &mut node, &mut node_size);
 
@@ -48,7 +50,7 @@ pub fn find_pool(in_pool: u8, threads: i16, demand: &mut Vec<Order>, supply: &mu
       rm_duplicates_assign_cab(in_pool as usize, &mut max_route_id, max_leg_id, supply, demand, 
                               stop_wait, &node, node_size);
 
-  println!("FINAL: inPool: {}, found pools: {}, elapsed: {:?}\n", in_pool, ret.0.len(), start.elapsed());
+  info!("find_pool completed: inPool: {}, found pools: {}, elapsed: {:?}\n", in_pool, ret.0.len(), start.elapsed());
   return ret;
 }
 

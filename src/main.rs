@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::ptr::addr_of;
 use std::time::Instant;
 use std::{thread, env};
+use std::cmp::min;
 
 use log::{info,warn,debug,error,LevelFilter};
 use log4rs::{
@@ -303,12 +304,13 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
         return 0;
     }
     // POOL FINDER
-    if cfg.use_pool && orders.len() > 0 {
+    if cfg.use_pool && orders.len() > 1 {
         let start_pool = Instant::now();
         stats::update_max_and_avg_stats(Stat::AvgPoolDemandSize, Stat::MaxPoolDemandSize, demand.len() as i64);
         let pl: Vec<Branch>;
         let sql: String;
         // 2 versions available - in C (external) and Rust
+        info!("Find pool: demand size: {}", demand.len());
         if cfg.use_extern_pool {
             (pl, sql) = find_external_pool(&mut demand, cabs, stops, cfg.thread_numb, &mut max_route_id, &mut max_leg_id, cfg);
         } else {
@@ -358,7 +360,7 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
             lcm_handle.join().expect("LCM SQL thread being joined has panicked");
             let cabs_len = cabs.len();
             let ord_len = demand.len();
-            let how_many = std::cmp::min(ord_len, cabs_len) as i16 - cfg.max_solver_size as i16;
+            let how_many = min(ord_len, cabs_len) as i16 - cfg.max_solver_size as i16;
             info!("LCM input: demand={}, supply={}, to be found: {}", ord_len, cabs_len, how_many);
             lcm_handle = lcm(host, &mut cabs, &mut demand, &mut max_route_id, &mut max_leg_id, 
                             how_many);
@@ -439,16 +441,14 @@ fn find_internal_pool(demand: &mut Vec<Order>, cabs: &mut Vec<Cab>, stops: &Vec<
     let mut pl: Vec<Branch> = Vec::new();  
     let mut sql: String = String::from("");
 
-    for p in (2..5).rev() { // 4,3,2
+    for p in (2..min(5, demand.len() + 1)).rev() { // 4,3,2
         if (p == 4 && demand.len() < (cfg.max_pool4_size) as usize ) ||
             (p == 3 && demand.len() < (cfg.max_pool3_size) as usize ) ||
             (p == 2 && demand.len() < (cfg.max_pool2_size) as usize ) {
             let now = Instant::now();
-            let mut ret = find_pool(p, cfg.thread_numb as i16,
+            let mut ret = find_pool(p as u8, cfg.thread_numb as i16,
                                                             demand,  cabs, &stops, max_route_id, max_leg_id,
                                                             cfg.max_angle, cfg.max_angle_dist, cfg.stop_wait);
-            print!("Pool with {}, found pools: {}\n", p, ret.0.len());
-            info!("Pool with {}, found pools: {}\n", p, ret.0.len());
             let el = now.elapsed().as_secs() as i64;
             match p {
                 4 => update_max_and_avg_stats(Stat::AvgPool4Time, Stat::MaxPool4Time, el),
