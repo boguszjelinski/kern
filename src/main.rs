@@ -384,9 +384,9 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
     run_sql(conn, repo::save_status());
 
     assign_requests_for_free_cabs(conn, &mut max_route_id, &mut max_leg_id); // someone went into and took this cab
-    let free_cabs = find_cab_by_status(conn, CabStatus::FREE);
-    let sql = relocate_free_cabs(&free_cabs, &stops, &mut max_route_id, &mut max_leg_id);
-    run_sql(conn, sql);
+    // let free_cabs = find_cab_by_status(conn, CabStatus::FREE);
+    // let sql = relocate_free_cabs(&free_cabs, &stops, &mut max_route_id, &mut max_leg_id);
+    // run_sql(conn, sql);
     return 0; // 0: all orders served
 }
 
