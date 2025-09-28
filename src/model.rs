@@ -185,6 +185,7 @@ pub struct KernCfg {
     pub max_legs: i8,
     pub max_angle: i16,
     pub max_angle_dist: i16,
+    pub relocate: bool,
     pub use_pool: bool,
     pub use_extern_pool: bool,
     pub use_extender: bool,
@@ -207,6 +208,7 @@ impl KernCfg {
             max_legs: 8,
             max_angle: 120,
             max_angle_dist: 3, 
+            relocate: false,
             use_pool: true,
             use_extern_pool: false,
             use_extender: false,
@@ -234,6 +236,7 @@ impl KernCfg {
         s.max_legs = val.max_legs;
         s.max_angle = val.max_angle;
         s.max_angle_dist = val.max_angle_dist;
+        s.relocate = val.relocate;
         s.use_pool = val.use_pool;
         s.use_extern_pool = val.use_extern_pool;
         s.use_extender = val.use_extender;
