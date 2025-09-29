@@ -23,7 +23,7 @@ select seq.num,0,2,10 from seq where seq.num<20000;
 -- CUSTOMER
 DROP TABLE customer CASCADE;
 CREATE TABLE customer (id bigint NOT NULL, PRIMARY KEY (id));
-           INSERT INTO customer (id) with digit as (
+INSERT INTO customer (id) with digit as (
     select 0 as d union all select 1 union all select 2 union all select 3 union all
     select 4 union all select 5 union all select 6 union all
     select 7 union all select 8 union all select 9        

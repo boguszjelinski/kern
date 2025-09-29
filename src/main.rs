@@ -178,6 +178,7 @@ fn setupcfg(cfg: & HashMap<String, String>) {
     c.max_legs       = cfg["max_legs"].parse().unwrap();
     c.max_angle      = cfg["max_angle"].parse().unwrap();
     c.max_angle_dist = cfg["max_angle_dist"].parse().unwrap();
+    c.relocate       = cfg["relocate"].parse::<bool>().unwrap();
     c.use_pool       = cfg["use_pool"].parse::<bool>().unwrap();
     c.use_extern_pool= cfg["use_extern_pool"].parse::<bool>().unwrap();
     c.use_extender   = cfg["use_extender"].parse::<bool>().unwrap();
@@ -205,6 +206,7 @@ fn setupcfg(cfg: & HashMap<String, String>) {
     info!("max_legs: {}", c.max_legs);
     info!("max_angle: {}", c.max_angle);
     info!("max_angle_dist: {}", c.max_angle_dist);
+    info!("relocate: {}", c.relocate);
     info!("use_pool: {}", c.use_pool);
     info!("use_extern_pool: {}", c.use_extern_pool);
     info!("use_extender: {}", c.use_extender);
@@ -277,7 +279,7 @@ fn run_extender(conn: &mut PooledConn, orders: &Vec<Order>, stops: &Vec<Stop>,
 // 2) pool finder
 // 3) solver (LCM in most scenarious won't be called)
 // SQL updates execute in background as async
-fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>, cfg: KernCfg) -> usize {
+fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut cabs: &mut Vec<Cab>, stops: &Vec<Stop>, cfg: KernCfg) {
     let mut max_route_id : i64 = repo::read_max(conn, "route"); // +1, first free ID
     let mut max_leg_id : i64 = repo::read_max(conn, "leg");
 
@@ -285,7 +287,7 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
         info!("No demand, no dispatch");
         // but check orders from free cabs
         assign_requests_for_free_cabs(conn, &mut max_route_id, &mut max_leg_id);
-        return 0;
+        return;
     }
     stats::update_max_and_avg_stats(Stat::AvgDemandSize, Stat::MaxDemandSize, orders.len() as i64);
 
@@ -301,7 +303,7 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
 
     if cabs.len() == 0 {
         info!("No cabs");
-        return 0;
+        return;
     }
     // POOL FINDER
     if cfg.use_pool && orders.len() > 1 {
@@ -344,11 +346,11 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
         stats::update_max_and_avg_stats(Stat::AvgSolverDemandSize, Stat::MaxSolverDemandSize, demand.len() as i64);
         if cabs.len() == 0 {
             info!("No cabs after pool finder");
-            return 0;
+            return;
         }
         if demand.len() == 0 {
             info!("No demand after pool finder");
-            return 0;
+            return;
         }
         // LCM presolver
         let mut lcm_handle = thread::spawn(|| { });
@@ -384,10 +386,13 @@ fn dispatch(host: &String, conn: &mut PooledConn, orders: &mut Vec<Order>, mut c
     run_sql(conn, repo::save_status());
 
     assign_requests_for_free_cabs(conn, &mut max_route_id, &mut max_leg_id); // someone went into and took this cab
-    // let free_cabs = find_cab_by_status(conn, CabStatus::FREE);
-    // let sql = relocate_free_cabs(&free_cabs, &stops, &mut max_route_id, &mut max_leg_id);
-    // run_sql(conn, sql);
-    return 0; // 0: all orders served
+    let free_cabs = find_cab_by_status(conn, CabStatus::FREE);
+    // finally move cabs from stops where there is no place for them
+    if cfg.relocate {
+        let sql = relocate_free_cabs(&free_cabs, &stops, &mut max_route_id, &mut max_leg_id);
+        run_sql(conn, sql);
+    }
+    return;
 }
 
 

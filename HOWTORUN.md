@@ -79,6 +79,7 @@ For MySQL run this:
   | stop_wait | how many minutes it takes at a stop
   | log_file  | log file location and name
   | dist_file  | file with distances matrix, starts with matrix size, all values separated by a new line. Distances will be calculated if empty value.
+  | relocate | if a cab should be relocated when stop capacity is exceeded
   | use_pool | if pool finder should be used
   | use_extern_pool | if external pool finder (C library) should be used
   | use_extender | if route extender should be used
