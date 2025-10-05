@@ -423,6 +423,10 @@ fn rm_duplicates_assign_cab(in_pool: usize, mut max_route_id: &mut i64, mut max_
   // 4 next lines is a check if the distance to the cab helps 
   for i in 0..arr.len()  {
     let cab_idx = find_nearest_cab(arr[i].ord_ids[0], count_passengers(arr[i]), cabs, orders);
+    if cab_idx < 0 { // no cab
+      arr[i].cost = -1;
+      continue;
+    }
     let cab_dist = unsafe { DIST[cabs[cab_idx as usize].location as usize][orders[arr[i].ord_ids[0] as usize].from as usize] }
                         + cabs[cab_idx as usize].dist;
     if cab_dist > 0 && max_wait_exceeded(cab_dist, &arr[i], orders, stop_wait) {

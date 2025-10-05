@@ -412,6 +412,10 @@ void rmDuplicatesAndFindCab(int inPool) {
       if (ptr->cost == -1) continue; // not dropped earlier, but was there any such possibility? TODO: check it
       from = demand[ptr->ordIDs[0]].fromStand;
       cabIdx = findNearestCab(from, countPassengers(ptr));
+      if (cabIdx < 0)  { // no cab
+        ptr->cost == -1;
+        continue;
+      }
       distCab = dist(supply[cabIdx].location, from) + supply[cabIdx].dist;
       if (distCab > 0 && waitTimeExceeded(distCab, ptr))  {
         ptr->cost == -1; // maybe a big value would be better, -1 will come first after sort, TODO
