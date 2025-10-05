@@ -14,7 +14,7 @@ use crate::distance::DIST;
 use crate::repo::assign_pool_to_cab;
 
 pub const MAX_THREAD_NUMB:usize = 12; // this has to be +1 possible config value!!
-const MAX_BRANCH_SIZE:usize = 100000;
+const MAX_BRANCH_SIZE:usize = 10000000;
 const N: usize = MAX_BRANCH_SIZE*MAX_THREAD_NUMB;
 
 /// Returns a list of pools sorted by total trip length (sorting helps filter out worse plans)
